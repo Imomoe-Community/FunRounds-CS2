@@ -1,0 +1,14 @@
+/target/
+/.work/
+/dist/
+/local/
+docs/evidence/v05/camera/seed-control-*.txt
+*.log
+*.dmp
+*.mdmp
+*.core
+.env
+.env.*
+!.env.example
+**/server/
+**/steamapps/
