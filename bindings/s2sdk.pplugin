@@ -1,0 +1,4652 @@
+{
+  "$schema": "https://raw.githubusercontent.com/untrustedmodders/plugify/refs/heads/main/schemas/plugin.schema.json",
+  "version": "3.0.0",
+  "name": "s2sdk",
+  "description": "Provides functionality for other plugins from Source 2 engine",
+  "author": "untrustedmodders",
+  "website": "https://github.com/untrustedmodders/",
+  "license": "GPLv3",
+  "entry": "bin/plugify-plugin-s2sdk",
+  "platforms": [],
+  "language": "cpp",
+  "dependencies": [
+    {
+      "constraints": ">=2.5.2",
+      "name": "polyhook"
+    },
+    {
+      "constraints": ">=2.1.0",
+      "name": "configs"
+    },
+    {
+      "optional": true,
+      "name": "translations"
+    },
+    {
+      "optional": true,
+      "name": "permissions"
+    }
+  ],
+  "methods": [
+    {
+      "name": "PlayerSlotToEntHandle",
+      "group": "Clients",
+      "description": "Returns the entity handle associated with a player slot index.",
+      "funcName": "PlayerSlotToEntHandle",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "Index of the player slot."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The index of the entity, or -1 if the handle is invalid."
+      }
+    },
+    {
+      "name": "IsClientInGame",
+      "group": "Clients",
+      "description": "Checks if a certain player has entered the game.",
+      "funcName": "IsClientInGame",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "true if the player is in the game, false otherwise."
+      }
+    },
+    {
+      "name": "IsClientAlive",
+      "group": "Clients",
+      "description": "Checks if the client is alive or dead.",
+      "funcName": "IsClientAlive",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "true if the client is alive, false if dead."
+      }
+    },
+    {
+      "name": "GetClientGravity",
+      "group": "Clients",
+      "description": "Retrieves the gravity scale of an client.",
+      "funcName": "GetClientGravity",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot whose gravity scale is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "float",
+        "description": "The gravity scale of the client, or 0.0f if the client is invalid."
+      }
+    },
+    {
+      "name": "SetClientGravity",
+      "group": "Clients",
+      "description": "Sets the gravity scale of an client.",
+      "funcName": "SetClientGravity",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot whose gravity scale is to be set."
+        },
+        {
+          "name": "gravity",
+          "type": "float",
+          "ref": false,
+          "description": "The new gravity scale to set for the client."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetClientHealth",
+      "group": "Clients",
+      "description": "Retrieves the health of an client.",
+      "funcName": "GetClientHealth",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot whose health is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The health of the client, or 0 if the client is invalid."
+      }
+    },
+    {
+      "name": "SetClientHealth",
+      "group": "Clients",
+      "description": "Sets the health of an client.",
+      "funcName": "SetClientHealth",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot whose health is to be set."
+        },
+        {
+          "name": "health",
+          "type": "int32",
+          "ref": false,
+          "description": "The new health value to set for the client."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetClientPawn",
+      "group": "Clients",
+      "description": "Retrieves the pawn entity pointer associated with a client.",
+      "funcName": "GetClientPawn",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "ptr64",
+        "description": "A pointer to the client's pawn entity, or nullptr if the client or controller is invalid."
+      }
+    },
+    {
+      "name": "GetClientActiveWeapon",
+      "group": "Clients",
+      "description": "Retrieves the handle of the client's currently active weapon.",
+      "funcName": "GetClientActiveWeapon",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The entity handle of the active weapon, or INVALID_EHANDLE_INDEX if the client is invalid or has no active weapon."
+      }
+    },
+    {
+      "name": "GetClientWeapons",
+      "group": "Clients",
+      "description": "Retrieves a list of weapon handles owned by the client.",
+      "funcName": "GetClientWeapons",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "int32[]",
+        "description": "A vector of entity handles for the client's weapons, or an empty vector if the client is invalid or has no weapons."
+      }
+    },
+    {
+      "name": "RemoveWeapon",
+      "group": "Clients",
+      "description": "Removes a player's weapon.",
+      "funcName": "RemoveWeapon",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        },
+        {
+          "name": "weaponHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of weapon to remove."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GiveNamedItem",
+      "group": "Clients",
+      "description": "Gives a named item (e.g., weapon) to a client.",
+      "funcName": "GiveNamedItem",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        },
+        {
+          "name": "itemName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the item to give."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The entity handle of the created item, or INVALID_EHANDLE_INDEX if the client or item is invalid."
+      }
+    },
+    {
+      "name": "TakeClientDamage",
+      "group": "Clients",
+      "description": "Apply damage to an client.",
+      "funcName": "TakeClientDamage",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot receiving damage"
+        },
+        {
+          "name": "inflictorSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot inflicting damage (e.g., projectile)"
+        },
+        {
+          "name": "attackerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the attacking client"
+        },
+        {
+          "name": "force",
+          "type": "vec3",
+          "ref": false,
+          "description": "Direction and magnitude of force to apply"
+        },
+        {
+          "name": "hitPos",
+          "type": "vec3",
+          "ref": false,
+          "description": "Position where the damage hit occurred"
+        },
+        {
+          "name": "damage",
+          "type": "float",
+          "ref": false,
+          "description": "Amount of damage to apply"
+        },
+        {
+          "name": "damageTypes",
+          "type": "int32",
+          "ref": false,
+          "description": "Bitfield of damage type flags",
+          "enum": "DamageTypes"
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "Amount of damage actually applied to the client"
+      }
+    },
+    {
+      "name": "GetClientArmor",
+      "group": "Clients",
+      "description": "Returns the client's armor value.",
+      "funcName": "GetClientArmor",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The armor value of the client."
+      }
+    },
+    {
+      "name": "SetClientArmor",
+      "group": "Clients",
+      "description": "Sets the client's armor value.",
+      "funcName": "SetClientArmor",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        },
+        {
+          "name": "armor",
+          "type": "int32",
+          "ref": false,
+          "description": "The armor value to set."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "AddConsoleCommand",
+      "group": "Commands",
+      "description": "Creates a console command or hooks an already existing one.",
+      "funcName": "AddConsoleCommand",
+      "paramTypes": [
+        {
+          "name": "name",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the console command."
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "ref": false,
+          "description": "A brief description of what the command does."
+        },
+        {
+          "name": "flags",
+          "type": "int64",
+          "ref": false,
+          "description": "Command flags that define the behavior of the command.",
+          "enum": "ConVarFlag"
+        },
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "A callback function that is invoked when the command is executed.",
+          "prototype": "ConCommandCallback"
+        },
+        {
+          "type": "uint8",
+          "name": "type",
+          "description": "Whether the hook was in post mode (after processing) or pre mode (before processing).",
+          "enum": "HookMode"
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "true if the command was successfully created; otherwise, false."
+      }
+    },
+    {
+      "name": "RemoveCommand",
+      "group": "Commands",
+      "description": "Removes a console command from the system.",
+      "funcName": "RemoveCommand",
+      "paramTypes": [
+        {
+          "name": "name",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the command to be removed."
+        },
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "The callback function associated with the command to be removed.",
+          "prototype": "ConCommandCallback"
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "true if the command was successfully removed; otherwise, false."
+      }
+    },
+    {
+      "name": "PrintToServer",
+      "group": "Console",
+      "description": "Sends a message to the server console.",
+      "funcName": "PrintToServer",
+      "paramTypes": [
+        {
+          "name": "msg",
+          "type": "string",
+          "ref": false,
+          "description": "The message to be sent to the server console."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "PrintToChatAll",
+      "group": "Console",
+      "description": "Prints a message to all clients in the chat area.",
+      "funcName": "PrintToChatAll",
+      "paramTypes": [
+        {
+          "name": "message",
+          "type": "string",
+          "ref": false,
+          "description": "The message to be printed in the chat area for all clients."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "ReplyToCommand",
+      "group": "Console",
+      "description": "Sends a reply message to a player or to the server console depending on the command context.",
+      "funcName": "ReplyToCommand",
+      "paramTypes": [
+        {
+          "name": "context",
+          "type": "int32",
+          "ref": false,
+          "description": "The context from which the command was called (e.g., Console or Chat).",
+          "enum": "ConCommandContext"
+        },
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The slot/index of the player receiving the message."
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "ref": false,
+          "description": "The message string to be sent as a reply."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetGameTickCount",
+      "group": "Engine",
+      "description": "Returns the game's internal tick count.",
+      "funcName": "GetGameTickCount",
+      "paramTypes": [],
+      "retType": {
+        "type": "int32",
+        "description": "The current tick count of the game."
+      }
+    },
+    {
+      "name": "GetMaxClients",
+      "group": "Engine",
+      "description": "Returns the maximum number of clients that can connect to the server.",
+      "funcName": "GetMaxClients",
+      "paramTypes": [],
+      "retType": {
+        "type": "int32",
+        "description": "The maximum client count, or -1 if global variables are not initialized."
+      }
+    },
+    {
+      "name": "EntPointerToEntHandle",
+      "group": "Entities",
+      "description": "Converts an entity pointer into an entity handle.",
+      "funcName": "EntPointerToEntHandle",
+      "paramTypes": [
+        {
+          "name": "entity",
+          "type": "ptr64",
+          "ref": false,
+          "description": "A pointer to the entity to convert."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The entity handle as an integer, or INVALID_EHANDLE_INDEX if the entity is nullptr."
+      }
+    },
+    {
+      "name": "EntHandleToEntPointer",
+      "group": "Entities",
+      "description": "Retrieves the entity pointer from an entity handle.",
+      "funcName": "EntHandleToEntPointer",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The entity handle to convert."
+        }
+      ],
+      "retType": {
+        "type": "ptr64",
+        "description": "A pointer to the entity instance, or nullptr if the handle is invalid."
+      }
+    },
+    {
+      "name": "IsValidEntHandle",
+      "group": "Entities",
+      "description": "Checks if the provided entity handle is valid.",
+      "funcName": "IsValidEntHandle",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The entity handle to check."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True if the entity handle is valid, false otherwise."
+      }
+    },
+    {
+      "name": "GetEntityClassname",
+      "group": "Entities",
+      "description": "Retrieves the class name of an entity.",
+      "funcName": "GetEntityClassname",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose class name is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "string",
+        "description": "A string where the class name will be stored."
+      }
+    },
+    {
+      "name": "GetEntityOwner",
+      "group": "Entities",
+      "description": "Retrieves the owner of an entity.",
+      "funcName": "GetEntityOwner",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose owner is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The handle of the owner entity, or INVALID_EHANDLE_INDEX if the entity is invalid."
+      }
+    },
+    {
+      "name": "RemoveEntity",
+      "group": "Entities",
+      "description": "Marks an entity for deletion.",
+      "funcName": "RemoveEntity",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity to be deleted."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "HookEvent",
+      "group": "Events",
+      "description": "Creates a hook for when a game event is fired.",
+      "funcName": "HookEvent",
+      "paramTypes": [
+        {
+          "name": "name",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the event to hook."
+        },
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "The callback function to call when the event is fired.",
+          "prototype": "EventCallback"
+        },
+        {
+          "type": "uint8",
+          "name": "type",
+          "description": "Whether the hook was in post mode (after processing) or pre mode (before processing).",
+          "enum": "HookMode"
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "An integer indicating the result of the hook operation.",
+        "enum": "EventHookError"
+      }
+    },
+    {
+      "name": "UnhookEvent",
+      "group": "Events",
+      "description": "Removes a hook for when a game event is fired.",
+      "funcName": "UnhookEvent",
+      "paramTypes": [
+        {
+          "name": "name",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the event to unhook."
+        },
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "The callback function to remove.",
+          "prototype": "EventCallback"
+        },
+        {
+          "type": "uint8",
+          "name": "type",
+          "description": "Whether the hook was in post mode (after processing) or pre mode (before processing).",
+          "enum": "HookMode"
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "An integer indicating the result of the unhook operation.",
+        "enum": "EventHookError"
+      }
+    },
+    {
+      "name": "GetEventBool",
+      "group": "Events",
+      "description": "Retrieves the boolean value of a game event's key.",
+      "funcName": "GetEventBool",
+      "paramTypes": [
+        {
+          "name": "event",
+          "type": "ptr64",
+          "ref": false,
+          "description": "A pointer to the IGameEvent object containing event data."
+        },
+        {
+          "name": "key",
+          "type": "string",
+          "ref": false,
+          "description": "The key for which to retrieve the boolean value."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "The boolean value associated with the key."
+      }
+    },
+    {
+      "name": "GetEventInt",
+      "group": "Events",
+      "description": "Retrieves the integer value of a game event's key.",
+      "funcName": "GetEventInt",
+      "paramTypes": [
+        {
+          "name": "event",
+          "type": "ptr64",
+          "ref": false,
+          "description": "A pointer to the IGameEvent object containing event data."
+        },
+        {
+          "name": "key",
+          "type": "string",
+          "ref": false,
+          "description": "The key for which to retrieve the integer value."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The integer value associated with the key."
+      }
+    },
+    {
+      "name": "GetEventPlayerSlot",
+      "group": "Events",
+      "description": "Retrieves the player slot of a game event's key.",
+      "funcName": "GetEventPlayerSlot",
+      "paramTypes": [
+        {
+          "name": "event",
+          "type": "ptr64",
+          "ref": false,
+          "description": "A pointer to the IGameEvent object containing event data."
+        },
+        {
+          "name": "key",
+          "type": "string",
+          "ref": false,
+          "description": "The key for which to retrieve the player index."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The player slot associated with the key."
+      }
+    },
+    {
+      "name": "GetSchemaOffset",
+      "group": "Schema",
+      "description": "Get the offset of a member in a given schema class.",
+      "funcName": "GetSchemaOffset",
+      "paramTypes": [
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the member whose offset is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The offset of the member in the class, or -1 if the offset is not found."
+      }
+    },
+    {
+      "name": "GetEntSchema2",
+      "group": "Schema",
+      "description": "Retrieves an integer value from an entity's schema.",
+      "funcName": "GetEntSchema2",
+      "paramTypes": [
+        {
+          "name": "entity",
+          "type": "ptr64",
+          "ref": false,
+          "description": "Pointer to the instance of the class where the value is to be set."
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the schema member."
+        },
+        {
+          "name": "element",
+          "type": "int32",
+          "ref": false,
+          "description": "Element # (starting from 0) if schema is an array."
+        }
+      ],
+      "retType": {
+        "type": "int64",
+        "description": "An integer value at the given schema offset."
+      }
+    },
+    {
+      "name": "GetGameRules",
+      "group": "Gamerules",
+      "description": "Retrieves the pointer to the current game rules instance.",
+      "funcName": "GetGameRules",
+      "paramTypes": [],
+      "retType": {
+        "type": "ptr64",
+        "description": "A pointer to the game rules object."
+      }
+    },
+    {
+      "name": "GetAllConCommands",
+      "group": "Commands",
+      "description": " Returns the names of all registered console commands and cvars.",
+      "funcName": "GetAllConCommands",
+      "paramTypes": [
+        {
+          "name": "flags",
+          "type": "int64",
+          "ref": false,
+          "description": "Additional flags for the console variable.",
+          "enum": "ConVarFlag"
+        }
+      ],
+      "retType": {
+        "type": "string[]",
+        "description": "The vector of command/cvar names."
+      }
+    },
+    {
+      "name": "RemoveCommandListener",
+      "group": "Commands",
+      "description": "Removes a callback that fires when a command is sent to the server.",
+      "funcName": "RemoveCommandListener",
+      "paramTypes": [
+        {
+          "name": "name",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the command."
+        },
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "The callback function to be removed.",
+          "prototype": "ConCommandCallback"
+        },
+        {
+          "type": "uint8",
+          "name": "type",
+          "description": "Whether the hook was in post mode (after processing) or pre mode (before processing).",
+          "enum": "HookMode"
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "Returns true if the callback was successfully removed, false otherwise."
+      }
+    },
+    {
+      "paramTypes": [
+        {
+          "ref": false,
+          "description": "Command name.",
+          "type": "string",
+          "name": "name"
+        }
+      ],
+      "funcName": "HasConsoleCommandCallbacks",
+      "name": "HasConsoleCommandCallbacks",
+      "retType": {
+        "description": "Whether the engine command has callbacks registered.",
+        "type": "bool"
+      },
+      "group": "Commands",
+      "description": "Local compatibility bridge: checks live callbacks, not retained command names."
+    },
+    {
+      "name": "FindConVar",
+      "group": "Cvars",
+      "description": "Searches for a console variable.",
+      "funcName": "FindConVar",
+      "paramTypes": [
+        {
+          "name": "name",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the console variable to search for."
+        }
+      ],
+      "retType": {
+        "type": "uint64",
+        "description": "A handle to the console variable data if found; otherwise, nullptr."
+      }
+    },
+    {
+      "name": "GetConVarValue",
+      "group": "Cvars",
+      "description": "Retrieves the current value of a console variable and stores it in the output string.",
+      "funcName": "GetConVarValue",
+      "paramTypes": [
+        {
+          "name": "conVarHandle",
+          "type": "uint64",
+          "ref": false,
+          "description": "The handle to the console variable data."
+        }
+      ],
+      "retType": {
+        "type": "string",
+        "description": "The output value in string format."
+      }
+    },
+    {
+      "name": "SetConVarValue",
+      "group": "Cvars",
+      "description": "Sets the value of a console variable.",
+      "funcName": "SetConVarValue",
+      "paramTypes": [
+        {
+          "name": "conVarHandle",
+          "type": "uint64",
+          "ref": false,
+          "description": "The handle to the console variable data."
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "ref": false,
+          "description": "The string value to set for the console variable."
+        },
+        {
+          "name": "replicate",
+          "type": "bool",
+          "ref": false,
+          "description": "If set to true, the new convar value will be set on all clients. This will only work if the convar has the FCVAR_REPLICATED flag and actually exists on clients."
+        },
+        {
+          "name": "notify",
+          "type": "bool",
+          "ref": false,
+          "description": "If set to true, clients will be notified that the convar has changed. This will only work if the convar has the FCVAR_NOTIFY flag."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetClientTeam",
+      "group": "Clients",
+      "description": "Retrieves the team number of an client.",
+      "funcName": "GetClientTeam",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot whose team number is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The team number of the client, or 0 if the client is invalid.",
+        "enum": "CSTeam"
+      }
+    },
+    {
+      "name": "SetEntSchema2",
+      "group": "Schema",
+      "description": "Sets an integer value in an entity's schema.",
+      "funcName": "SetEntSchema2",
+      "paramTypes": [
+        {
+          "name": "entity",
+          "type": "ptr64",
+          "ref": false,
+          "description": "Pointer to the instance of the class where the value is to be set."
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the schema member."
+        },
+        {
+          "name": "value",
+          "type": "int64",
+          "ref": false,
+          "description": "The integer value to set."
+        },
+        {
+          "name": "changeState",
+          "type": "bool",
+          "ref": false,
+          "description": "If true, change will be sent over the network."
+        },
+        {
+          "name": "element",
+          "type": "int32",
+          "ref": false,
+          "description": "Element # (starting from 0) if schema is an array."
+        }
+      ],
+      "retType": {
+        "type": "void",
+        "description": "An integer value at the given schema offset."
+      }
+    },
+    {
+      "name": "GetClientRenderColor",
+      "group": "Clients",
+      "description": "Retrieves the render color of an client.",
+      "funcName": "GetClientRenderColor",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot whose render color is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "vec4",
+        "description": "The raw color value of the client's render color, or 0 if the client is invalid."
+      }
+    },
+    {
+      "name": "SetClientRenderColor",
+      "group": "Clients",
+      "description": "Sets the render color of an client.",
+      "funcName": "SetClientRenderColor",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot whose render color is to be set."
+        },
+        {
+          "name": "color",
+          "type": "vec4",
+          "ref": false,
+          "description": "The new raw color value to set for the client's render color."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetEventString",
+      "group": "Events",
+      "description": "Retrieves the string value of a game event's key.",
+      "funcName": "GetEventString",
+      "paramTypes": [
+        {
+          "name": "event",
+          "type": "ptr64",
+          "ref": false,
+          "description": "A pointer to the IGameEvent object containing event data."
+        },
+        {
+          "name": "key",
+          "type": "string",
+          "ref": false,
+          "description": "The key for which to retrieve the string value."
+        }
+      ],
+      "retType": {
+        "type": "string",
+        "description": "A string where the result will be stored."
+      }
+    },
+    {
+      "name": "SetEventString",
+      "group": "Events",
+      "description": "Sets the string value of a game event's key.",
+      "funcName": "SetEventString",
+      "paramTypes": [
+        {
+          "name": "event",
+          "type": "ptr64",
+          "ref": false,
+          "description": "A pointer to the IGameEvent object containing event data."
+        },
+        {
+          "name": "key",
+          "type": "string",
+          "ref": false,
+          "description": "The key for which to set the string value."
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "ref": false,
+          "description": "The string value to set."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetEntSchemaFloat2",
+      "group": "Schema",
+      "description": "Retrieves a float value from an entity's schema.",
+      "funcName": "GetEntSchemaFloat2",
+      "paramTypes": [
+        {
+          "name": "entity",
+          "type": "ptr64",
+          "ref": false,
+          "description": "Pointer to the instance of the class where the value is to be set."
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the schema member."
+        },
+        {
+          "name": "element",
+          "type": "int32",
+          "ref": false,
+          "description": "Element # (starting from 0) if schema is an array."
+        }
+      ],
+      "retType": {
+        "type": "double",
+        "description": "A float value at the given schema offset."
+      }
+    },
+    {
+      "name": "SetEntSchemaFloat2",
+      "group": "Schema",
+      "description": "Sets a float value in an entity's schema.",
+      "funcName": "SetEntSchemaFloat2",
+      "paramTypes": [
+        {
+          "name": "entity",
+          "type": "ptr64",
+          "ref": false,
+          "description": "Pointer to the instance of the class where the value is to be set."
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the schema member."
+        },
+        {
+          "name": "value",
+          "type": "double",
+          "ref": false,
+          "description": "The float value to set."
+        },
+        {
+          "name": "changeState",
+          "type": "bool",
+          "ref": false,
+          "description": "If true, change will be sent over the network."
+        },
+        {
+          "name": "element",
+          "type": "int32",
+          "ref": false,
+          "description": "Element # (starting from 0) if schema is an array."
+        }
+      ],
+      "retType": {
+        "type": "void",
+        "description": "A float value at the given schema offset."
+      }
+    },
+    {
+      "name": "GetEntSchemaVector3D2",
+      "group": "Schema",
+      "description": "Retrieves a vector value from an entity's schema.",
+      "funcName": "GetEntSchemaVector3D2",
+      "paramTypes": [
+        {
+          "name": "entity",
+          "type": "ptr64",
+          "ref": false,
+          "description": "Pointer to the instance of the class where the value is to be set."
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the schema member."
+        },
+        {
+          "name": "element",
+          "type": "int32",
+          "ref": false,
+          "description": "Element # (starting from 0) if schema is an array."
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "A vector value at the given schema offset."
+      }
+    },
+    {
+      "name": "SetEntSchemaVector3D2",
+      "group": "Schema",
+      "description": "Sets a vector value in an entity's schema.",
+      "funcName": "SetEntSchemaVector3D2",
+      "paramTypes": [
+        {
+          "name": "entity",
+          "type": "ptr64",
+          "ref": false,
+          "description": "Pointer to the instance of the class where the value is to be set."
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the schema member."
+        },
+        {
+          "name": "value",
+          "type": "vec3",
+          "ref": false,
+          "description": "The vector value to set."
+        },
+        {
+          "name": "changeState",
+          "type": "bool",
+          "ref": false,
+          "description": "If true, change will be sent over the network."
+        },
+        {
+          "name": "element",
+          "type": "int32",
+          "ref": false,
+          "description": "Element # (starting from 0) if schema is an array."
+        }
+      ],
+      "retType": {
+        "type": "void",
+        "description": "An vector value at the given schema offset."
+      }
+    },
+    {
+      "name": "UserMessageCreateFromId",
+      "group": "Protobuf",
+      "description": "Creates a UserMessage from a message ID.",
+      "funcName": "UserMessageCreateFromId",
+      "paramTypes": [
+        {
+          "name": "messageId",
+          "type": "int16",
+          "ref": false,
+          "description": "The ID of the message."
+        }
+      ],
+      "retType": {
+        "type": "ptr64",
+        "description": "A pointer to the newly created UserMessage."
+      }
+    },
+    {
+      "name": "UserMessageDestroy",
+      "group": "Protobuf",
+      "description": "Destroys a UserMessage and frees its memory.",
+      "funcName": "UserMessageDestroy",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The UserMessage to destroy."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "UserMessageSend",
+      "group": "Protobuf",
+      "description": "Sends a UserMessage to the specified recipients.",
+      "funcName": "UserMessageSend",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The UserMessage to send."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "UserMessageGetMessageID",
+      "group": "Protobuf",
+      "description": "Gets the ID of the message.",
+      "funcName": "UserMessageGetMessageID",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The UserMessage instance."
+        }
+      ],
+      "retType": {
+        "type": "int16",
+        "description": "The ID of the message."
+      }
+    },
+    {
+      "name": "UserMessageFindMessageIdByName",
+      "group": "Protobuf",
+      "description": "Finds a message ID by its name.",
+      "funcName": "UserMessageFindMessageIdByName",
+      "paramTypes": [
+        {
+          "name": "messageName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the message."
+        }
+      ],
+      "retType": {
+        "type": "int16",
+        "description": "The ID of the message, or 0 if the message was not found."
+      }
+    },
+    {
+      "name": "UserMessageAddRecipient",
+      "group": "Protobuf",
+      "description": "Adds a single recipient (player) to the UserMessage.",
+      "funcName": "UserMessageAddRecipient",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The UserMessage instance."
+        },
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The slot index of the player to add as a recipient."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "PbSetUInt32",
+      "group": "Protobuf",
+      "description": "Sets an unsigned 32-bit integer value for a field in the UserMessage.",
+      "funcName": "PbSetUInt32",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The UserMessage instance."
+        },
+        {
+          "name": "fieldName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the field."
+        },
+        {
+          "name": "value",
+          "type": "uint32",
+          "ref": false,
+          "description": "The value to set."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True if the field was successfully set, false otherwise."
+      }
+    },
+    {
+      "name": "PbSetFloat",
+      "group": "Protobuf",
+      "description": "Sets a float value for a field in the UserMessage.",
+      "funcName": "PbSetFloat",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The UserMessage instance."
+        },
+        {
+          "name": "fieldName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the field."
+        },
+        {
+          "name": "value",
+          "type": "float",
+          "ref": false,
+          "description": "The value to set."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True if the field was successfully set, false otherwise."
+      }
+    },
+    {
+      "name": "RespawnClient",
+      "group": "Clients",
+      "description": "Respawns a player.",
+      "funcName": "RespawnClient",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot to respawn."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetGameTime",
+      "group": "Engine",
+      "description": "Returns the game time based on the game tick.",
+      "funcName": "GetGameTime",
+      "paramTypes": [],
+      "retType": {
+        "type": "float",
+        "description": "The current game time."
+      }
+    },
+    {
+      "name": "TakeEntityDamage",
+      "group": "Entities",
+      "description": "Apply damage to an entity.",
+      "funcName": "TakeEntityDamage",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity receiving damage"
+        },
+        {
+          "name": "inflictorHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity inflicting damage (e.g., projectile)"
+        },
+        {
+          "name": "attackerHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the attacking entity"
+        },
+        {
+          "name": "force",
+          "type": "vec3",
+          "ref": false,
+          "description": "Direction and magnitude of force to apply"
+        },
+        {
+          "name": "hitPos",
+          "type": "vec3",
+          "ref": false,
+          "description": "Position where the damage hit occurred"
+        },
+        {
+          "name": "damage",
+          "type": "float",
+          "ref": false,
+          "description": "Amount of damage to apply"
+        },
+        {
+          "name": "damageTypes",
+          "type": "int32",
+          "ref": false,
+          "description": "Bitfield of damage type flags",
+          "enum": "DamageTypes"
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "Amount of damage actually applied to the entity"
+      }
+    },
+    {
+      "name": "TerminateRound",
+      "group": "Gamerules",
+      "description": "Forces the round to end with a specified reason and delay.",
+      "funcName": "TerminateRound",
+      "paramTypes": [
+        {
+          "name": "delay",
+          "type": "float",
+          "ref": false,
+          "description": "Time (in seconds) to delay before the next round starts."
+        },
+        {
+          "name": "reason",
+          "type": "int32",
+          "ref": false,
+          "description": "The reason for ending the round, defined by the CSRoundEndReason enum.",
+          "enum": "CSRoundEndReason"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "funcName": "HookPlayerTakeDamagePre",
+      "description": "Install the synchronous pre-damage bridge callback.",
+      "name": "HookPlayerTakeDamagePre",
+      "group": "Damage",
+      "retType": {
+        "description": "Whether the hook was installed.",
+        "type": "bool"
+      },
+      "paramTypes": [
+        {
+          "prototype": "DamagePreCallback",
+          "ref": false,
+          "description": "Rust damage decision callback.",
+          "type": "function",
+          "name": "callback"
+        }
+      ]
+    },
+    {
+      "funcName": "UnhookPlayerTakeDamagePre",
+      "description": "Remove the synchronous pre-damage bridge callback.",
+      "name": "UnhookPlayerTakeDamagePre",
+      "group": "Damage",
+      "retType": {
+        "description": "Whether the hook was removed.",
+        "type": "bool"
+      },
+      "paramTypes": [
+        {
+          "prototype": "DamagePreCallback",
+          "ref": false,
+          "description": "Rust damage decision callback.",
+          "type": "function",
+          "name": "callback"
+        }
+      ]
+    },
+    {
+      "name": "GetWeaponItemDefinition",
+      "group": "Weapons",
+      "description": "Retrieves the weapon definition index for a given entity handle.",
+      "funcName": "GetWeaponItemDefinition",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity from which to retrieve the weapon def index."
+        }
+      ],
+      "retType": {
+        "type": "uint16",
+        "description": "The weapon definition index as a `uint16_t`, or 0 if the entity handle is invalid.",
+        "enum": "WeaponDefIndex"
+      }
+    },
+    {
+      "name": "GetWeaponVData",
+      "group": "Weapons",
+      "description": "Retrieves the weapon VData for a given weapon.",
+      "funcName": "GetWeaponVData",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity from which to retrieve the weapon VData."
+        }
+      ],
+      "retType": {
+        "type": "ptr64",
+        "description": "A pointer to the `CCSWeaponBaseVData` if the entity handle is valid and represents a player weapon; otherwise, nullptr."
+      }
+    },
+    {
+      "name": "HookPlayerTakeDamagePreV2",
+      "group": "Damage",
+      "description": "Registers the V2 player damage callback with native damage type, including world damage. Shares exclusive ownership with V1.",
+      "funcName": "HookPlayerTakeDamagePreV2",
+      "paramTypes": [
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "Receives player damage before health and armor are changed.",
+          "prototype": "DamagePreCallbackV2"
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True when all required damage and trace capabilities are ready."
+      }
+    },
+    {
+      "name": "UnhookPlayerTakeDamagePreV2",
+      "group": "Damage",
+      "description": "Revokes the V2 player damage callback with native damage type, including world damage. Shares exclusive ownership with V1.",
+      "funcName": "UnhookPlayerTakeDamagePreV2",
+      "paramTypes": [
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "The callback previously registered by HookPlayerTakeDamagePre.",
+          "prototype": "DamagePreCallbackV2"
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True when the callback is revoked and the native hook is removed."
+      }
+    },
+    {
+      "name": "GetClientSpeed",
+      "group": "Clients",
+      "description": "Returns the client's speed value.",
+      "funcName": "GetClientSpeed",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "float",
+        "description": "The speed value of the client."
+      }
+    },
+    {
+      "name": "SetClientSpeed",
+      "group": "Clients",
+      "description": "Sets the client's speed value.",
+      "funcName": "SetClientSpeed",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        },
+        {
+          "name": "speed",
+          "type": "float",
+          "ref": false,
+          "description": "The speed value to set."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetClientAbsVelocity",
+      "group": "Clients",
+      "description": "Retrieves the absolute velocity of an client.",
+      "funcName": "GetClientAbsVelocity",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot whose absolute velocity is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "A vector where the absolute velocity will be stored."
+      }
+    },
+    {
+      "name": "SetClientAbsVelocity",
+      "group": "Clients",
+      "description": "Sets the absolute velocity of an client.",
+      "funcName": "SetClientAbsVelocity",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot whose absolute velocity is to be set."
+        },
+        {
+          "name": "velocity",
+          "type": "vec3",
+          "ref": false,
+          "description": "The new absolute velocity to set for the client."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetClientEyeAngles",
+      "group": "Clients",
+      "description": "Get the qangles that this client is looking at.",
+      "funcName": "GetClientEyeAngles",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot"
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "Eye angles as a vector (pitch, yaw, roll)"
+      }
+    },
+    {
+      "name": "GetClientButtons",
+      "group": "Clients",
+      "description": "Retrieves the state of a specific button for a client.",
+      "funcName": "GetClientButtons",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        },
+        {
+          "name": "buttonIndex",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the button (0-2)."
+        }
+      ],
+      "retType": {
+        "type": "uint64",
+        "description": "uint64_t The state of the specified button, or 0 if the client or button index is invalid."
+      }
+    },
+    {
+      "name": "GetClientFlags",
+      "group": "Clients",
+      "description": "Retrieves the flags of an client.",
+      "funcName": "GetClientFlags",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot whose flags are to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The flags of the client, or 0 if the client is invalid."
+      }
+    },
+    {
+      "name": "PrintCenterTextAll",
+      "group": "Console",
+      "description": "Prints a message to all clients in the center of the screen.",
+      "funcName": "PrintCenterTextAll",
+      "paramTypes": [
+        {
+          "name": "message",
+          "type": "string",
+          "ref": false,
+          "description": "The message to be printed in the center of the screen for all clients."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "PrintCentreHtmlAll",
+      "group": "Console",
+      "description": "Prints a html message to all clients in the center of the screen.",
+      "funcName": "PrintCentreHtmlAll",
+      "paramTypes": [
+        {
+          "name": "message",
+          "type": "string",
+          "ref": false,
+          "description": "The HTML-formatted message to be printed in the center of the screen for all clients."
+        },
+        {
+          "name": "duration",
+          "type": "int32",
+          "ref": false,
+          "description": "The duration of the message in seconds."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "PrintToConsoleAll",
+      "group": "Console",
+      "description": "Sends a message to every client's console.",
+      "funcName": "PrintToConsoleAll",
+      "paramTypes": [
+        {
+          "name": "message",
+          "type": "string",
+          "ref": false,
+          "description": "The message to be sent to all clients' consoles."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "PrintToChat",
+      "group": "Console",
+      "description": "Prints a message to a specific client in the chat area.",
+      "funcName": "PrintToChat",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot to whom the message will be sent."
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "ref": false,
+          "description": "The message to be printed in the chat area."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "IsFakeClient",
+      "group": "Clients",
+      "description": "Checks if a certain player is a fake client.",
+      "funcName": "IsFakeClient",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "true if the client is a fake client, false otherwise."
+      }
+    },
+    {
+      "name": "AddCommandListener",
+      "group": "Commands",
+      "description": "Adds a callback that will fire when a command is sent to the server.",
+      "funcName": "AddCommandListener",
+      "paramTypes": [
+        {
+          "name": "name",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the command."
+        },
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "The callback function that will be invoked when the command is executed.",
+          "prototype": "ConCommandCallback"
+        },
+        {
+          "type": "uint8",
+          "name": "type",
+          "description": "Whether the hook was in post mode (after processing) or pre mode (before processing).",
+          "enum": "HookMode"
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "Returns true if the callback was successfully added, false otherwise."
+      }
+    },
+    {
+      "name": "GetClientAbsOrigin",
+      "group": "Clients",
+      "description": "Retrieves the absolute origin of an client.",
+      "funcName": "GetClientAbsOrigin",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot whose absolute origin is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "A vector where the absolute origin will be stored."
+      }
+    },
+    {
+      "name": "GetClientEyePosition",
+      "group": "Clients",
+      "description": "Get vector to eye position - absolute coords.",
+      "funcName": "GetClientEyePosition",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot"
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "Eye position in absolute/world coordinates"
+      }
+    },
+    {
+      "name": "DropWeapon",
+      "group": "Clients",
+      "description": "Forces a player to drop their weapon.",
+      "funcName": "DropWeapon",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        },
+        {
+          "name": "weaponHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of weapon to drop."
+        },
+        {
+          "name": "target",
+          "type": "vec3",
+          "ref": false,
+          "description": "Target direction."
+        },
+        {
+          "name": "velocity",
+          "type": "vec3",
+          "ref": false,
+          "description": "Velocity to toss weapon or zero to just drop weapon."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "SelectWeapon",
+      "group": "Clients",
+      "description": "Selects a player's weapon.",
+      "funcName": "SelectWeapon",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        },
+        {
+          "name": "weaponHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of weapon to bump."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "SwitchWeapon",
+      "group": "Clients",
+      "description": "Switches a player's weapon.",
+      "funcName": "SwitchWeapon",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        },
+        {
+          "name": "weaponHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of weapon to switch."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "EntIndexToEntHandle",
+      "group": "Entities",
+      "description": "Converts an entity index into an entity handle.",
+      "funcName": "EntIndexToEntHandle",
+      "paramTypes": [
+        {
+          "name": "entityIndex",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the entity to convert."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The entity handle as an integer, or -1 if the entity index is invalid."
+      }
+    },
+    {
+      "name": "GetFirstActiveEntity",
+      "group": "Entities",
+      "description": "Retrieves the pointer to the first active entity.",
+      "funcName": "GetFirstActiveEntity",
+      "paramTypes": [],
+      "retType": {
+        "type": "int32",
+        "description": "A handle to the first active entity."
+      }
+    },
+    {
+      "name": "GetNextActiveEntity",
+      "group": "Entities",
+      "description": "Retrieves the next active entity.",
+      "funcName": "GetNextActiveEntity",
+      "paramTypes": [
+        {
+          "type": "int32",
+          "name": "entityHandle"
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "Handle to the next entity."
+      }
+    },
+    {
+      "name": "FindEntityByClassname",
+      "group": "Entities",
+      "description": "Finds an entity by classname with iteration.",
+      "funcName": "FindEntityByClassname",
+      "paramTypes": [
+        {
+          "name": "startFrom",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity to start from, or INVALID_EHANDLE_INDEX to start fresh."
+        },
+        {
+          "name": "classname",
+          "type": "string",
+          "ref": false,
+          "description": "The class name to search for."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The handle of the found entity, or INVALID_EHANDLE_INDEX if none found."
+      }
+    },
+    {
+      "name": "CreateEntityByName",
+      "group": "Entities",
+      "description": "Creates an entity by string name but does not spawn it.",
+      "funcName": "CreateEntityByName",
+      "paramTypes": [
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The class name of the entity to create."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The entity handle of the created entity, or INVALID_EHANDLE_INDEX if the entity could not be created."
+      }
+    },
+    {
+      "name": "DispatchSpawn",
+      "group": "Entities",
+      "description": "Spawns an entity into the game.",
+      "funcName": "DispatchSpawn",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity to spawn."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "DispatchSpawn2",
+      "group": "Entities",
+      "description": "Spawns an entity into the game with key-value properties.",
+      "funcName": "DispatchSpawn2",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity to spawn."
+        },
+        {
+          "name": "keys",
+          "type": "string[]",
+          "ref": false,
+          "description": "A vector of keys representing the property names to set on the entity."
+        },
+        {
+          "name": "values",
+          "type": "any[]",
+          "ref": false,
+          "description": "A vector of values corresponding to the keys, representing the property values to set on the entity."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetEntityMoveType",
+      "group": "Entities",
+      "description": "Retrieves the movement type of an entity.",
+      "funcName": "GetEntityMoveType",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose movement type is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The movement type of the entity, or 0 if the entity is invalid.",
+        "enum": "MoveType"
+      }
+    },
+    {
+      "name": "SetEntityMoveType",
+      "group": "Entities",
+      "description": "Sets the movement type of an entity.",
+      "funcName": "SetEntityMoveType",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose movement type is to be set."
+        },
+        {
+          "name": "moveType",
+          "type": "int32",
+          "ref": false,
+          "description": "The new movement type to set for the entity.",
+          "enum": "MoveType"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "SetEntityGravity",
+      "group": "Entities",
+      "description": "Sets the gravity scale of an entity.",
+      "funcName": "SetEntityGravity",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose gravity scale is to be set."
+        },
+        {
+          "name": "gravity",
+          "type": "float",
+          "ref": false,
+          "description": "The new gravity scale to set for the entity."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "SetEntityDefaultCollisionGroup",
+      "group": "Entities",
+      "description": "Sets an entity to the standard default collision group.",
+      "funcName": "SetEntityDefaultCollisionGroup",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose collision group is to be set."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "HookEntityTouchPre",
+      "group": "Entities",
+      "description": "Detours the Touch function address used by this entity. The callback is shared by every entity using that same function address, not limited to entityHandle.",
+      "funcName": "HookEntityTouchPre",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The full handle used to select the current Touch function address."
+        },
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "Called for every entity using the selected function address, with the actual entity and other full handles; nonzero supersedes native Touch. Filter entityHandle in the callback.",
+          "prototype": "EntityTouchPreCallback"
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True when the selected function address is hooked for this callback."
+      }
+    },
+    {
+      "name": "UnhookEntityTouchPre",
+      "group": "Entities",
+      "description": "Removes every Touch function-address detour registered by the callback and revokes it.",
+      "funcName": "UnhookEntityTouchPre",
+      "paramTypes": [
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "The callback previously registered by HookEntityTouchPre.",
+          "prototype": "EntityTouchPreCallback"
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True when the callback is revoked and native hooks are removed."
+      }
+    },
+    {
+      "name": "IsEntityTouchPreHookAvailable",
+      "group": "Entities",
+      "description": "Reports whether the native Touch detour and its required external gamedata offset are available on this server.",
+      "funcName": "IsEntityTouchPreHookAvailable",
+      "paramTypes": [],
+      "retType": {
+        "type": "bool",
+        "description": "True when CBaseEntity::Touch has a configured vtable offset and the entity system is initialized."
+      }
+    },
+    {
+      "name": "SetEntityOwner",
+      "group": "Entities",
+      "description": "Sets the owner of an entity.",
+      "funcName": "SetEntityOwner",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose owner is to be set."
+        },
+        {
+          "name": "ownerHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the new owner entity."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetEntityParent",
+      "group": "Entities",
+      "description": "Retrieves the parent of an entity.",
+      "funcName": "GetEntityParent",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose parent is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The handle of the parent entity, or INVALID_EHANDLE_INDEX if the entity is invalid."
+      }
+    },
+    {
+      "name": "SetEntityParent",
+      "group": "Entities",
+      "description": "Sets the parent of an entity.",
+      "funcName": "SetEntityParent",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose parent is to be set."
+        },
+        {
+          "name": "parentHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the new parent entity. (Can be invalid to clean parent)"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "SetEntityParentAttachment",
+      "group": "Entities",
+      "description": "Sets the parent of an entity to attachment by name.",
+      "funcName": "SetEntityParentAttachment",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose parent is to be set."
+        },
+        {
+          "name": "parentHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the new parent entity."
+        },
+        {
+          "name": "attachmentName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the entity's attachment."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetEntityAbsOrigin",
+      "group": "Entities",
+      "description": "Retrieves the absolute origin of an entity.",
+      "funcName": "GetEntityAbsOrigin",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose absolute origin is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "A vector where the absolute origin will be stored."
+      }
+    },
+    {
+      "name": "SetEntityAbsOrigin",
+      "group": "Entities",
+      "description": "Sets the absolute origin of an entity.",
+      "funcName": "SetEntityAbsOrigin",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose absolute origin is to be set."
+        },
+        {
+          "name": "origin",
+          "type": "vec3",
+          "ref": false,
+          "description": "The new absolute origin to set for the entity."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetEntityLocalOrigin",
+      "group": "Entities",
+      "description": "Retrieves the local origin of an entity.",
+      "funcName": "GetEntityLocalOrigin",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose local origin is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "A vector where the local origin will be stored."
+      }
+    },
+    {
+      "name": "SetEntityLocalOrigin",
+      "group": "Entities",
+      "description": "Sets the local origin of an entity.",
+      "funcName": "SetEntityLocalOrigin",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose local origin is to be set."
+        },
+        {
+          "name": "origin",
+          "type": "vec3",
+          "ref": false,
+          "description": "The new local origin to set for the entity."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetEntityAbsVelocity",
+      "group": "Entities",
+      "description": "Retrieves the absolute velocity of an entity.",
+      "funcName": "GetEntityAbsVelocity",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose absolute velocity is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "A vector where the absolute velocity will be stored."
+      }
+    },
+    {
+      "name": "SetEntityAbsVelocity",
+      "group": "Entities",
+      "description": "Sets the absolute velocity of an entity.",
+      "funcName": "SetEntityAbsVelocity",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose absolute velocity is to be set."
+        },
+        {
+          "name": "velocity",
+          "type": "vec3",
+          "ref": false,
+          "description": "The new absolute velocity to set for the entity."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "SetEntityAngVelocity",
+      "group": "Entities",
+      "description": "Sets the angular velocity of an entity.",
+      "funcName": "SetEntityAngVelocity",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose angular velocity is to be set."
+        },
+        {
+          "name": "velocity",
+          "type": "vec3",
+          "ref": false,
+          "description": "The new angular velocity to set for the entity."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "SetEntityModel",
+      "group": "Entities",
+      "description": "Sets the model name of an entity.",
+      "funcName": "SetEntityModel",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose model name is to be set."
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "ref": false,
+          "description": "The new model name to set for the entity."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "TeleportEntity",
+      "group": "Entities",
+      "description": "Teleports an entity to a specified location and orientation.",
+      "funcName": "TeleportEntity",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity to teleport."
+        },
+        {
+          "name": "origin",
+          "type": "vec3",
+          "ref": false,
+          "description": "A pointer to a Vector representing the new absolute position. Use nan vector to not set."
+        },
+        {
+          "name": "angles",
+          "type": "vec3",
+          "ref": false,
+          "description": "A pointer to a QAngle representing the new orientation. Use nan vector to not set."
+        },
+        {
+          "name": "velocity",
+          "type": "vec3",
+          "ref": false,
+          "description": "A pointer to a Vector representing the new velocity. Use nan vector to not set."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "AcceptEntityInput",
+      "group": "Entities",
+      "description": "Invokes a named input method on a specified entity.",
+      "funcName": "AcceptEntityInput",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the target entity that will receive the input."
+        },
+        {
+          "name": "inputName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the input action to invoke."
+        },
+        {
+          "name": "activatorHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity that initiated the sequence of actions."
+        },
+        {
+          "name": "callerHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity sending this event."
+        },
+        {
+          "name": "value",
+          "type": "any",
+          "ref": false,
+          "description": "The value associated with the input action."
+        },
+        {
+          "name": "type",
+          "type": "int32",
+          "ref": false,
+          "description": "The type or classification of the value.",
+          "enum": "FieldType"
+        },
+        {
+          "name": "outputId",
+          "type": "int32",
+          "ref": false,
+          "description": "An identifier for tracking the output of this operation."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetEntityAttachmentAngles",
+      "group": "Models",
+      "description": "Retrieves the attachment angles of an entity.",
+      "funcName": "GetEntityAttachmentAngles",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose attachment angles are to be retrieved."
+        },
+        {
+          "name": "attachmentIndex",
+          "type": "int32",
+          "ref": false,
+          "description": "The attachment index."
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "A vector representing the attachment angles (pitch, yaw, roll)."
+      }
+    },
+    {
+      "name": "GetEntityAttachmentOrigin",
+      "group": "Models",
+      "description": "Retrieves the origin vector of an entity's attachment.",
+      "funcName": "GetEntityAttachmentOrigin",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose attachment origin is to be retrieved."
+        },
+        {
+          "name": "attachmentIndex",
+          "type": "int32",
+          "ref": false,
+          "description": "The attachment index."
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "A vector representing the origin of the attachment."
+      }
+    },
+    {
+      "name": "ScriptLookupAttachment",
+      "group": "Models",
+      "description": "Retrieves an attachment index by name.",
+      "funcName": "ScriptLookupAttachment",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity."
+        },
+        {
+          "name": "attachmentName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the attachment."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The attachment index, or -1 if not found."
+      }
+    },
+    {
+      "name": "GetEntSchemaEnt2",
+      "group": "Schema",
+      "description": "Retrieves an entity handle from an entity's schema.",
+      "funcName": "GetEntSchemaEnt2",
+      "paramTypes": [
+        {
+          "name": "entity",
+          "type": "ptr64",
+          "ref": false,
+          "description": "Pointer to the instance of the class where the value is to be set."
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the schema member."
+        },
+        {
+          "name": "element",
+          "type": "int32",
+          "ref": false,
+          "description": "Element # (starting from 0) if schema is an array."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "A string value at the given schema offset."
+      }
+    },
+    {
+      "name": "SetEntSchemaEnt2",
+      "group": "Schema",
+      "description": "Sets an entity handle in an entity's schema.",
+      "funcName": "SetEntSchemaEnt2",
+      "paramTypes": [
+        {
+          "name": "entity",
+          "type": "ptr64",
+          "ref": false,
+          "description": "Pointer to the instance of the class where the value is to be set."
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the schema member."
+        },
+        {
+          "name": "value",
+          "type": "int32",
+          "ref": false,
+          "description": "The entity handle to set."
+        },
+        {
+          "name": "changeState",
+          "type": "bool",
+          "ref": false,
+          "description": "If true, change will be sent over the network."
+        },
+        {
+          "name": "element",
+          "type": "int32",
+          "ref": false,
+          "description": "Element # (starting from 0) if schema is an array."
+        }
+      ],
+      "retType": {
+        "type": "void",
+        "description": "An entity handle at the given schema offset."
+      }
+    },
+    {
+      "name": "OnClientDisconnect_Register",
+      "group": "Listeners",
+      "description": "Register callback to event.",
+      "funcName": "OnClientDisconnect_Register",
+      "paramTypes": [
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "Function callback.",
+          "prototype": "OnClientDisconnectCallback"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "OnClientDisconnect_Unregister",
+      "group": "Listeners",
+      "description": "Unregister callback to event.",
+      "funcName": "OnClientDisconnect_Unregister",
+      "paramTypes": [
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "Function callback.",
+          "prototype": "OnClientDisconnectCallback"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    }
+  ],
+  "classes": [],
+  "prototypes": [
+    {
+      "name": "ConCommandCallback",
+      "funcName": "ConCommandCallback",
+      "description": "Handles the execution of a command triggered by a caller. This function processes the command, interprets its context, and handles any provided arguments.",
+      "paramTypes": [
+        {
+          "name": "caller",
+          "type": "int32",
+          "description": "An identifier for the entity or object invoking the command. Typically used to track the source of the command."
+        },
+        {
+          "name": "context",
+          "type": "int32",
+          "description": "The context in which the command is being executed. This value can be used to provide additional information about the environment or state related to the command.",
+          "enum": "ConCommandContext"
+        },
+        {
+          "name": "arguments",
+          "type": "string[]",
+          "description": "An array of strings representing the arguments passed to the command. These arguments define the parameters or options provided by the caller."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "Indicates the result of the action execution.",
+        "enum": "ResultType"
+      }
+    },
+    {
+      "name": "EventCallback",
+      "funcName": "EventCallback",
+      "description": "Handles events triggered by the game event system. This function processes the event data, determines the necessary action, and optionally prevents event broadcasting.",
+      "paramTypes": [
+        {
+          "name": "name",
+          "type": "string",
+          "description": "The name of the event being handled. This string is used to identify the type or category of the event."
+        },
+        {
+          "name": "event",
+          "type": "ptr64",
+          "description": "A 64-bit pointer to the event data structure. This pointer contains detailed information about the event being processed."
+        },
+        {
+          "name": "dontBroadcast",
+          "type": "bool",
+          "description": "A boolean flag indicating whether the event should be prevented from being broadcasted to other listeners. Set to `true` to suppress broadcasting."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "Indicates the result of the action execution.",
+        "enum": "ResultType"
+      }
+    },
+    {
+      "retType": {
+        "description": "0 allow, 1 block.",
+        "type": "int32"
+      },
+      "funcName": "DamagePreCallback",
+      "description": "Synchronous player-damage policy callback.",
+      "paramTypes": [
+        {
+          "description": "Victim entity handle.",
+          "type": "int32",
+          "name": "victimHandle"
+        },
+        {
+          "description": "Attacker entity handle.",
+          "type": "int32",
+          "name": "attackerHandle"
+        },
+        {
+          "description": "Inflictor entity handle.",
+          "type": "int32",
+          "name": "inflictorHandle"
+        },
+        {
+          "description": "0 other, 1 firearm, 2 knife, 3 Zeus.",
+          "type": "int32",
+          "name": "weaponKind"
+        },
+        {
+          "description": "Engine hit group, or -1 if unavailable.",
+          "type": "int32",
+          "name": "hitGroup"
+        },
+        {
+          "description": "Whether melee/Zeus view trace hit the victim head.",
+          "type": "bool",
+          "name": "tracedHead"
+        },
+        {
+          "description": "Original pending damage.",
+          "type": "float",
+          "name": "damage"
+        },
+        {
+          "ref": true,
+          "description": "Output damage multiplier.",
+          "type": "float",
+          "name": "multiplier"
+        },
+        {
+          "ref": true,
+          "description": "Output headshot marker flag.",
+          "type": "bool",
+          "name": "markHeadshot"
+        }
+      ],
+      "name": "DamagePreCallback"
+    },
+    {
+      "name": "DamagePreCallbackV2",
+      "funcName": "DamagePreCallbackV2",
+      "description": "Synchronous V2 damage decision, with native damage type and unchanged attacker attribution for world damage.",
+      "paramTypes": [
+        {
+          "name": "victimHandle",
+          "type": "int32",
+          "description": "The damaged player's entity handle."
+        },
+        {
+          "name": "attackerHandle",
+          "type": "int32",
+          "description": "The attacking player's entity handle."
+        },
+        {
+          "name": "inflictorHandle",
+          "type": "int32",
+          "description": "The damage inflictor's entity handle."
+        },
+        {
+          "name": "weaponKind",
+          "type": "int32",
+          "description": "Weapon kind: other, firearm, knife, or Zeus."
+        },
+        {
+          "name": "hitGroup",
+          "type": "int32",
+          "description": "The engine-reported hit group."
+        },
+        {
+          "name": "tracedHead",
+          "type": "bool",
+          "description": "Whether a knife or Zeus eye trace reached the victim's head."
+        },
+        {
+          "name": "damage",
+          "type": "float",
+          "description": "Damage before the callback's multiplier is applied."
+        },
+        {
+          "name": "damageType",
+          "type": "uint32",
+          "description": "Native DamageTypes_t bitmask before any headshot marking."
+        },
+        {
+          "name": "multiplier",
+          "type": "float",
+          "ref": true,
+          "description": "Output damage multiplier."
+        },
+        {
+          "name": "markHeadshot",
+          "type": "bool",
+          "ref": true,
+          "description": "Output flag to mark the damage as a headshot."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "Allow (0) or block (1) this damage."
+      }
+    },
+    {
+      "name": "EntityTouchPreCallback",
+      "funcName": "EntityTouchPreCallback",
+      "description": "Synchronous decision for touches on every entity sharing the selected Touch function address. Return zero to continue native Touch or nonzero to supersede it.",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "description": "The full handle of the entity whose Touch method ran."
+        },
+        {
+          "name": "otherHandle",
+          "type": "int32",
+          "description": "The other full handle, or -1 when the engine reports no entity."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "Zero continues the native Touch function; nonzero supersedes it."
+      }
+    },
+    {
+      "name": "OnClientDisconnectCallback",
+      "funcName": "OnClientDisconnectCallback",
+      "description": "Called when a client is disconnecting from the server.",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "description": "The player slot"
+        },
+        {
+          "name": "reason",
+          "type": "int32",
+          "description": "The reason for disconnect",
+          "enum": "NetworkDisconnectionReason"
+        }
+      ],
+      "retType": {
+        "type": "void",
+        "description": ""
+      }
+    }
+  ],
+  "enums": [
+    {
+      "name": "ConVarFlag",
+      "description": "Enum representing various flags for ConVars and ConCommands.",
+      "values": [
+        {
+          "value": 0,
+          "name": "None",
+          "description": "The default, no flags at all."
+        },
+        {
+          "value": 1,
+          "name": "LinkedConcommand",
+          "description": "Linked to a ConCommand."
+        },
+        {
+          "value": 2,
+          "name": "DevelopmentOnly",
+          "description": "Hidden in released products. Automatically removed if ALLOW_DEVELOPMENT_CVARS is defined."
+        },
+        {
+          "value": 4,
+          "name": "GameDll",
+          "description": "Defined by the game DLL."
+        },
+        {
+          "value": 8,
+          "name": "ClientDll",
+          "description": "Defined by the client DLL."
+        },
+        {
+          "value": 16,
+          "name": "Hidden",
+          "description": "Hidden. Doesn't appear in find or auto-complete. Like DEVELOPMENTONLY but cannot be compiled out."
+        },
+        {
+          "value": 32,
+          "name": "Protected",
+          "description": "Server cvar; data is not sent since it's sensitive (e.g., passwords)."
+        },
+        {
+          "value": 64,
+          "name": "SpOnly",
+          "description": "This cvar cannot be changed by clients connected to a multiplayer server."
+        },
+        {
+          "value": 128,
+          "name": "Archive",
+          "description": "Saved to vars.rc."
+        },
+        {
+          "value": 256,
+          "name": "Notify",
+          "description": "Notifies players when changed."
+        },
+        {
+          "value": 512,
+          "name": "UserInfo",
+          "description": "Changes the client's info string."
+        },
+        {
+          "value": 1024,
+          "name": "Missing0",
+          "description": "Hides the cvar from lookups."
+        },
+        {
+          "value": 2048,
+          "name": "Unlogged",
+          "description": "If this is a server cvar, changes are not logged to the file or console."
+        },
+        {
+          "value": 4096,
+          "name": "Missing1",
+          "description": "Hides the cvar from lookups."
+        },
+        {
+          "value": 8192,
+          "name": "Replicated",
+          "description": "Server-enforced setting on clients."
+        },
+        {
+          "value": 16384,
+          "name": "Cheat",
+          "description": "Only usable in singleplayer/debug or multiplayer with sv_cheats."
+        },
+        {
+          "value": 32768,
+          "name": "PerUser",
+          "description": "Causes auto-generated varnameN for splitscreen slots."
+        },
+        {
+          "value": 65536,
+          "name": "Demo",
+          "description": "Records this cvar when starting a demo file."
+        },
+        {
+          "value": 131072,
+          "name": "DontRecord",
+          "description": "Excluded from demo files."
+        },
+        {
+          "value": 262144,
+          "name": "Missing2",
+          "description": "Reserved for future use."
+        },
+        {
+          "value": 524288,
+          "name": "Release",
+          "description": "Cvars tagged with this are available to customers."
+        },
+        {
+          "value": 1048576,
+          "name": "MenuBarItem",
+          "description": "Marks the cvar as a menu bar item."
+        },
+        {
+          "value": 2097152,
+          "name": "Missing3",
+          "description": "Reserved for future use."
+        },
+        {
+          "value": 4194304,
+          "name": "NotConnected",
+          "description": "Cannot be changed by a client connected to a server."
+        },
+        {
+          "value": 8388608,
+          "name": "VconsoleFuzzyMatching",
+          "description": "Enables fuzzy matching for vconsole."
+        },
+        {
+          "value": 16777216,
+          "name": "ServerCanExecute",
+          "description": "The server can execute this command on clients."
+        },
+        {
+          "value": 33554432,
+          "name": "ClientCanExecute",
+          "description": "Allows clients to execute this command."
+        },
+        {
+          "value": 67108864,
+          "name": "ServerCannotQuery",
+          "description": "The server cannot query this cvar's value."
+        },
+        {
+          "value": 134217728,
+          "name": "VconsoleSetFocus",
+          "description": "Sets focus in the vconsole."
+        },
+        {
+          "value": 268435456,
+          "name": "ClientCmdCanExecute",
+          "description": "IVEngineClient::ClientCmd can execute this command."
+        },
+        {
+          "value": 536870912,
+          "name": "ExecutePerTick",
+          "description": "Executes the cvar every tick."
+        }
+      ]
+    },
+    {
+      "name": "ConCommandContext",
+      "description": "The command execution context.",
+      "values": [
+        {
+          "value": 0,
+          "name": "Console",
+          "description": "The command execute from the client's console."
+        },
+        {
+          "value": 1,
+          "name": "Chat",
+          "description": "The command execute from the client's chat."
+        }
+      ]
+    },
+    {
+      "name": "ResultType",
+      "description": "Enum representing the possible results of an operation.",
+      "values": [
+        {
+          "value": 0,
+          "name": "Continue",
+          "description": "The action continues to be processed without interruption."
+        },
+        {
+          "value": 1,
+          "name": "Changed",
+          "description": "Indicates that the action has altered the state or behavior during execution."
+        },
+        {
+          "value": 2,
+          "name": "Handled",
+          "description": "The action has been successfully handled, and no further action is required."
+        },
+        {
+          "value": 3,
+          "name": "Stop",
+          "description": "The action processing is halted, and no further steps will be executed."
+        }
+      ]
+    },
+    {
+      "name": "HookMode",
+      "description": "Enum representing the type of callback.",
+      "values": [
+        {
+          "name": "Pre",
+          "description": "Callback will be executed before the original function",
+          "value": 0
+        },
+        {
+          "name": "Post",
+          "description": "Callback will be executed after the original function",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "EventHookError",
+      "description": "Enum representing the type of callback.",
+      "values": [
+        {
+          "name": "Okay",
+          "description": "Indicates that the event hook was successfully created.",
+          "value": 0
+        },
+        {
+          "name": "InvalidEvent",
+          "description": "Indicates that the event name provided is invalid or does not exist.",
+          "value": 1
+        },
+        {
+          "name": "NotActive",
+          "description": "Indicates that the event system is not currently active or initialized.",
+          "value": 2
+        },
+        {
+          "name": "InvalidCallback",
+          "description": "Indicates that the callback function provided is invalid or not compatible with the event system.",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "name": "CSTeam",
+      "description": "Enum representing the possible teams in Counter-Strike.",
+      "values": [
+        {
+          "value": 0,
+          "name": "None",
+          "description": "No team."
+        },
+        {
+          "value": 1,
+          "name": "Spectator",
+          "description": "Spectator team."
+        },
+        {
+          "value": 2,
+          "name": "T",
+          "description": "Terrorist team."
+        },
+        {
+          "value": 3,
+          "name": "CT",
+          "description": "Counter-Terrorist team."
+        }
+      ]
+    },
+    {
+      "name": "DamageTypes",
+      "description": "Enum representing various damage types.",
+      "values": [
+        {
+          "value": 0,
+          "name": "DMG_GENERIC",
+          "description": "Generic damage."
+        },
+        {
+          "value": 1,
+          "name": "DMG_CRUSH",
+          "description": "Crush damage."
+        },
+        {
+          "value": 2,
+          "name": "DMG_BULLET",
+          "description": "Bullet damage."
+        },
+        {
+          "value": 4,
+          "name": "DMG_SLASH",
+          "description": "Slash damage."
+        },
+        {
+          "value": 8,
+          "name": "DMG_BURN",
+          "description": "Burn damage."
+        },
+        {
+          "value": 16,
+          "name": "DMG_VEHICLE",
+          "description": "Vehicle damage."
+        },
+        {
+          "value": 32,
+          "name": "DMG_FALL",
+          "description": "Fall damage."
+        },
+        {
+          "value": 64,
+          "name": "DMG_BLAST",
+          "description": "Blast damage."
+        },
+        {
+          "value": 128,
+          "name": "DMG_CLUB",
+          "description": "Club damage."
+        },
+        {
+          "value": 256,
+          "name": "DMG_SHOCK",
+          "description": "Shock damage."
+        },
+        {
+          "value": 512,
+          "name": "DMG_SONIC",
+          "description": "Sonic damage."
+        },
+        {
+          "value": 1024,
+          "name": "DMG_ENERGYBEAM",
+          "description": "Energy beam damage."
+        },
+        {
+          "value": 16384,
+          "name": "DMG_DROWN",
+          "description": "Drowning damage."
+        },
+        {
+          "value": 32768,
+          "name": "DMG_POISON",
+          "description": "Poison damage."
+        },
+        {
+          "value": 65536,
+          "name": "DMG_RADIATION",
+          "description": "Radiation damage."
+        },
+        {
+          "value": 131072,
+          "name": "DMG_DROWNRECOVER",
+          "description": "Recovering from drowning damage."
+        },
+        {
+          "value": 262144,
+          "name": "DMG_ACID",
+          "description": "Acid damage."
+        },
+        {
+          "value": 1048576,
+          "name": "DMG_PHYSGUN",
+          "description": "Physgun damage."
+        },
+        {
+          "value": 2097152,
+          "name": "DMG_DISSOLVE",
+          "description": "Dissolve damage."
+        },
+        {
+          "value": 4194304,
+          "name": "DMG_BLAST_SURFACE",
+          "description": "Surface blast damage."
+        },
+        {
+          "value": 16777216,
+          "name": "DMG_BUCKSHOT",
+          "description": "Buckshot damage."
+        },
+        {
+          "value": 16777216,
+          "name": "DMG_LASTGENERICFLAG",
+          "description": "Last generic flag damage."
+        },
+        {
+          "value": 33554432,
+          "name": "DMG_HEADSHOT",
+          "description": "Headshot damage."
+        },
+        {
+          "value": 67108864,
+          "name": "DMG_DANGERZONE",
+          "description": "Danger zone damage."
+        }
+      ]
+    },
+    {
+      "name": "CSRoundEndReason",
+      "description": "Enum representing the possible reasons for a round ending in Counter-Strike.",
+      "values": [
+        {
+          "value": 1,
+          "name": "TargetBombed",
+          "description": "Target successfully bombed."
+        },
+        {
+          "value": 2,
+          "name": "VIPEscaped",
+          "description": "The VIP has escaped (not present in CS:GO)."
+        },
+        {
+          "value": 3,
+          "name": "VIPKilled",
+          "description": "VIP has been assassinated (not present in CS:GO)."
+        },
+        {
+          "value": 4,
+          "name": "TerroristsEscaped",
+          "description": "The terrorists have escaped."
+        },
+        {
+          "value": 5,
+          "name": "CTStoppedEscape",
+          "description": "The CTs have prevented most of the terrorists from escaping."
+        },
+        {
+          "value": 6,
+          "name": "TerroristsStopped",
+          "description": "Escaping terrorists have all been neutralized."
+        },
+        {
+          "value": 7,
+          "name": "BombDefused",
+          "description": "The bomb has been defused."
+        },
+        {
+          "value": 8,
+          "name": "CTWin",
+          "description": "Counter-Terrorists win."
+        },
+        {
+          "value": 9,
+          "name": "TerroristWin",
+          "description": "Terrorists win."
+        },
+        {
+          "value": 10,
+          "name": "Draw",
+          "description": "Round draw."
+        },
+        {
+          "value": 11,
+          "name": "HostagesRescued",
+          "description": "All hostages have been rescued."
+        },
+        {
+          "value": 12,
+          "name": "TargetSaved",
+          "description": "Target has been saved."
+        },
+        {
+          "value": 13,
+          "name": "HostagesNotRescued",
+          "description": "Hostages have not been rescued."
+        },
+        {
+          "value": 14,
+          "name": "TerroristsNotEscaped",
+          "description": "Terrorists have not escaped."
+        },
+        {
+          "value": 15,
+          "name": "VIPNotEscaped",
+          "description": "VIP has not escaped (not present in CS:GO)."
+        },
+        {
+          "value": 16,
+          "name": "GameStart",
+          "description": "Game commencing."
+        },
+        {
+          "value": 17,
+          "name": "TerroristsSurrender",
+          "description": "Terrorists surrender."
+        },
+        {
+          "value": 18,
+          "name": "CTSurrender",
+          "description": "CTs surrender."
+        },
+        {
+          "value": 19,
+          "name": "TerroristsPlanted",
+          "description": "Terrorists planted the bomb."
+        },
+        {
+          "value": 20,
+          "name": "CTsReachedHostage",
+          "description": "CTs reached the hostage."
+        },
+        {
+          "value": 21,
+          "name": "SurvivalWin",
+          "description": "Survival mode win."
+        },
+        {
+          "value": 22,
+          "name": "SurvivalDraw",
+          "description": "Survival mode draw."
+        }
+      ]
+    },
+    {
+      "name": "WeaponDefIndex",
+      "description": "Enum representing different weapon definition indices.",
+      "values": [
+        {
+          "value": 0,
+          "name": "Invalid"
+        },
+        {
+          "value": 1,
+          "name": "Deagle"
+        },
+        {
+          "value": 2,
+          "name": "Elite"
+        },
+        {
+          "value": 3,
+          "name": "FiveSeven"
+        },
+        {
+          "value": 4,
+          "name": "Glock"
+        },
+        {
+          "value": 7,
+          "name": "AK47"
+        },
+        {
+          "value": 8,
+          "name": "AUG"
+        },
+        {
+          "value": 9,
+          "name": "AWP"
+        },
+        {
+          "value": 10,
+          "name": "FAMAS"
+        },
+        {
+          "value": 11,
+          "name": "G3SG1"
+        },
+        {
+          "value": 13,
+          "name": "GalilAR"
+        },
+        {
+          "value": 14,
+          "name": "M249"
+        },
+        {
+          "value": 16,
+          "name": "M4A1"
+        },
+        {
+          "value": 17,
+          "name": "MAC10"
+        },
+        {
+          "value": 19,
+          "name": "P90"
+        },
+        {
+          "value": 23,
+          "name": "MP5SD"
+        },
+        {
+          "value": 24,
+          "name": "UMP45"
+        },
+        {
+          "value": 25,
+          "name": "XM1014"
+        },
+        {
+          "value": 26,
+          "name": "Bizon"
+        },
+        {
+          "value": 27,
+          "name": "MAG7"
+        },
+        {
+          "value": 28,
+          "name": "Negev"
+        },
+        {
+          "value": 29,
+          "name": "SawedOff"
+        },
+        {
+          "value": 30,
+          "name": "Tec9"
+        },
+        {
+          "value": 31,
+          "name": "Taser"
+        },
+        {
+          "value": 32,
+          "name": "HKP2000"
+        },
+        {
+          "value": 33,
+          "name": "MP7"
+        },
+        {
+          "value": 34,
+          "name": "MP9"
+        },
+        {
+          "value": 35,
+          "name": "Nova"
+        },
+        {
+          "value": 36,
+          "name": "P250"
+        },
+        {
+          "value": 38,
+          "name": "SCAR20"
+        },
+        {
+          "value": 39,
+          "name": "SG556"
+        },
+        {
+          "value": 40,
+          "name": "SSG08"
+        },
+        {
+          "value": 41,
+          "name": "KnifeGG"
+        },
+        {
+          "value": 42,
+          "name": "Knife"
+        },
+        {
+          "value": 43,
+          "name": "Flashbang"
+        },
+        {
+          "value": 44,
+          "name": "HEGrenade"
+        },
+        {
+          "value": 45,
+          "name": "SmokeGrenade"
+        },
+        {
+          "value": 46,
+          "name": "Molotov"
+        },
+        {
+          "value": 47,
+          "name": "Decoy"
+        },
+        {
+          "value": 48,
+          "name": "IncGrenade"
+        },
+        {
+          "value": 49,
+          "name": "C4"
+        },
+        {
+          "value": 50,
+          "name": "Kevlar"
+        },
+        {
+          "value": 51,
+          "name": "AssaultSuit"
+        },
+        {
+          "value": 52,
+          "name": "HeavyAssaultSuit"
+        },
+        {
+          "value": 55,
+          "name": "Defuser"
+        },
+        {
+          "value": 59,
+          "name": "KnifeT"
+        },
+        {
+          "value": 60,
+          "name": "M4A1Silencer"
+        },
+        {
+          "value": 61,
+          "name": "USPSilencer"
+        },
+        {
+          "value": 63,
+          "name": "CZ75A"
+        },
+        {
+          "value": 64,
+          "name": "Revolver"
+        },
+        {
+          "value": 500,
+          "name": "Bayonet"
+        },
+        {
+          "value": 503,
+          "name": "KnifeCSS"
+        },
+        {
+          "value": 505,
+          "name": "KnifeFlip"
+        },
+        {
+          "value": 506,
+          "name": "KnifeGut"
+        },
+        {
+          "value": 507,
+          "name": "KnifeKarambit"
+        },
+        {
+          "value": 508,
+          "name": "KnifeM9Bayonet"
+        },
+        {
+          "value": 509,
+          "name": "KnifeTactical"
+        },
+        {
+          "value": 512,
+          "name": "KnifeFalchion"
+        },
+        {
+          "value": 514,
+          "name": "KnifeBowie"
+        },
+        {
+          "value": 515,
+          "name": "KnifeButterfly"
+        },
+        {
+          "value": 516,
+          "name": "KnifePush"
+        },
+        {
+          "value": 517,
+          "name": "KnifeCord"
+        },
+        {
+          "value": 518,
+          "name": "KnifeCanis"
+        },
+        {
+          "value": 519,
+          "name": "KnifeUrsus"
+        },
+        {
+          "value": 520,
+          "name": "KnifeGypsyJackknife"
+        },
+        {
+          "value": 521,
+          "name": "KnifeOutdoor"
+        },
+        {
+          "value": 522,
+          "name": "KnifeStiletto"
+        },
+        {
+          "value": 523,
+          "name": "KnifeWidowmaker"
+        },
+        {
+          "value": 525,
+          "name": "KnifeSkeleton"
+        },
+        {
+          "value": 526,
+          "name": "KnifeKukri"
+        }
+      ]
+    },
+    {
+      "name": "FieldType",
+      "description": "Represents the possible types of data that can be passed as a value in input actions.",
+      "values": [
+        {
+          "value": 0,
+          "name": "Auto",
+          "description": "Automatically detect the type of the value."
+        },
+        {
+          "value": 1,
+          "name": "Float32",
+          "description": "A 32-bit floating-point number."
+        },
+        {
+          "value": 2,
+          "name": "Float64",
+          "description": "A 64-bit floating-point number."
+        },
+        {
+          "value": 3,
+          "name": "Int32",
+          "description": "A 32-bit signed integer."
+        },
+        {
+          "value": 4,
+          "name": "UInt32",
+          "description": "A 32-bit unsigned integer."
+        },
+        {
+          "value": 5,
+          "name": "Int64",
+          "description": "A 64-bit signed integer."
+        },
+        {
+          "value": 6,
+          "name": "UInt64",
+          "description": "A 64-bit unsigned integer."
+        },
+        {
+          "value": 7,
+          "name": "Boolean",
+          "description": "A boolean value (true or false)."
+        },
+        {
+          "value": 8,
+          "name": "Character",
+          "description": "A single character."
+        },
+        {
+          "value": 9,
+          "name": "String",
+          "description": "A managed string object."
+        },
+        {
+          "value": 10,
+          "name": "CString",
+          "description": "A null-terminated C-style string."
+        },
+        {
+          "value": 11,
+          "name": "HScript",
+          "description": "A script handle, typically for scripting integration."
+        },
+        {
+          "value": 12,
+          "name": "EHandle",
+          "description": "An entity handle, used to reference an entity within the system."
+        },
+        {
+          "value": 13,
+          "name": "Resource",
+          "description": "A resource handle, such as a file or asset reference."
+        },
+        {
+          "value": 14,
+          "name": "Vector3d",
+          "description": "A 3D vector, typically representing position or direction."
+        },
+        {
+          "value": 15,
+          "name": "Vector2d",
+          "description": "A 2D vector, for planar data or coordinates."
+        },
+        {
+          "value": 16,
+          "name": "Vector4d",
+          "description": "A 4D vector, often used for advanced mathematical representations."
+        },
+        {
+          "value": 17,
+          "name": "Color32",
+          "description": "A 32-bit color value (RGBA)."
+        },
+        {
+          "value": 18,
+          "name": "QAngle",
+          "description": "A quaternion-based angle representation."
+        },
+        {
+          "value": 19,
+          "name": "Quaternion",
+          "description": "A quaternion, used for rotation and orientation calculations."
+        }
+      ]
+    },
+    {
+      "name": "NetworkDisconnectionReason",
+      "description": "Enum representing reasons for network disconnection.",
+      "values": [
+        {
+          "value": 0,
+          "name": "Invalid",
+          "description": "Invalid."
+        },
+        {
+          "value": 1,
+          "name": "Shutdown",
+          "description": "Shutdown."
+        },
+        {
+          "value": 2,
+          "name": "DisconnectByUser",
+          "description": "Disconnect by user."
+        },
+        {
+          "value": 3,
+          "name": "DisconnectByServer",
+          "description": "Disconnect by server."
+        },
+        {
+          "value": 4,
+          "name": "Lost",
+          "description": "Lost."
+        },
+        {
+          "value": 5,
+          "name": "Overflow",
+          "description": "Overflow."
+        },
+        {
+          "value": 6,
+          "name": "SteamBanned",
+          "description": "Steam banned."
+        },
+        {
+          "value": 7,
+          "name": "SteamInuse",
+          "description": "Steam inuse."
+        },
+        {
+          "value": 8,
+          "name": "SteamTicket",
+          "description": "Steam ticket."
+        },
+        {
+          "value": 9,
+          "name": "SteamLogon",
+          "description": "Steam logon."
+        },
+        {
+          "value": 10,
+          "name": "SteamAuthcancelled",
+          "description": "Steam authcancelled."
+        },
+        {
+          "value": 11,
+          "name": "SteamAuthalreadyused",
+          "description": "Steam authalreadyused."
+        },
+        {
+          "value": 12,
+          "name": "SteamAuthinvalid",
+          "description": "Steam authinvalid."
+        },
+        {
+          "value": 13,
+          "name": "SteamVacbanstate",
+          "description": "Steam vacbanstate."
+        },
+        {
+          "value": 14,
+          "name": "SteamLoggedInElsewhere",
+          "description": "Steam logged in elsewhere."
+        },
+        {
+          "value": 15,
+          "name": "SteamVacCheckTimedout",
+          "description": "Steam vac check timedout."
+        },
+        {
+          "value": 16,
+          "name": "SteamDropped",
+          "description": "Steam dropped."
+        },
+        {
+          "value": 17,
+          "name": "SteamOwnership",
+          "description": "Steam ownership."
+        },
+        {
+          "value": 18,
+          "name": "ServerinfoOverflow",
+          "description": "Serverinfo overflow."
+        },
+        {
+          "value": 19,
+          "name": "TickmsgOverflow",
+          "description": "Tickmsg overflow."
+        },
+        {
+          "value": 20,
+          "name": "StringtablemsgOverflow",
+          "description": "Stringtablemsg overflow."
+        },
+        {
+          "value": 21,
+          "name": "DeltaentmsgOverflow",
+          "description": "Deltaentmsg overflow."
+        },
+        {
+          "value": 22,
+          "name": "TempentmsgOverflow",
+          "description": "Tempentmsg overflow."
+        },
+        {
+          "value": 23,
+          "name": "SoundsmsgOverflow",
+          "description": "Soundsmsg overflow."
+        },
+        {
+          "value": 24,
+          "name": "Snapshotoverflow",
+          "description": "Snapshotoverflow."
+        },
+        {
+          "value": 25,
+          "name": "Snapshoterror",
+          "description": "Snapshoterror."
+        },
+        {
+          "value": 26,
+          "name": "Reliableoverflow",
+          "description": "Reliableoverflow."
+        },
+        {
+          "value": 27,
+          "name": "Baddeltatick",
+          "description": "Baddeltatick."
+        },
+        {
+          "value": 28,
+          "name": "Nomoresplits",
+          "description": "Nomoresplits."
+        },
+        {
+          "value": 29,
+          "name": "Timedout",
+          "description": "Timedout."
+        },
+        {
+          "value": 30,
+          "name": "Disconnected",
+          "description": "Disconnected."
+        },
+        {
+          "value": 31,
+          "name": "Leavingsplit",
+          "description": "Leavingsplit."
+        },
+        {
+          "value": 32,
+          "name": "Differentclasstables",
+          "description": "Differentclasstables."
+        },
+        {
+          "value": 33,
+          "name": "Badrelaypassword",
+          "description": "Badrelaypassword."
+        },
+        {
+          "value": 34,
+          "name": "Badspectatorpassword",
+          "description": "Badspectatorpassword."
+        },
+        {
+          "value": 35,
+          "name": "Hltvrestricted",
+          "description": "Hltvrestricted."
+        },
+        {
+          "value": 36,
+          "name": "Nospectators",
+          "description": "Nospectators."
+        },
+        {
+          "value": 37,
+          "name": "Hltvunavailable",
+          "description": "Hltvunavailable."
+        },
+        {
+          "value": 38,
+          "name": "Hltvstop",
+          "description": "Hltvstop."
+        },
+        {
+          "value": 39,
+          "name": "Kicked",
+          "description": "Kicked."
+        },
+        {
+          "value": 40,
+          "name": "Banadded",
+          "description": "Banadded."
+        },
+        {
+          "value": 41,
+          "name": "Kickbanadded",
+          "description": "Kickbanadded."
+        },
+        {
+          "value": 42,
+          "name": "Hltvdirect",
+          "description": "Hltvdirect."
+        },
+        {
+          "value": 43,
+          "name": "PureserverClientextra",
+          "description": "Pureserver clientextra."
+        },
+        {
+          "value": 44,
+          "name": "PureserverMismatch",
+          "description": "Pureserver mismatch."
+        },
+        {
+          "value": 45,
+          "name": "Usercmd",
+          "description": "Usercmd."
+        },
+        {
+          "value": 46,
+          "name": "RejectedByGame",
+          "description": "Rejected by game."
+        },
+        {
+          "value": 47,
+          "name": "MessageParseError",
+          "description": "Message parse error."
+        },
+        {
+          "value": 48,
+          "name": "InvalidMessageError",
+          "description": "Invalid message error."
+        },
+        {
+          "value": 49,
+          "name": "BadServerPassword",
+          "description": "Bad server password."
+        },
+        {
+          "value": 50,
+          "name": "DirectConnectReservation",
+          "description": "Direct connect reservation."
+        },
+        {
+          "value": 51,
+          "name": "ConnectionFailure",
+          "description": "Connection failure."
+        },
+        {
+          "value": 52,
+          "name": "NoPeerGroupHandlers",
+          "description": "No peer group handlers."
+        },
+        {
+          "value": 53,
+          "name": "Reconnection",
+          "description": "Reconnection."
+        },
+        {
+          "value": 54,
+          "name": "Loopshutdown",
+          "description": "Loopshutdown."
+        },
+        {
+          "value": 55,
+          "name": "Loopdeactivate",
+          "description": "Loopdeactivate."
+        },
+        {
+          "value": 56,
+          "name": "HostEndgame",
+          "description": "Host endgame."
+        },
+        {
+          "value": 57,
+          "name": "LoopLevelloadActivate",
+          "description": "Loop levelload activate."
+        },
+        {
+          "value": 58,
+          "name": "CreateServerFailed",
+          "description": "Create server failed."
+        },
+        {
+          "value": 59,
+          "name": "Exiting",
+          "description": "Exiting."
+        },
+        {
+          "value": 60,
+          "name": "RequestHoststateIdle",
+          "description": "Request hoststate idle."
+        },
+        {
+          "value": 61,
+          "name": "RequestHoststateHltvrelay",
+          "description": "Request hoststate hltvrelay."
+        },
+        {
+          "value": 62,
+          "name": "ClientConsistencyFail",
+          "description": "Client consistency fail."
+        },
+        {
+          "value": 63,
+          "name": "ClientUnableToCrcMap",
+          "description": "Client unable to crc map."
+        },
+        {
+          "value": 64,
+          "name": "ClientNoMap",
+          "description": "Client no map."
+        },
+        {
+          "value": 65,
+          "name": "ClientDifferentMap",
+          "description": "Client different map."
+        },
+        {
+          "value": 66,
+          "name": "ServerRequiresSteam",
+          "description": "Server requires steam."
+        },
+        {
+          "value": 67,
+          "name": "SteamDenyMisc",
+          "description": "Steam deny misc."
+        },
+        {
+          "value": 68,
+          "name": "SteamDenyBadAntiCheat",
+          "description": "Steam deny bad anti cheat."
+        },
+        {
+          "value": 69,
+          "name": "ServerShutdown",
+          "description": "Server shutdown."
+        },
+        {
+          "value": 71,
+          "name": "ReplayIncompatible",
+          "description": "Replay incompatible."
+        },
+        {
+          "value": 72,
+          "name": "ConnectRequestTimedout",
+          "description": "Connect request timedout."
+        },
+        {
+          "value": 73,
+          "name": "ServerIncompatible",
+          "description": "Server incompatible."
+        },
+        {
+          "value": 74,
+          "name": "LocalproblemManyrelays",
+          "description": "Localproblem manyrelays."
+        },
+        {
+          "value": 75,
+          "name": "LocalproblemHostedserverprimaryrelay",
+          "description": "Localproblem hostedserverprimaryrelay."
+        },
+        {
+          "value": 76,
+          "name": "LocalproblemNetworkconfig",
+          "description": "Localproblem networkconfig."
+        },
+        {
+          "value": 77,
+          "name": "LocalproblemOther",
+          "description": "Localproblem other."
+        },
+        {
+          "value": 79,
+          "name": "RemoteTimeout",
+          "description": "Remote timeout."
+        },
+        {
+          "value": 80,
+          "name": "RemoteTimeoutConnecting",
+          "description": "Remote timeout connecting."
+        },
+        {
+          "value": 81,
+          "name": "RemoteOther",
+          "description": "Remote other."
+        },
+        {
+          "value": 82,
+          "name": "RemoteBadcrypt",
+          "description": "Remote badcrypt."
+        },
+        {
+          "value": 83,
+          "name": "RemoteCertnottrusted",
+          "description": "Remote certnottrusted."
+        },
+        {
+          "value": 84,
+          "name": "Unusual",
+          "description": "Unusual."
+        },
+        {
+          "value": 85,
+          "name": "InternalError",
+          "description": "Internal error."
+        },
+        {
+          "value": 128,
+          "name": "RejectBadchallenge",
+          "description": "Reject badchallenge."
+        },
+        {
+          "value": 129,
+          "name": "RejectNolobby",
+          "description": "Reject nolobby."
+        },
+        {
+          "value": 130,
+          "name": "RejectBackgroundMap",
+          "description": "Reject background map."
+        },
+        {
+          "value": 131,
+          "name": "RejectSinglePlayer",
+          "description": "Reject single player."
+        },
+        {
+          "value": 132,
+          "name": "RejectHiddenGame",
+          "description": "Reject hidden game."
+        },
+        {
+          "value": 133,
+          "name": "RejectLanrestrict",
+          "description": "Reject lanrestrict."
+        },
+        {
+          "value": 134,
+          "name": "RejectBadpassword",
+          "description": "Reject badpassword."
+        },
+        {
+          "value": 135,
+          "name": "RejectServerfull",
+          "description": "Reject serverfull."
+        },
+        {
+          "value": 136,
+          "name": "RejectInvalidreservation",
+          "description": "Reject invalidreservation."
+        },
+        {
+          "value": 137,
+          "name": "RejectFailedchannel",
+          "description": "Reject failedchannel."
+        },
+        {
+          "value": 138,
+          "name": "RejectConnectFromLobby",
+          "description": "Reject connect from lobby."
+        },
+        {
+          "value": 139,
+          "name": "RejectReservedForLobby",
+          "description": "Reject reserved for lobby."
+        },
+        {
+          "value": 140,
+          "name": "RejectInvalidkeylength",
+          "description": "Reject invalidkeylength."
+        },
+        {
+          "value": 141,
+          "name": "RejectOldprotocol",
+          "description": "Reject oldprotocol."
+        },
+        {
+          "value": 142,
+          "name": "RejectNewprotocol",
+          "description": "Reject newprotocol."
+        },
+        {
+          "value": 143,
+          "name": "RejectInvalidconnection",
+          "description": "Reject invalidconnection."
+        },
+        {
+          "value": 144,
+          "name": "RejectInvalidcertlen",
+          "description": "Reject invalidcertlen."
+        },
+        {
+          "value": 145,
+          "name": "RejectInvalidsteamcertlen",
+          "description": "Reject invalidsteamcertlen."
+        },
+        {
+          "value": 146,
+          "name": "RejectSteam",
+          "description": "Reject steam."
+        },
+        {
+          "value": 147,
+          "name": "RejectServerauthdisabled",
+          "description": "Reject serverauthdisabled."
+        },
+        {
+          "value": 148,
+          "name": "RejectServercdkeyauthinvalid",
+          "description": "Reject servercdkeyauthinvalid."
+        },
+        {
+          "value": 149,
+          "name": "RejectBanned",
+          "description": "Reject banned."
+        },
+        {
+          "value": 150,
+          "name": "KickedTeamkilling",
+          "description": "Kicked teamkilling."
+        },
+        {
+          "value": 151,
+          "name": "KickedTkStart",
+          "description": "Kicked tk start."
+        },
+        {
+          "value": 152,
+          "name": "KickedUntrustedaccount",
+          "description": "Kicked untrustedaccount."
+        },
+        {
+          "value": 153,
+          "name": "KickedConvictedaccount",
+          "description": "Kicked convictedaccount."
+        },
+        {
+          "value": 154,
+          "name": "KickedCompetitivecooldown",
+          "description": "Kicked competitivecooldown."
+        },
+        {
+          "value": 155,
+          "name": "KickedTeamhurting",
+          "description": "Kicked teamhurting."
+        },
+        {
+          "value": 156,
+          "name": "KickedHostagekilling",
+          "description": "Kicked hostagekilling."
+        },
+        {
+          "value": 157,
+          "name": "KickedVotedoff",
+          "description": "Kicked votedoff."
+        },
+        {
+          "value": 158,
+          "name": "KickedIdle",
+          "description": "Kicked idle."
+        },
+        {
+          "value": 159,
+          "name": "KickedSuicide",
+          "description": "Kicked suicide."
+        },
+        {
+          "value": 160,
+          "name": "KickedNosteamlogin",
+          "description": "Kicked nosteamlogin."
+        },
+        {
+          "value": 161,
+          "name": "KickedNosteamticket",
+          "description": "Kicked nosteamticket."
+        },
+        {
+          "value": 162,
+          "name": "KickedInputautomation",
+          "description": "Kicked inputautomation."
+        },
+        {
+          "value": 163,
+          "name": "KickedVacnetabnormalbehavior",
+          "description": "Kicked vacnetabnormalbehavior."
+        },
+        {
+          "value": 164,
+          "name": "KickedInsecureclient",
+          "description": "Kicked insecureclient."
+        }
+      ]
+    },
+    {
+      "name": "MoveType",
+      "description": "Enum representing various movement types for entities.",
+      "values": [
+        { "value": 0, "name": "None", "description": "Never moves." },
+        { "value": 1, "name": "Isometric", "description": "Previously isometric movement type." },
+        { "value": 2, "name": "Walk", "description": "Player only - moving on the ground." },
+        { "value": 3, "name": "Fly", "description": "No gravity, but still collides with stuff." },
+        { "value": 4, "name": "Flygravity", "description": "Flies through the air and is affected by gravity." },
+        { "value": 5, "name": "Vphysics", "description": "Uses VPHYSICS for simulation." },
+        { "value": 6, "name": "Push", "description": "No clip to world, push and crush." },
+        { "value": 7, "name": "Noclip", "description": "No gravity, no collisions, still has velocity/avelocity." },
+        { "value": 8, "name": "Ladder", "description": "Used by players only when going onto a ladder." },
+        { "value": 9, "name": "Observer", "description": "Observer movement, depends on player's observer mode." },
+        { "value": 10, "name": "Custom", "description": "Allows the entity to describe its own physics." }
+      ]
+    }
+  ]
+}

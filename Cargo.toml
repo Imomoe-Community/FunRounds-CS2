@@ -1,0 +1,20 @@
+[workspace]
+members = ["crates/funrounds-core", "crates/funrounds-plugin"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+authors = ["Mai Ooizumi"]
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+rand = { version = "=0.10.3", default-features = false, features = ["std", "std_rng", "sys_rng"] }
+plugify = { git = "https://github.com/untrustedmodders/rust-plugify", rev = "5f7d5f4f2821dd3e47a4254d2bfe1db6ec08c9aa" }
+
+[profile.release]
+panic = "unwind"
+

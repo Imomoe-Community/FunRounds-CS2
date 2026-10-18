@@ -1,0 +1,93 @@
+# 通用配置示例
+# 保留一个基础模式；可选开关默认关闭，按字段注释调整。
+# 布尔值取 true / false；下列模式功能开关省略时默认为 false。
+# 小数必须是有限数值。标注“省略不覆盖”的字段不主动改写对应设置。
+
+# 全局
+# diagnostics：诊断日志开关，true / false，默认 false。
+diagnostics = false
+# modes：模式数组，实际配置使用 [[modes]] 定义每个模式。
+[[modes]]
+
+# 模式标识与装备（必填）
+# id：唯一标识，例如 "example"；仅允许英文字母、数字、下划线与连字符。
+id = "example"
+# enabled：是否加入模式池，true / false；实际配置至少启用一个模式。
+enabled = true
+# name：显示名称，例如 "示例名称"；非空且不含换行。
+name = "通用示例"
+# description：显示说明，例如 "功能效果说明"；非空且不含换行。
+description = "演示装备与基础属性，可按需调整功能"
+# weapons：非空武器候选数组；例如单个候选 "weapon_famas"，须属于支持的 CS2 武器白名单。
+weapons = ["weapon_famas", "weapon_p250"]
+# 普通配装按主武器、副武器、刀、额外装备分类，各类从候选中抽取一件；未列出的类别不发放。
+
+# 基础属性（必填）
+# health：初始生命，整数 1～10000，例如 120。
+health = 120
+# armor：初始护甲，整数 0～255，例如 50。
+armor = 50
+# gravity：重力倍率，小数，范围 (0, 10]；1.0 为正常重力，小于 1.0 降低重力。
+gravity = 1.0
+
+# 移动与射击（可选）
+# bunnyhop：自动连跳及相关移动参数开关，true / false。
+bunnyhop = false
+# friction：地面摩擦，小数 >= 0，例如 2.0；省略不覆盖。
+# friction = 2.0
+# no_spread_recoil：抑制枪械散布与后坐力，true / false。
+no_spread_recoil = false
+# recoil_view：开枪时的镜头震动强度，小数 >= 0，例如 2.0；省略不追加震动。
+# recoil_view = 2.0
+# view_punch_decay：镜头冲击衰减参数，小数 >= 0；省略不覆盖，实际表现由引擎决定。
+# view_punch_decay = 5.0
+# blue：蓝色外观开关，true / false。
+blue = false
+
+# 弹药与配装（可选）
+# unlimited_reserve：无限备用弹药，仍需换弹，true / false。
+unlimited_reserve = false
+# unlimited_clip：无限弹匣，true / false；候选必须含 weapon_taser，优先于 unlimited_reserve。
+unlimited_clip = false
+# taser_charge：电击枪充能间隔，单位秒，小数 >= 0；候选必须含 weapon_taser，省略不覆盖。
+# taser_charge = 12.0
+# replenish_he：投掷后补充高爆手雷，true / false；额外装备候选必须只有 weapon_hegrenade。
+replenish_he = false
+# replenish_decoy：投掷后补充诱饵弹，true / false；额外装备候选必须只有 weapon_decoy。
+replenish_decoy = false
+# random_loadout：个人随机配装，true / false；从候选独立抽取两次并附带刀，候选不能含刀。
+random_loadout = false
+# kill_loadout：击杀后随机换武器，true / false；初始配装为 Glock 与刀，候选须含 weapon_glock 且不能含刀。
+kill_loadout = false
+# random_loadout 与 kill_loadout 不能同时启用。
+
+# 战斗规则（可选）
+# lifesteal：造成伤害后恢复自身生命与护甲，true / false。
+lifesteal = false
+# headshots_only：仅爆头造成有效伤害，true / false。
+headshots_only = false
+# no_headshots：禁止爆头伤害，true / false；不能与 headshots_only 同时启用。
+no_headshots = false
+# miss_damage：未命中时自身扣血及对应特殊伤害规则，true / false。
+miss_damage = false
+# team_deathmatch：团队击杀计分与重生规则，true / false。
+team_deathmatch = false
+# dodgeball：诱饵弹命中触发躲避球伤害，true / false；候选须含 weapon_decoy。
+dodgeball = false
+# throwing_knives：飞刀投射与命中伤害，true / false；候选须含 weapon_knife。
+throwing_knives = false
+
+# 炸弹子表（可选，实际配置使用 [modes.bomb]；省略子表不启用特殊炸弹设置）
+# [modes.bomb]
+# kind：子表必填，取 "native"（原生）、"chicken"（鸡形）或 "carry"（可携带）。
+# kind = "native"
+# plant_time：安放耗时，单位秒，小数 >= 0，默认 3.0。
+# plant_time = 3.0
+# explode_time：引爆倒计时，单位秒，小数 >= 0，默认 45.0；0.0 表示立即引爆。
+# explode_time = 45.0
+# defuse_kit_time：有拆弹器时的拆除耗时，单位秒，小数 >= 0，默认 5.0。
+# defuse_kit_time = 5.0
+# defuse_time：无拆弹器时的拆除耗时，单位秒，小数 >= 0，默认 10.0。
+# defuse_time = 10.0
+# bounce：炸弹弹跳开关，true / false，默认 false。
+# bounce = false

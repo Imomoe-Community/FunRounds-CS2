@@ -2,7 +2,6 @@
 /.work/
 /dist/
 /local/
-docs/evidence/v05/camera/seed-control-*.txt
 *.log
 *.dmp
 *.mdmp

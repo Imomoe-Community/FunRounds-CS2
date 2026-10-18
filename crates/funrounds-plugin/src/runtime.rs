@@ -1,0 +1,1807 @@
+// Copyright (C) 2026 Mai Ooizumi
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+use crate::{
+    commands::Command,
+    effects::{Effect, equipment},
+    fault::{Fault, Faults, Mechanism, Recovery, Scope},
+    game::{self, LivePlayer},
+    parameters::{self, Parameters},
+    s2sdk,
+};
+use funrounds_core::{Config, Phase, PlayerIdentity, PlayerTask, PlayerTracker, RoundController, RoundGeneration, RoundKey, TeamDeathmatch};
+use plugify::Str;
+use rand::{SeedableRng, rngs::StdRng};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::thread::{ThreadId, current};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingAction {
+    Loadout,
+    Grenade(u64),
+    RecoilSettle,
+    RecoilObservation,
+    AmmoObservation(i32),
+}
+
+pub struct EventCapabilities {
+    pub grenade_thrown: bool,
+    pub weapon_fire: bool,
+    pub player_hurt: bool,
+    pub damage: bool,
+    pub round_prestart: bool,
+    pub classic: crate::capability::Probe,
+    pub bombs: crate::capability::Probe,
+    pub moving_blast: crate::capability::Probe,
+    pub carry_disconnect: bool,
+}
+
+// Execute after releasing the runtime lock: these engine calls can fire synchronous events.
+pub enum EngineAction {
+    Respawn(PlayerTask, LivePlayer, i32),
+    LowHealthFinish(PlayerTask, LivePlayer),
+    EndRound(RoundGeneration, s2sdk::CSRoundEndReason),
+    CenterDisplay { generation: RoundGeneration, text: String },
+    Projectile(crate::projectiles::Action),
+    Bomb(crate::bombs::Action),
+    Equipment(equipment::Action),
+    ProjectileImpact(crate::projectiles::Impact),
+}
+
+impl EngineAction {
+    pub fn execute(self) {
+        match self {
+            Self::Projectile(action) => crate::process_projectile_action(action),
+            Self::Bomb(action) => crate::process_bomb_action(action),
+            Self::Equipment(action) => crate::process_equipment_action(action),
+            Self::ProjectileImpact(impact) => crate::apply_projectile_impact(impact),
+            Self::Respawn(task, _, _) => s2sdk::RespawnClient(task.player.slot),
+            Self::LowHealthFinish(task, player) => {
+                let slot = task.player.slot;
+                let handle = player.pawn_handle;
+                let zero = plugify::Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+                let applied = s2sdk::TakeClientDamage(slot, slot, slot, &zero, &zero, 1.0, s2sdk::DamageTypes::DMG_HEADSHOT);
+                log(&format!("low-health finish slot={slot} pawn={handle} damage={applied}"));
+            }
+            Self::CenterDisplay { text, .. } => s2sdk::PrintCentreHtmlAll(&Str::from_str(&text), 5),
+            Self::EndRound(_, reason) => crate::finish_team_round(reason),
+        }
+    }
+}
+
+pub struct Runtime {
+    pub controller: RoundController,
+    config_path: PathBuf,
+    game_thread: ThreadId,
+    rng: StdRng,
+    last_tick: Option<i32>,
+    round: Option<RoundKey>,
+    players: PlayerTracker,
+    controllers: HashMap<i32, i32>,
+    pending: Vec<(PlayerTask, i32, PendingAction)>,
+    refills: equipment::Refills,
+    center_display: Option<(RoundGeneration, i32, String)>,
+    effects: HashMap<i32, Effect>,
+    retired_effects: Vec<Effect>,
+    equipment: Vec<String>,
+    parameters: Parameters,
+    team_names: Parameters,
+    last_name: Option<String>,
+    classic_ready: bool,
+    welcomes: Vec<(PlayerIdentity, f32)>,
+    knock_disabled: HashSet<i32>,
+    effects_ready: bool,
+    capability_reasons: Vec<String>,
+    faults: Faults,
+    team_match: Option<TeamDeathmatch>,
+    respawns: Vec<(PlayerTask, LivePlayer, i32, f32)>,
+    low_health_finishes: Vec<PlayerTask>,
+    bombs: crate::bombs::Bombs,
+    projectiles: crate::projectiles::Projectiles,
+    impacts: Vec<crate::projectiles::Impact>,
+}
+
+impl Runtime {
+    pub fn new(events: EventCapabilities) -> Result<Self, String> {
+        let config_path = PathBuf::from(plugify::get_configs_dir().to_string()).join("funrounds.toml");
+        let config = read_config(&config_path);
+        if let Err(error) = &config {
+            s2sdk::PrintToServer(&plugify::Str::from_str(&format!("[FunRounds] ordinary gameplay: {error}")));
+        }
+        let mut capability_reasons = Vec::new();
+        let mut capabilities = parameters::capabilities(events.weapon_fire, events.round_prestart, &mut capability_reasons);
+        capabilities.random_loadout &= crate::effects::random_loadout_probe().record("random_loadout", &mut capability_reasons);
+        let grenade_probe = equipment::refill_probe(events.grenade_thrown);
+        let grenade_refill = grenade_probe.clone().record("replenish_he", &mut capability_reasons);
+        grenade_probe.record("replenish_decoy", &mut capability_reasons);
+        if events.grenade_thrown && !grenade_refill {
+            log("HE/decoy refill unavailable; grenade throw-redraw schemas and give/remove/select imports are required");
+        }
+        capabilities.replenish_he = grenade_refill;
+        capabilities.replenish_decoy = grenade_refill;
+        capabilities.lifesteal = events.player_hurt;
+        capabilities.headshots_only = events.damage;
+        capabilities.no_headshots = events.damage;
+        let bomb_capabilities = crate::bombs::capabilities(
+            events.bombs,
+            events.moving_blast,
+            events.carry_disconnect,
+            events.round_prestart,
+            &mut capability_reasons,
+        );
+        capabilities.bomb_timing = bomb_capabilities.bomb_timing;
+        capabilities.chicken_bomb = bomb_capabilities.chicken_bomb;
+        capabilities.carry_bomb = bomb_capabilities.carry_bomb;
+        capabilities.bomb_bounce = bomb_capabilities.bomb_bounce;
+        let (mut decoys, mut knives) = crate::projectiles::Projectiles::capabilities(events.damage);
+        decoys.require(events.grenade_thrown, "event:grenade_thrown");
+        knives.require(events.weapon_fire, "event:weapon_fire");
+        capabilities.dodgeball = decoys.record("dodgeball", &mut capability_reasons);
+        capabilities.throwing_knives = knives.record("throwing_knives", &mut capability_reasons);
+        let mut classic = parameters::classic_probe();
+        classic.include(crate::effects::classic_probe());
+        classic.include(events.classic);
+        classic.require(events.weapon_fire, "event:weapon_fire");
+        classic.require(events.player_hurt, "event:player_hurt");
+        capabilities.classic = classic.record("classic", &mut capability_reasons);
+        if !events.player_hurt {
+            capability_reasons.push("lifesteal:[event:player_hurt]".into());
+        }
+        if !events.damage {
+            capability_reasons.push("headshots_only:[hook:entity_damage]".into());
+            capability_reasons.push("no_headshots:[hook:entity_damage]".into());
+        }
+        if config.is_ok() && !capabilities.classic {
+            log("classic public behavior unavailable; required classic capabilities are missing; no modes will run");
+        }
+        log(&format!(
+            "capabilities={capabilities:?} capability_reasons={}",
+            capability_reasons.join(";")
+        ));
+        Ok(Self {
+            controller: RoundController::new(config.ok(), capabilities)?,
+            classic_ready: capabilities.classic,
+            config_path,
+            game_thread: current().id(),
+            rng: StdRng::try_from_rng(&mut rand::rngs::SysRng).map_err(|error| format!("cannot initialize randomness: {error}"))?,
+            last_tick: None,
+            round: None,
+            players: PlayerTracker::default(),
+            controllers: HashMap::new(),
+            pending: Vec::new(),
+            refills: equipment::Refills::default(),
+            center_display: None,
+            effects: HashMap::new(),
+            retired_effects: Vec::new(),
+            equipment: Vec::new(),
+            parameters: Parameters::default(),
+            team_names: Parameters::default(),
+            last_name: None,
+            welcomes: Vec::new(),
+            knock_disabled: HashSet::new(),
+            effects_ready: true,
+            capability_reasons,
+            faults: Faults::new(capabilities),
+            team_match: None,
+            respawns: Vec::new(),
+            low_health_finishes: Vec::new(),
+            bombs: crate::bombs::Bombs::default(),
+            projectiles: crate::projectiles::Projectiles::default(),
+            impacts: Vec::new(),
+        })
+    }
+
+    pub fn on_game_thread(&self) -> bool {
+        current().id() == self.game_thread
+    }
+
+    pub fn special_headshots(&self) -> bool {
+        self.controller.phase() != Phase::Idle && self.controller.current_mode().is_some_and(|mode| mode.headshots_only)
+    }
+
+    pub fn no_headshots(&self) -> bool {
+        self.controller.phase() != Phase::Idle && self.controller.current_mode().is_some_and(|mode| mode.no_headshots)
+    }
+
+    pub fn projectile_damage(&mut self, damage: &crate::damage::Damage) -> Option<(f32, bool)> {
+        if let Some(impact) = self.projectiles.synthetic_impact(damage) {
+            return Some((1.0, impact.headshot));
+        }
+        let mode = self.controller.current_mode();
+        let claim = self.projectiles.claim_damage(
+            damage,
+            self.controller.generation(),
+            &self.players,
+            mode.is_some_and(|mode| mode.dodgeball),
+            mode.is_some_and(|mode| mode.throwing_knives),
+        );
+        (!self.queue_projectile_claim(claim)).then_some((1.0, false))
+    }
+
+    pub fn active_knife_death(&self, victim: i32, attacker: i32) -> bool {
+        self.projectiles.active_knife_death(victim, attacker)
+    }
+
+    pub fn projectile_touch(&mut self, entity: i32, other: i32) -> bool {
+        let claim = self.projectiles.claim_touch(
+            entity,
+            other,
+            self.controller.generation(),
+            &self.players,
+            self.controller.phase() == Phase::Running && self.controller.current_mode().is_some_and(|mode| mode.throwing_knives),
+        );
+        self.queue_projectile_claim(claim)
+    }
+
+    fn queue_projectile_claim(&mut self, claim: crate::projectiles::Claim) -> bool {
+        match claim {
+            crate::projectiles::Claim::Ignore => false,
+            crate::projectiles::Claim::Block { projectile, remove } => {
+                if remove {
+                    self.projectiles.retire(projectile);
+                }
+                true
+            }
+            crate::projectiles::Claim::Apply(impact) => {
+                self.impacts.push(impact);
+                true
+            }
+        }
+    }
+
+    pub fn prepare_impact(&mut self, mut impact: crate::projectiles::Impact) -> Option<crate::projectiles::Impact> {
+        let mode = self.controller.current_mode()?;
+        if self.controller.phase() != Phase::Running
+            || !(match impact.kind {
+                crate::projectiles::Kind::Knife => mode.throwing_knives,
+                crate::projectiles::Kind::Dodgeball => mode.dodgeball,
+            })
+            || !LivePlayer::resolve(impact.task.player.slot).is_some_and(|player| {
+                self.players
+                    .validates(impact.task, self.controller.generation(), player.pawn_handle as u32)
+            })
+            || LivePlayer::resolve(impact.victim.slot) != Some(impact.victim)
+            || !self
+                .players
+                .validates(impact.victim_task, self.controller.generation(), impact.victim.pawn_handle as u32)
+            || !s2sdk::IsValidEntHandle(impact.projectile)
+        {
+            return None;
+        }
+        if impact.kind == crate::projectiles::Kind::Dodgeball {
+            impact.amount = funrounds_core::dodgeball_damage(s2sdk::GetClientHealth(impact.victim.slot));
+        }
+        self.projectiles.begin_native_impact(impact).then_some(impact)
+    }
+
+    pub fn finish_impact(&mut self, impact: crate::projectiles::Impact) {
+        self.projectiles.finish_native_impact(impact)
+    }
+
+    pub fn take_projectile_cleanup(&mut self) -> Vec<crate::projectiles::Action> {
+        self.projectiles.cleanup_actions()
+    }
+
+    pub fn finish_projectile_action(&mut self, action: crate::projectiles::Action, result: crate::projectiles::ActionResult) {
+        let accept = self.action_valid(&EngineAction::Projectile(action));
+        if let Err(error) = self.projectiles.action_finished(action, result, accept) {
+            self.handle_fault(error);
+        }
+    }
+
+    pub fn diagnostics(&self) -> bool {
+        self.controller.config().is_some_and(|config| config.diagnostics)
+    }
+
+    pub fn classic_enabled(&self) -> bool {
+        self.classic_ready && self.effects_ready && self.controller.enabled()
+    }
+
+    pub fn classic_round(&self) -> bool {
+        self.classic_enabled() && self.controller.phase() != Phase::Idle
+    }
+
+    pub fn classic_damage_scale(&self, damage: &crate::damage::Damage, players: &game::DamagePlayers) -> Option<f32> {
+        if !self.classic_round() {
+            return Some(1.0);
+        }
+        let damage_type = damage.damage_type?;
+        let game::DamagePlayers { victim, attacker } = *players;
+        let self_damage = victim.is_some() && victim == attacker;
+        let mode = self.controller.current_mode()?;
+        let mode65_exception =
+            mode.miss_damage && victim.is_some_and(|player| mode65_self_damage(damage, player.pawn_handle, s2sdk::GetClientHealth(player.slot)));
+        let attacker_health = attacker
+            .filter(|player| {
+                s2sdk::IsClientAlive(player.slot)
+                    && self.controllers.get(&player.slot) == Some(&player.controller_handle)
+                    && self.effects.get(&player.slot).is_some_and(|effect| {
+                        Some(effect.identity) == self.players.identity(player.slot) && effect.identity.pawn_handle == player.pawn_handle as u32
+                    })
+            })
+            .map(|player| (s2sdk::GetClientHealth(player.slot), mode.health));
+        funrounds_core::classic_damage_scale(attacker_health, self_damage, damage_type & 32 != 0, mode65_exception)
+    }
+
+    fn refresh_classic(&mut self, slots: Option<&[i32]>) {
+        if !self.classic_round() || self.controller.phase() != Phase::Running {
+            return;
+        }
+        let Some(mode) = self.controller.current_mode() else { return };
+        let now = s2sdk::GetGameTime();
+        let mut failure = None;
+        for effect in self.effects.values_mut() {
+            let slot = effect.identity.slot;
+            if slots.is_some_and(|slots| !slots.contains(&slot)) || Some(effect.identity) != self.players.identity(slot) {
+                continue;
+            }
+            let Some(player) = LivePlayer::resolve(slot) else { continue };
+            if self.controllers.get(&slot) != Some(&player.controller_handle) || effect.identity.pawn_handle != player.pawn_handle as u32 {
+                continue;
+            }
+            if let Err(error) = effect.update_classic(mode, now) {
+                failure = Some(error);
+                break;
+            }
+        }
+        if let Some(error) = failure {
+            self.handle_fault(error);
+        }
+    }
+
+    fn send_welcomes(&mut self) {
+        if !self.classic_enabled() {
+            self.welcomes.clear();
+            return;
+        }
+        let now = s2sdk::GetGameTime();
+        for (identity, due) in std::mem::take(&mut self.welcomes) {
+            if !self.players.validates_connection(identity)
+                || !s2sdk::IsClientInGame(identity.slot)
+                || self.controllers.get(&identity.slot) != Some(&s2sdk::PlayerSlotToEntHandle(identity.slot))
+            {
+                continue;
+            }
+            if now < due {
+                self.welcomes.push((identity, due));
+                continue;
+            }
+            if !s2sdk::IsFakeClient(identity.slot) {
+                s2sdk::PrintToChat(identity.slot, &Str::from_str(&format!("欢迎来到 FunRounds {}", funrounds_core::VERSION)));
+                for line in crate::commands::HELP.lines() {
+                    s2sdk::PrintToChat(identity.slot, &Str::from_str(line));
+                }
+            }
+        }
+    }
+
+    pub fn action_valid(&self, action: &EngineAction) -> bool {
+        match action {
+            EngineAction::CenterDisplay { generation, .. } => {
+                center_display_action_valid(*generation == self.controller.generation(), self.controller.phase(), self.effects_ready)
+            }
+            EngineAction::Projectile(action) => {
+                self.projectiles.action_current(*action)
+                    && match action.kind {
+                        crate::projectiles::ActionKind::SpawnKnife { task, player } => {
+                            self.effects_ready
+                                && self.controller.phase() == Phase::Running
+                                && self.controller.current_mode().is_some_and(|mode| mode.throwing_knives)
+                                && self.players.validates(task, self.controller.generation(), player.pawn_handle as u32)
+                                && LivePlayer::resolve(player.slot) == Some(player)
+                        }
+                        crate::projectiles::ActionKind::Remove { .. } => true,
+                    }
+            }
+            EngineAction::Bomb(action) => self.bombs.action_valid(*action, self.controller.generation(), &self.players),
+            EngineAction::Equipment(action) => {
+                self.refills.current(*action)
+                    && match action {
+                        equipment::Action::Refill(refill) => {
+                            self.effects_ready
+                                && self.controller.phase() != Phase::Idle
+                                && self.controller.current_mode().is_some_and(|mode| refill.kind.enabled(mode))
+                                && self
+                                    .players
+                                    .validates(refill.task, self.controller.generation(), refill.player.pawn_handle as u32)
+                                && self.controllers.get(&refill.player.slot) == Some(&refill.player.controller_handle)
+                                && self
+                                    .effects
+                                    .get(&refill.player.slot)
+                                    .is_some_and(|effect| effect.identity == refill.task.player)
+                                && LivePlayer::resolve(refill.player.slot) == Some(refill.player)
+                        }
+                        equipment::Action::Remove { .. } => true,
+                    }
+            }
+            EngineAction::ProjectileImpact(_) => true,
+            EngineAction::Respawn(task, player, team) => {
+                respawn_window_open(
+                    self.controller.phase(),
+                    self.team_match.as_ref().map(|game| game.remaining(s2sdk::GetGameTime())),
+                ) && self.players.validates_respawn(*task, self.controller.generation())
+                    && respawn_target_valid(
+                        *player,
+                        LivePlayer::resolve_present(player.slot),
+                        *team,
+                        s2sdk::GetClientTeam(player.slot) as i32,
+                        s2sdk::IsClientAlive(player.slot),
+                    )
+            }
+            EngineAction::LowHealthFinish(task, player) => {
+                self.controller.phase() != Phase::Idle
+                    && self.controller.current_mode().is_some_and(|mode| mode.miss_damage)
+                    && self.players.validates(*task, self.controller.generation(), player.pawn_handle as u32)
+                    && LivePlayer::resolve(player.slot) == Some(*player)
+                    && funrounds_core::low_health_finish(s2sdk::GetClientHealth(player.slot))
+            }
+            EngineAction::EndRound(round, _) => {
+                self.controller.phase() == Phase::Running && self.controller.generation() == *round && self.team_match.is_some()
+            }
+        }
+    }
+
+    pub fn cancel_bomb_action(&mut self, action: crate::bombs::Action) {
+        self.bombs.action_cancelled(action);
+    }
+
+    pub fn finish_equipment_action(&mut self, action: equipment::Action, result: equipment::ActionResult) {
+        if !self.action_valid(&EngineAction::Equipment(action)) {
+            self.refills.cancel_action(action);
+        }
+        match self.refills.finish(action, result) {
+            Ok(completion) => {
+                if let Some((task, id)) = completion.retry {
+                    self.queue(task.player, s2sdk::GetGameTickCount(), PendingAction::Grenade(id));
+                }
+                if let Some(diagnostic) = completion.diagnostic {
+                    log(&diagnostic);
+                }
+            }
+            Err(error) => self.handle_fault(error),
+        }
+    }
+
+    pub fn take_equipment_cleanup(&mut self) -> Vec<equipment::Action> {
+        self.refills.cleanup_actions()
+    }
+
+    pub fn finish_bomb_action(&mut self, action: crate::bombs::Action, result: Result<crate::bombs::ActionResult, Fault>) {
+        let accept = self.action_valid(&EngineAction::Bomb(action));
+        if let Err(error) = self.bombs.action_finished(action, result, accept) {
+            self.handle_fault(error);
+        }
+    }
+
+    pub fn prepare_carrier_disconnect(&mut self, slot: i32) -> Option<crate::bombs::Action> {
+        let player = LivePlayer::resolve_present(slot)?;
+        // Death retires the effect life, but cleanup must still release that connection's native pawn.
+        self.players.connection_identity(slot)?;
+        if self.controllers.get(&slot) != Some(&player.controller_handle) {
+            return None;
+        }
+        self.bombs.prepare_carrier_disconnect(self.controller.generation(), player)
+    }
+
+    pub fn take_bomb_actions(&mut self) -> Vec<crate::bombs::Action> {
+        self.bombs.take_actions()
+    }
+
+    pub fn take_bomb_explosion(&mut self) -> Option<crate::bombs::Explosion> {
+        self.bombs.take_explosion(self.controller.generation())
+    }
+
+    pub fn finish_bomb_explosion(&mut self, explosion: crate::bombs::Explosion, temporary: i32, result: Result<(), Fault>) {
+        if self.bombs.finish_explosion(explosion, temporary)
+            && let Err(error) = result
+        {
+            self.handle_fault(error);
+        }
+    }
+
+    pub fn blocks_native_bomb_damage(&self, inflictor: i32) -> bool {
+        self.bombs.blocks_native_explosion(inflictor)
+    }
+
+    pub fn update(&mut self) -> Vec<EngineAction> {
+        let tick = self.observe_tick(None);
+        if !self.effects_ready {
+            self.cleanup_effects(false);
+            self.restore_team_names();
+            self.finish_recovery();
+        }
+        let center_display = self.send_pending_center(tick);
+        let mut actions = self.apply_pending(tick);
+        self.refresh_classic(None);
+        self.send_welcomes();
+        let bomb_settings = self.controller.current_mode().and_then(|mode| mode.bomb.as_ref());
+        if let Err(error) = self
+            .bombs
+            .update(bomb_settings, self.controller.generation(), &self.players, &mut self.rng)
+        {
+            self.handle_fault(error);
+        }
+        actions.extend(center_display);
+        actions.extend(self.take_equipment_cleanup().into_iter().map(EngineAction::Equipment));
+        actions.extend(std::mem::take(&mut self.impacts).into_iter().map(EngineAction::ProjectileImpact));
+        actions.extend(self.bombs.take_actions().into_iter().map(EngineAction::Bomb));
+        let now = s2sdk::GetGameTime();
+        if self.controller.phase() == Phase::Running {
+            if self.controller.current_mode().is_some_and(|mode| mode.dodgeball) {
+                self.projectiles.discover_decoys(now, self.controller.generation(), &self.players);
+            }
+            if self.controller.current_mode().is_some_and(|mode| mode.throwing_knives) {
+                actions.extend(
+                    self.projectiles
+                        .take_due_knives(tick, self.controller.generation(), &self.players)
+                        .into_iter()
+                        .map(EngineAction::Projectile),
+                );
+            }
+            self.projectiles.sweep(now, self.controller.generation(), &self.players);
+        }
+        actions.extend(self.take_projectile_cleanup().into_iter().map(EngineAction::Projectile));
+        if let Some(result) = self.team_match.as_mut().and_then(|game| game.finish(now)) {
+            let reason = match result.winner {
+                Some(2) => s2sdk::CSRoundEndReason::TerroristWin,
+                Some(3) => s2sdk::CSRoundEndReason::CTWin,
+                _ => s2sdk::CSRoundEndReason::Draw,
+            };
+            s2sdk::PrintToChatAll(&Str::from_str(&format!(
+                "[FunRounds] 团队竞技结束 T {} : {} CT",
+                result.scores[0], result.scores[1]
+            )));
+            self.respawns.clear();
+            actions.push(EngineAction::EndRound(self.controller.generation(), reason));
+        }
+        for (task, player, team, due) in std::mem::take(&mut self.respawns) {
+            if !self.players.validates_respawn(task, self.controller.generation())
+                || !respawn_window_open(self.controller.phase(), self.team_match.as_ref().map(|game| game.remaining(now)))
+                || !respawn_target_valid(
+                    player,
+                    LivePlayer::resolve_present(task.player.slot),
+                    team,
+                    s2sdk::GetClientTeam(task.player.slot) as i32,
+                    s2sdk::IsClientAlive(task.player.slot),
+                )
+            {
+                continue;
+            }
+            if now < due {
+                self.respawns.push((task, player, team, due));
+            } else {
+                log(&format!("team respawn slot={} after=3s", task.player.slot));
+                actions.push(EngineAction::Respawn(task, player, team));
+            }
+        }
+        for task in std::mem::take(&mut self.low_health_finishes) {
+            if let Some(player) = LivePlayer::resolve(task.player.slot)
+                && self.players.validates(task, self.controller.generation(), player.pawn_handle as u32)
+                && self.controller.current_mode().is_some_and(|mode| mode.miss_damage)
+                && funrounds_core::low_health_finish(s2sdk::GetClientHealth(player.slot))
+            {
+                actions.push(EngineAction::LowHealthFinish(task, player));
+            }
+        }
+        actions
+    }
+
+    fn send_pending_center(&mut self, tick: i32) -> Option<EngineAction> {
+        let (generation, scheduled, text) = self.center_display.take()?;
+        let current_generation = self.controller.generation();
+        let phase = self.controller.phase();
+        let current = center_display_action_valid(generation == current_generation, phase, self.effects_ready);
+        if center_display_due(current, phase, tick, scheduled) {
+            Some(EngineAction::CenterDisplay { generation, text })
+        } else if current {
+            self.center_display = Some((generation, scheduled, text));
+            None
+        } else {
+            None
+        }
+    }
+
+    fn observe_tick(&mut self, event: Option<&str>) -> i32 {
+        let tick = s2sdk::GetGameTickCount();
+        let previous = self.last_tick;
+        if observe_lifecycle_tick(&mut self.last_tick, tick, event) {
+            log(&format!(
+                "game lifecycle tick moved backwards previous={previous:?} current={tick}; discarding map state"
+            ));
+            // The new map may reuse old handles; old pawn properties no longer belong to us.
+            discard_map_effects(&mut self.effects, &mut self.retired_effects);
+            self.bombs.discard_map_state();
+            self.projectiles.discard_map_state();
+            self.refills.discard_map_state();
+            self.impacts.clear();
+            self.players.clear();
+            self.controllers.clear();
+            self.welcomes.clear();
+            self.knock_disabled.clear();
+            self.last_name = None;
+            self.restore_team_names();
+            self.cleanup_effects(false);
+            self.controller.reset();
+            self.round = None;
+        }
+        if let Some(round) = self.round
+            && self.controller.phase() != Phase::Idle
+            && game::warmup() != Some(false)
+        {
+            log("warmup resumed or became unavailable; cleaning active round");
+            self.cleanup_effects(false);
+            self.controller.start_round(round, true, &mut self.rng);
+        }
+        tick
+    }
+
+    fn apply_pending(&mut self, tick: i32) -> Vec<EngineAction> {
+        let mut actions = Vec::new();
+        let pending = std::mem::take(&mut self.pending);
+        for (mut task, scheduled, action) in pending {
+            if task.round != self.controller.generation() || self.controller.phase() == Phase::Idle {
+                self.cancel_pending(action);
+                continue;
+            }
+            if tick <= scheduled {
+                self.pending.push((task, scheduled, action));
+                continue;
+            }
+            let Some(player) = LivePlayer::resolve(task.player.slot) else {
+                if self.players.identity(task.player.slot) == Some(task.player)
+                    || self.players.pending_identity(task.player.slot) == Some(task.player)
+                {
+                    self.pending.push((task, scheduled, action));
+                } else {
+                    self.cancel_pending(action);
+                }
+                continue;
+            };
+            if self.controllers.get(&player.slot) != Some(&player.controller_handle) {
+                self.cancel_pending(action);
+                continue;
+            }
+            if task.player.pawn_handle == u32::MAX {
+                let Some(identity) = self.players.bind_spawn(task.player, player.pawn_handle as u32) else {
+                    continue;
+                };
+                task.player = identity;
+            }
+            if !self.players.validates(task, self.controller.generation(), player.pawn_handle as u32) {
+                self.cancel_pending(action);
+                continue;
+            }
+            if action == PendingAction::RecoilSettle {
+                if !self.controller.current_mode().is_some_and(|mode| mode.no_spread_recoil) {
+                    continue;
+                }
+                let Some(effect) = self.effects.get(&player.slot).filter(|effect| effect.identity == task.player) else {
+                    continue;
+                };
+                match effect.settle_recoil() {
+                    Ok(diagnostic) => {
+                        if let Some(diagnostic) = diagnostic {
+                            log(&diagnostic);
+                            self.queue(task.player, tick, PendingAction::RecoilObservation);
+                        }
+                    }
+                    Err(error) => {
+                        self.handle_fault(error.context("post-shot recoil cleanup failed"));
+                        continue;
+                    }
+                }
+                continue;
+            }
+            if action == PendingAction::RecoilObservation {
+                if self.diagnostics()
+                    && let Some(effect) = self.effects.get(&player.slot).filter(|effect| effect.identity == task.player)
+                {
+                    match effect.observe_recoil() {
+                        Ok(diagnostic) => log(&diagnostic),
+                        Err(error) => log(&format!("post-shot diagnostic unavailable: {error}")),
+                    }
+                }
+                continue;
+            }
+            if let PendingAction::AmmoObservation(handle) = action {
+                if self.diagnostics()
+                    && self.controller.current_mode().is_some_and(|mode| mode.unlimited_clip)
+                    && let Some(effect) = self.effects.get(&player.slot).filter(|effect| effect.identity == task.player)
+                {
+                    match effect.observe_ammo(handle) {
+                        Ok(diagnostic) => log(&diagnostic),
+                        Err(error) => log(&format!("post-shot ammo unavailable: {error}")),
+                    }
+                }
+                continue;
+            }
+            if let PendingAction::Grenade(id) = action {
+                if let Some(action) = self.refills.start(id) {
+                    actions.push(EngineAction::Equipment(action));
+                }
+                continue;
+            }
+            if self.effects.get(&player.slot).is_some_and(|effect| effect.identity == task.player) {
+                continue;
+            }
+            let Some(mode) = self.controller.current_mode() else { continue };
+            let mode_id = mode.id.clone();
+            let equipment = if mode.random_loadout {
+                mode.select_equipment(&mut self.rng)
+                    .expect("validated individual loadout")
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            } else {
+                self.equipment.clone()
+            };
+            let result = Effect::capture(player, task.player, mode, self.diagnostics()).and_then(|effect| {
+                self.effects.insert(player.slot, effect);
+                self.effects
+                    .get_mut(&player.slot)
+                    .expect("captured effect was inserted")
+                    .apply(mode, &equipment)
+            });
+            if let Err(error) = result {
+                if error.scope == Scope::Cancelled {
+                    self.retire_effect(player.slot);
+                }
+                self.handle_fault(error.context(format!("application failure mode={mode_id} slot={} equipment={equipment:?}", player.slot)));
+                continue;
+            }
+            if mode.team_deathmatch {
+                for handle in s2sdk::GetClientWeapons(player.slot).iter().copied() {
+                    if s2sdk::IsValidEntHandle(handle) && s2sdk::GetEntityClassname(handle).to_string() == "weapon_c4" {
+                        s2sdk::RemoveWeapon(player.slot, handle);
+                    }
+                }
+            }
+            log(&format!(
+                "applied mode={} slot={} health={} armor={} gravity={} equipment={:?}",
+                mode.id, player.slot, mode.health, mode.armor, mode.gravity, equipment
+            ));
+        }
+        actions
+    }
+
+    fn cancel_pending(&mut self, action: PendingAction) {
+        if let PendingAction::Grenade(id) = action {
+            self.refills.cancel(id);
+        }
+    }
+
+    pub fn event(&mut self, name: &str, event: usize) {
+        self.observe_tick(Some(name));
+        match name {
+            "round_prestart" => {
+                // Native C4 allocation precedes round_start, even when a restart omits round_end.
+                if let Err(error) = self.parameters.restore_c4_assignment() {
+                    self.handle_fault(Fault::global(error));
+                }
+                if let Err(error) = self.bombs.cleanup() {
+                    self.handle_fault(Fault::global(error));
+                }
+            }
+            "bomb_exploded" => self.bombs.capture_explosion(self.controller.generation()),
+            "bomb_beginplant" | "bomb_begindefuse" => {
+                if self.controller.phase() != Phase::Running || self.controller.current_mode().is_none_or(|mode| mode.bomb.is_none()) {
+                    return;
+                }
+                let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                if let Some(player) = self.players.identity(slot) {
+                    let task = PlayerTask {
+                        player,
+                        round: self.controller.generation(),
+                    };
+                    if name == "bomb_beginplant" {
+                        self.bombs.begin_plant(task);
+                    } else {
+                        if let Err(error) = self.bombs.begin_defuse(task, s2sdk::GetEventBool(event, &Str::from_str("haskit"))) {
+                            self.handle_fault(error);
+                        }
+                    }
+                }
+            }
+            "bomb_abortplant" => {
+                if let Err(error) = self.bombs.abort_plant() {
+                    self.handle_fault(error);
+                }
+            }
+            "bomb_abortdefuse" => {
+                if let Err(error) = self.bombs.abort_defuse() {
+                    self.handle_fault(error);
+                }
+            }
+            "bomb_planted" => {
+                if self.controller.phase() == Phase::Running && self.controller.current_mode().is_some_and(|mode| mode.bomb.is_some()) {
+                    let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                    let task = self.players.identity(slot).map(|player| PlayerTask {
+                        player,
+                        round: self.controller.generation(),
+                    });
+                    self.bombs.planted(self.controller.generation(), task);
+                }
+            }
+            "round_start" => {
+                let tick = s2sdk::GetGameTickCount();
+                if tick < 0 {
+                    return;
+                }
+                let key = self.controller.round_key(tick as u64);
+                if self.controller.is_new_round(key) {
+                    if let Some(previous) = self.round {
+                        self.controller.end_round(previous);
+                    }
+                    self.cleanup_effects(false);
+                    self.restore_team_names();
+                    self.finish_recovery();
+                }
+                if self
+                    .controller
+                    .start_round(key, game::warmup() != Some(false) || !self.effects_ready, &mut self.rng)
+                {
+                    self.round = Some(key);
+                    if !self.classic_enabled() {
+                        self.restore_team_names();
+                        self.welcomes.clear();
+                    }
+                    if let Some(mode) = self.controller.current_mode() {
+                        self.equipment = mode
+                            .select_equipment(&mut self.rng)
+                            .expect("active mode was validated")
+                            .into_iter()
+                            .map(str::to_owned)
+                            .collect();
+                        log(&format!(
+                            "round mode={} name={} equipment={:?} headshots_only={}",
+                            mode.id, mode.name, self.equipment, mode.headshots_only
+                        ));
+                        if let Err(error) = self.parameters.apply(mode) {
+                            self.handle_fault(error);
+                            return;
+                        }
+                        if mode.dodgeball {
+                            self.projectiles.baseline_decoys();
+                        }
+                        let display = self
+                            .team_names
+                            .set_string("mp_teamname_1", &mode.name)
+                            .and_then(|()| self.team_names.set_string("mp_teamname_2", self.last_name.as_deref().unwrap_or("")));
+                        if let Err(error) = display {
+                            self.handle_fault(error);
+                            return;
+                        }
+                        for line in mode.classic_chat() {
+                            s2sdk::PrintToChatAll(&Str::from_str(&line));
+                        }
+                        self.center_display = Some((self.controller.generation(), tick, escape_html_text(&mode.name)));
+                        s2sdk::PrintToConsoleAll(&Str::from_str(&separate_console_output(mode.classic_console())));
+                        self.last_name = Some(mode.name.clone());
+                        for slot in 0..s2sdk::GetMaxClients() {
+                            if LivePlayer::resolve(slot).is_some() {
+                                self.spawn(slot, tick);
+                            }
+                        }
+                    }
+                }
+            }
+            "round_freeze_end" => {
+                if let Some(round) = self.round {
+                    let started = self.controller.freeze_end(round);
+                    if started && self.controller.current_mode().is_some_and(|mode| mode.team_deathmatch) {
+                        match game::round_duration().and_then(|duration| TeamDeathmatch::start(s2sdk::GetGameTime(), duration)) {
+                            Ok(game) => {
+                                log(&format!("team match started duration={}", game.remaining(s2sdk::GetGameTime())));
+                                self.team_match = Some(game);
+                            }
+                            Err(error) => self.handle_fault(Fault::mechanism(Mechanism::TeamDeathmatch, error)),
+                        }
+                    }
+                }
+            }
+            "round_end" => {
+                if let Some(round) = self.round
+                    && self.controller.end_round(round)
+                {
+                    self.cleanup_effects(true);
+                }
+            }
+            "player_spawn" => self.spawn(s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid")), s2sdk::GetGameTickCount()),
+            "grenade_thrown" => {
+                let weapon = s2sdk::GetEventString(event, &Str::from_str("weapon")).to_string();
+                let decoy = matches!(weapon.as_str(), "decoy" | "weapon_decoy");
+                let he = matches!(weapon.as_str(), "hegrenade" | "weapon_hegrenade");
+                if self
+                    .controller
+                    .current_mode()
+                    .is_some_and(|mode| he && mode.replenish_he || decoy && mode.replenish_decoy)
+                {
+                    let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                    if let Some(identity) = self.players.identity(slot) {
+                        if decoy && self.controller.current_mode().is_some_and(|mode| mode.dodgeball) {
+                            self.projectiles.observe_decoy_throw(
+                                PlayerTask {
+                                    player: identity,
+                                    round: self.controller.generation(),
+                                },
+                                s2sdk::GetGameTime(),
+                            );
+                        }
+                        if let Some(player) = LivePlayer::resolve(slot)
+                            && player.pawn_handle as u32 == identity.pawn_handle
+                            && self.controllers.get(&slot) == Some(&player.controller_handle)
+                        {
+                            let task = PlayerTask {
+                                player: identity,
+                                round: self.controller.generation(),
+                            };
+                            let kind = if decoy {
+                                equipment::GrenadeKind::Decoy
+                            } else {
+                                equipment::GrenadeKind::He
+                            };
+                            let (id, spent) = self.refills.queue(task, player, kind, self.diagnostics());
+                            self.queue(identity, s2sdk::GetGameTickCount(), PendingAction::Grenade(id));
+                            if self.diagnostics() {
+                                log(&format!(
+                                    "grenade refill queued slot={slot} weapon={weapon} spent_handle={spent:?} transaction={id}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            "weapon_fire" => {
+                let weapon = s2sdk::GetEventString(event, &Str::from_str("weapon")).to_string();
+                if matches!(weapon.as_str(), "knife" | "knife_t" | "weapon_knife" | "weapon_knife_t")
+                    && self.controller.phase() == Phase::Running
+                    && self.controller.current_mode().is_some_and(|mode| mode.throwing_knives)
+                {
+                    let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                    if let Some(player) = self.players.identity(slot) {
+                        self.projectiles.schedule_knife(
+                            PlayerTask {
+                                player,
+                                round: self.controller.generation(),
+                            },
+                            s2sdk::GetGameTickCount(),
+                        );
+                    }
+                    return;
+                }
+                if !crate::effects::firearm_event(&weapon) {
+                    return;
+                }
+                let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                let Some(player) = LivePlayer::resolve(slot) else { return };
+                let Some(mode) = self.controller.current_mode() else { return };
+                let identity = self.players.identity(slot);
+                if self.classic_round()
+                    && self.controller.phase() == Phase::Running
+                    && !self.knock_disabled.contains(&slot)
+                    && self.controllers.get(&slot) == Some(&player.controller_handle)
+                    && let Some(effect) = self
+                        .effects
+                        .get(&slot)
+                        .filter(|effect| Some(effect.identity) == identity && effect.identity.pawn_handle == player.pawn_handle as u32)
+                    && let Err(error) = effect.self_push(player, &weapon)
+                {
+                    self.handle_fault(error);
+                    return;
+                }
+                if mode.miss_damage
+                    && funrounds_core::low_health_finish(s2sdk::GetClientHealth(slot))
+                    && let Some(player) = identity
+                {
+                    let task = PlayerTask {
+                        player,
+                        round: self.controller.generation(),
+                    };
+                    if !self.low_health_finishes.contains(&task) {
+                        self.low_health_finishes.push(task);
+                    }
+                }
+                let diagnostics = self.diagnostics();
+                let no_spread_recoil = mode.no_spread_recoil;
+                let recoil_effect = no_spread_recoil || mode.recoil_view.is_some();
+                let observe_ammo = diagnostics && mode.unlimited_clip;
+                if !diagnostics && !recoil_effect {
+                    return;
+                }
+                let Some(effect) = self.effects.get_mut(&slot).filter(|effect| Some(effect.identity) == identity) else {
+                    return;
+                };
+                match effect.weapon_fire(player, mode) {
+                    Ok(diagnostic) => {
+                        if let Some(diagnostic) = diagnostic {
+                            log(&diagnostic);
+                        }
+                        if observe_ammo && let Some(identity) = identity {
+                            self.queue(
+                                identity,
+                                s2sdk::GetGameTickCount(),
+                                PendingAction::AmmoObservation(s2sdk::GetClientActiveWeapon(player.slot)),
+                            );
+                        }
+                        if no_spread_recoil && let Some(identity) = identity {
+                            self.queue(identity, s2sdk::GetGameTickCount(), PendingAction::RecoilSettle);
+                        }
+                    }
+                    Err(error) => {
+                        if !recoil_effect {
+                            log(&format!("shooting diagnostic unavailable: {error}"));
+                            return;
+                        }
+                        self.handle_fault(error.context("shooting effect failed"));
+                    }
+                }
+            }
+            "player_disconnect" => {
+                let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                self.forget_player(slot);
+            }
+            "player_death" => {
+                let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                self.projectiles
+                    .retire_player(slot, self.players.identity(slot).map(|player| player.pawn_handle));
+                let attacker = s2sdk::GetEventPlayerSlot(event, &Str::from_str("attacker"));
+                if self.diagnostics() && self.controller.current_mode().is_some_and(|mode| mode.headshots_only) {
+                    log(&format!(
+                        "death victim={slot} attacker={attacker} weapon={} headshot={}",
+                        s2sdk::GetEventString(event, &Str::from_str("weapon")),
+                        s2sdk::GetEventBool(event, &Str::from_str("headshot"))
+                    ));
+                }
+                if self.controller.phase() == Phase::Running {
+                    if attacker >= 0
+                        && slot >= 0
+                        && let Some(game) = self.team_match.as_mut()
+                        && game.record_kill(
+                            s2sdk::GetGameTime(),
+                            s2sdk::GetClientTeam(attacker) as i32,
+                            s2sdk::GetClientTeam(slot) as i32,
+                            attacker != slot,
+                        )
+                    {
+                        log(&format!("team score T={} CT={}", game.scores()[0], game.scores()[1]));
+                    }
+                    self.kill_loadout(attacker, slot);
+                }
+                self.players.death(slot);
+                self.refills.cancel_player(slot);
+                self.retire_effect(slot);
+                self.pending.retain(|(task, _, _)| task.player.slot != slot);
+                if self.controller.current_mode().is_some_and(|mode| mode.team_deathmatch)
+                    && self.controller.phase() != Phase::Idle
+                    && let Some(task) = self.players.respawn_task(slot, self.controller.generation())
+                    && let Some(player) = LivePlayer::resolve_present(slot)
+                {
+                    self.respawns
+                        .push((task, player, s2sdk::GetClientTeam(slot) as i32, s2sdk::GetGameTime() + 3.0));
+                }
+            }
+            "player_hurt" => {
+                let victim = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                let attacker = s2sdk::GetEventPlayerSlot(event, &Str::from_str("attacker"));
+                if self.diagnostics()
+                    && self
+                        .controller
+                        .current_mode()
+                        .is_some_and(|mode| mode.lifesteal || mode.miss_damage || mode.headshots_only || mode.team_deathmatch)
+                {
+                    log(&format!(
+                        "hurt victim={victim} attacker={attacker} weapon={} dmg_health={} dmg_armor={} health={} armor={} hitgroup={}",
+                        s2sdk::GetEventString(event, &Str::from_str("weapon")),
+                        s2sdk::GetEventInt(event, &Str::from_str("dmg_health")),
+                        s2sdk::GetEventInt(event, &Str::from_str("dmg_armor")),
+                        s2sdk::GetEventInt(event, &Str::from_str("health")),
+                        s2sdk::GetEventInt(event, &Str::from_str("armor")),
+                        s2sdk::GetEventInt(event, &Str::from_str("hitgroup"))
+                    ));
+                }
+                let healed = self.lifesteal(event, attacker, victim);
+                self.refresh_classic(Some(&[victim, healed.unwrap_or(-1)]));
+            }
+            "player_connect_full" => {
+                self.connect(s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid")));
+            }
+            "player_team" => {
+                let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                self.respawns.retain(|(task, _, _, _)| task.player.slot != slot);
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn handle_fault(&mut self, fault: impl Into<Fault>) {
+        let fault = fault.into();
+        if fault.scope == Scope::Cancelled {
+            log(&format!("action cancelled: {fault}"));
+            return;
+        }
+        self.record_fault(fault);
+        self.cleanup_effects(false);
+        self.restore_team_names();
+    }
+
+    fn record_fault(&mut self, fault: Fault) {
+        let changed = self.faults.record(&fault);
+        self.controller.set_capabilities(self.faults.capabilities());
+        if let Some(round) = self.round {
+            self.controller.end_round(round);
+        }
+        self.classic_ready = self.faults.capabilities().classic;
+        self.effects_ready = false;
+        self.welcomes.clear();
+        if changed {
+            log(&format!("fault scope={:?} recovery={:?}: {fault}", fault.scope, self.faults.recovery));
+        }
+    }
+
+    fn cleanup_complete(&self) -> bool {
+        self.effects.is_empty()
+            && self.retired_effects.is_empty()
+            && self.parameters.is_restored()
+            && self.team_names.is_restored()
+            && self.bombs.is_clean()
+            && self.refills.is_clean()
+            && self.projectiles.is_clean()
+            && self.pending.is_empty()
+            && self.impacts.is_empty()
+    }
+
+    fn finish_recovery(&mut self) {
+        let complete = self.cleanup_complete();
+        if self.faults.finish_cleanup(complete) {
+            log("owned cleanup complete; quarantined capabilities remain excluded; waiting for a new round");
+        }
+        self.effects_ready = complete && self.faults.recovery == Recovery::Ready;
+    }
+
+    fn lifesteal(&mut self, event: usize, attacker: i32, victim: i32) -> Option<i32> {
+        if self.controller.phase() == Phase::Idle || !self.controller.current_mode().is_some_and(|mode| mode.lifesteal) {
+            return None;
+        }
+        let player = LivePlayer::resolve(attacker);
+        if !lifesteal_eligible(attacker, victim, player.is_some()) {
+            return None;
+        }
+        let player = player.expect("eligible attacker is alive");
+        if !self.effects.get(&attacker).is_some_and(|effect| {
+            Some(effect.identity) == self.players.identity(attacker) && effect.identity.pawn_handle == player.pawn_handle as u32
+        }) || self.controllers.get(&attacker) != Some(&player.controller_handle)
+        {
+            return None;
+        }
+        let health = s2sdk::GetEventInt(event, &Str::from_str("dmg_health"));
+        let armor = s2sdk::GetEventInt(event, &Str::from_str("dmg_armor"));
+        if let Err(error) = Effect::lifesteal(player, health, armor) {
+            self.handle_fault(error);
+            return None;
+        }
+        if self.diagnostics() {
+            log(&format!(
+                "lifesteal slot={attacker} dmg_health={health} dmg_armor={armor} health={} armor={} helmet={:?}",
+                s2sdk::GetClientHealth(attacker),
+                s2sdk::GetClientArmor(attacker),
+                player.helmet()
+            ));
+        }
+        Some(attacker)
+    }
+
+    fn kill_loadout(&mut self, attacker: i32, victim: i32) {
+        if attacker == victim || victim < 0 {
+            return;
+        }
+        let Some(player) = LivePlayer::resolve(attacker) else { return };
+        if self.controllers.get(&attacker) != Some(&player.controller_handle) {
+            return;
+        }
+        let Some(mode) = self.controller.current_mode().filter(|mode| mode.kill_loadout) else {
+            return;
+        };
+        let diagnostics = self.diagnostics();
+        let Some(effect) = self
+            .effects
+            .get_mut(&attacker)
+            .filter(|effect| Some(effect.identity) == self.players.identity(attacker))
+        else {
+            return;
+        };
+        if effect.identity.pawn_handle != player.pawn_handle as u32 {
+            return;
+        }
+        let weapon = mode.select_kill_weapon(&mut self.rng).expect("validated kill loadout").to_owned();
+        let before = diagnostics.then(|| (s2sdk::GetClientHealth(attacker), s2sdk::GetClientArmor(attacker)));
+        if let Err(error) = effect.replace_equipment(std::slice::from_ref(&weapon), mode) {
+            if error.scope == Scope::Cancelled {
+                self.retire_effect(attacker);
+            }
+            self.handle_fault(error);
+        } else if let Some(before) = before {
+            log(&format!(
+                "kill loadout slot={attacker} weapon={weapon} health={}/{} armor={}/{}",
+                before.0,
+                s2sdk::GetClientHealth(attacker),
+                before.1,
+                s2sdk::GetClientArmor(attacker)
+            ));
+        }
+    }
+
+    fn spawn(&mut self, slot: i32, tick: i32) {
+        if slot < 0 || tick < 0 || !s2sdk::IsClientInGame(slot) {
+            return;
+        }
+        self.connect(slot);
+        let controller = s2sdk::PlayerSlotToEntHandle(slot);
+        if !s2sdk::IsValidEntHandle(controller) {
+            return;
+        }
+        let previous = self.players.identity(slot).or_else(|| self.players.pending_identity(slot));
+        let pawn = LivePlayer::resolve(slot).map_or(u32::MAX, |player| player.pawn_handle as u32);
+        self.players.spawn(slot, tick as u64, pawn);
+        let identity = self.players.identity(slot).or_else(|| self.players.pending_identity(slot));
+        if previous != identity {
+            self.refills.cancel_player(slot);
+            self.retire_effect(slot);
+            self.pending.retain(|(task, _, _)| task.player.slot != slot);
+        }
+        if self.controller.phase() != Phase::Idle
+            && let Some(identity) = identity
+        {
+            self.queue(identity, tick, PendingAction::Loadout);
+        }
+    }
+
+    fn connect(&mut self, slot: i32) {
+        if slot < 0 || slot >= s2sdk::GetMaxClients() || !s2sdk::IsClientInGame(slot) {
+            return;
+        }
+        let controller = s2sdk::PlayerSlotToEntHandle(slot);
+        if !s2sdk::IsValidEntHandle(controller) || self.controllers.get(&slot) == Some(&controller) {
+            return;
+        }
+        self.forget_player(slot);
+        self.controllers.insert(slot, controller);
+        self.players.connect(slot);
+        if self.classic_enabled()
+            && !s2sdk::IsFakeClient(slot)
+            && let Some(identity) = self.players.connection_identity(slot)
+        {
+            self.welcomes.push((identity, s2sdk::GetGameTime() + 15.0));
+        }
+    }
+
+    fn queue(&mut self, player: PlayerIdentity, tick: i32, action: PendingAction) {
+        let task = PlayerTask {
+            player,
+            round: self.controller.generation(),
+        };
+        if !self.pending.iter().any(|(pending, _, queued)| *pending == task && *queued == action) {
+            self.pending.push((task, tick, action));
+        }
+    }
+
+    fn forget_player(&mut self, slot: i32) {
+        self.refills.cancel_player(slot);
+        self.projectiles
+            .retire_player(slot, self.players.identity(slot).map(|player| player.pawn_handle));
+        self.retire_effect(slot);
+        self.players.disconnect(slot);
+        self.controllers.remove(&slot);
+        self.knock_disabled.remove(&slot);
+        self.welcomes.retain(|(identity, _)| identity.slot != slot);
+        self.pending.retain(|(task, _, _)| task.player.slot != slot);
+        self.respawns.retain(|(task, _, _, _)| task.player.slot != slot);
+    }
+
+    fn retire_effect(&mut self, slot: i32) {
+        let Some(effect) = self.effects.remove(&slot) else { return };
+        let index = self.retired_effects.len();
+        self.retired_effects.push(effect);
+        if let Err(error) = restore_or_retain(&mut self.retired_effects, index, |effect| {
+            effect.restore_retired_state(&mut self.refills)?;
+            Ok(effect.equipment_restored())
+        }) {
+            self.handle_fault(Fault::global(format!("effect restoration deferred for slot={slot}: {error}")));
+        }
+    }
+
+    fn cleanup_effects(&mut self, round_end: bool) {
+        self.center_display = None;
+        self.refills.cancel_all();
+        self.impacts.clear();
+        self.projectiles.clear();
+        self.pending.clear();
+        self.team_match = None;
+        self.respawns.clear();
+        self.low_health_finishes.clear();
+        let bomb_cleanup = if round_end {
+            self.bombs.cleanup_after_round_end()
+        } else {
+            self.bombs.cleanup()
+        };
+        if let Err(error) = bomb_cleanup {
+            self.record_fault(Fault::global(error));
+        }
+        let slots = self.effects.keys().copied().collect::<Vec<_>>();
+        for slot in slots {
+            let effect = self.effects.get_mut(&slot).expect("effect slot exists");
+            let result = if self.players.identity(effect.identity.slot) == Some(effect.identity) {
+                effect.restore(&mut self.refills)
+            } else {
+                effect.restore_retired_state(&mut self.refills)
+            };
+            match result {
+                Ok(()) if effect.equipment_restored() => {
+                    self.effects.remove(&slot);
+                }
+                Ok(()) => {}
+                Err(error) => self.record_fault(Fault::global(error)),
+            }
+        }
+        for index in (0..self.retired_effects.len()).rev() {
+            if let Err(error) = restore_or_retain(&mut self.retired_effects, index, |effect| {
+                effect.restore_retired_state(&mut self.refills)?;
+                Ok(effect.equipment_restored())
+            }) {
+                self.record_fault(Fault::global(error));
+            }
+        }
+        if let Err(error) = self.parameters.restore() {
+            self.record_fault(Fault::global(error));
+        }
+    }
+    pub fn shutdown(&mut self) -> Result<(), String> {
+        self.welcomes.clear();
+        self.bombs.acknowledge_shutdown_removals();
+        self.cleanup_effects(false);
+        self.restore_team_names();
+        if self.cleanup_complete() {
+            Ok(())
+        } else {
+            Err("owned properties or ConVars remain unrestored; snapshots retained for shutdown retry".into())
+        }
+    }
+
+    fn restore_team_names(&mut self) {
+        if let Err(error) = self.team_names.restore() {
+            self.record_fault(Fault::global(error));
+        }
+    }
+
+    pub fn command(&mut self, command: Command, slot: i32) -> Result<String, String> {
+        match command {
+            Command::Status => {
+                let summary = format!(
+                    "[FunRounds] {} enabled={} phase={:?} current={} next={} pending_reload={} effects_ready={} classic_ready={} diagnostics={}",
+                    funrounds_core::VERSION,
+                    self.controller.enabled(),
+                    self.controller.phase(),
+                    self.controller.current_mode().map_or("ordinary", |mode| mode.id.as_str()),
+                    self.controller.forced_next().unwrap_or("random"),
+                    self.controller.pending_config().is_some(),
+                    self.effects_ready,
+                    self.classic_ready,
+                    self.diagnostics(),
+                );
+                let details = format!(
+                    "config={}\ncapabilities={:?}\nexcluded={}\ncapability_reasons={}",
+                    self.config_path.display(),
+                    self.controller.capabilities(),
+                    self.controller
+                        .config()
+                        .map(|config| config
+                            .modes
+                            .iter()
+                            .filter(|mode| mode.enabled)
+                            .filter_map(|mode| {
+                                let mut missing = self.controller.capabilities().missing_for(mode);
+                                if !self.controller.capabilities().classic {
+                                    missing.push("classic");
+                                }
+                                (!missing.is_empty()).then(|| format!("{}:[{}]", mode.id, missing.join(",")))
+                            })
+                            .collect::<Vec<_>>()
+                            .join(";"))
+                        .unwrap_or_default(),
+                    self.capability_reasons.join(";"),
+                );
+                Ok(format_status(
+                    &summary,
+                    &self.faults,
+                    !self.effects_ready && !self.cleanup_complete(),
+                    &details,
+                ))
+            }
+            Command::List => Ok(self.controller.config().map_or_else(
+                || "[FunRounds] no valid active configuration".into(),
+                |config| {
+                    config
+                        .modes
+                        .iter()
+                        .map(|mode| format!("{} enabled={} {}", mode.id, mode.enabled, mode.name))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                },
+            )),
+            Command::Next(next) => {
+                self.controller.force_next(next)?;
+                Ok(format!("[FunRounds] next={}", self.controller.forced_next().unwrap_or("random")))
+            }
+            Command::Reload => {
+                let source = std::fs::read_to_string(&self.config_path).map_err(|error| format!("{}: {error}", self.config_path.display()))?;
+                self.controller.queue_reload(&source)?;
+                Ok("[FunRounds] valid configuration queued for the next round".into())
+            }
+            Command::Enable(enabled) => {
+                if !enabled {
+                    self.cleanup_effects(false);
+                    self.restore_team_names();
+                    self.welcomes.clear();
+                }
+                self.controller.set_enabled(enabled);
+                Ok(format!("[FunRounds] enabled={enabled}; activation begins at the next round"))
+            }
+            Command::Info => Ok(format!(
+                "FunRounds {}\n{}",
+                funrounds_core::VERSION,
+                self.controller.current_mode().map_or_else(
+                    || "当前模式：普通游戏".into(),
+                    |mode| format!(
+                        "状态：{}\n模式：{} {}\n说明：{}",
+                        if self.controller.phase() == Phase::Preparing {
+                            "准备"
+                        } else {
+                            "进行"
+                        },
+                        mode.id,
+                        mode.name,
+                        mode.description
+                    )
+                )
+            ) + &team_match_info(
+                self.controller.current_mode().is_some_and(|mode| mode.team_deathmatch),
+                self.team_match.as_ref(),
+                s2sdk::GetGameTime(),
+            )),
+            Command::Help => Ok(crate::commands::HELP.into()),
+            Command::Knock(enabled) => {
+                if !self.classic_enabled() {
+                    return Err("FunRounds公共行为当前不可用".into());
+                }
+                self.connect(slot);
+                if self.players.connection_identity(slot).is_none() {
+                    return Err("fr_knock requires an in-game player".into());
+                }
+                let enabled = enabled.unwrap_or(self.knock_disabled.contains(&slot));
+                if enabled {
+                    self.knock_disabled.remove(&slot);
+                } else {
+                    self.knock_disabled.insert(slot);
+                }
+                Ok(format!("开枪自推：{}", if enabled { "开启" } else { "关闭" }))
+            }
+        }
+    }
+}
+
+fn format_status(summary: &str, faults: &Faults, cleanup_pending: bool, details: &str) -> String {
+    format!(
+        "{summary} recovery={:?} cleanup_pending={cleanup_pending}\nfaults={}\n{details}",
+        faults.recovery,
+        faults.reasons(),
+    )
+}
+
+fn read_config(path: &std::path::Path) -> Result<Config, String> {
+    let source = std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    Config::parse(&source).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn mode65_self_damage(damage: &crate::damage::Damage, pawn: i32, health: i32) -> bool {
+    let Some(damage_type) = damage.damage_type else { return false };
+    let native_self = damage.inflictor == pawn;
+    // mp_weapon_self_inflict_amount uses pawn-attributed DMG_GENERIC, not DMG_BULLET.
+    native_self && (damage_type == 0 || damage_type == 0x0200_0000 && health <= 1 && damage.amount == 1.0)
+        || damage.weapon_kind == 1 && damage_type & 2 != 0
+}
+
+fn team_match_info(selected: bool, game: Option<&TeamDeathmatch>, now: f32) -> String {
+    if !selected {
+        return String::new();
+    }
+    game.map_or_else(
+        || "\n比分：T 0 : 0 CT\n剩余时间：计时未开始（冻结结束后开始）".into(),
+        |game| {
+            format!(
+                "\n比分：T {} : {} CT\n剩余时间：{:.0}s",
+                game.scores()[0],
+                game.scores()[1],
+                game.remaining(now)
+            )
+        },
+    )
+}
+
+fn observe_lifecycle_tick(last: &mut Option<i32>, tick: i32, event: Option<&str>) -> bool {
+    // Damage callbacks can rewind ticks; round boundaries can precede the first new-map frame.
+    if event.is_some_and(|name| !matches!(name, "round_prestart" | "round_start")) {
+        return false;
+    }
+    last.replace(tick).is_some_and(|previous| tick < previous)
+}
+
+fn discard_map_effects<T>(effects: &mut HashMap<i32, T>, retired_effects: &mut Vec<T>) {
+    effects.clear();
+    retired_effects.clear();
+}
+
+fn restore_or_retain<T>(retained: &mut Vec<T>, index: usize, restore: impl FnOnce(&mut T) -> Result<bool, String>) -> Result<(), String> {
+    if restore(&mut retained[index])? {
+        retained.remove(index);
+    }
+    Ok(())
+}
+
+fn log(message: &str) {
+    s2sdk::PrintToServer(&Str::from_str(&format!("[FunRounds] {message}")));
+}
+
+fn respawn_target_valid(expected: LivePlayer, current: Option<LivePlayer>, team: i32, current_team: i32, alive: bool) -> bool {
+    current == Some(expected) && matches!(team, 2 | 3) && current_team == team && !alive
+}
+
+fn lifesteal_eligible(attacker: i32, victim: i32, attacker_alive: bool) -> bool {
+    attacker >= 0 && victim >= 0 && attacker != victim && attacker_alive
+}
+
+fn respawn_window_open(phase: Phase, remaining: Option<f32>) -> bool {
+    phase == Phase::Preparing || (phase == Phase::Running && remaining.is_some_and(|seconds| seconds > 0.0))
+}
+
+fn center_display_due(current: bool, phase: Phase, tick: i32, scheduled: i32) -> bool {
+    current && phase != Phase::Idle && tick > scheduled
+}
+
+fn center_display_action_valid(generation_matches: bool, phase: Phase, effects_ready: bool) -> bool {
+    generation_matches && phase != Phase::Idle && effects_ready
+}
+
+fn escape_html_text(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn separate_console_output(message: String) -> String {
+    format!("\n{message}")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn stopped_status_puts_recovery_and_fault_before_a_large_excluded_list() {
+        let mut faults = crate::fault::Faults::new(funrounds_core::Capabilities::default());
+        faults.record(&crate::fault::Fault::global("created action failed after cancellation"));
+        let details = format!(
+            "capabilities={:?}\nexcluded={}\ncapability_reasons=",
+            faults.capabilities(),
+            "85:[equipment,health,armor,gravity,classic];".repeat(40)
+        );
+        assert!(details.len() > 2047);
+        let status = super::format_status(
+            "[FunRounds] enabled=false phase=Idle current=ordinary effects_ready=false",
+            &faults,
+            false,
+            &details,
+        );
+        let parts = crate::commands::status_reply_parts(&status).collect::<Vec<_>>();
+        assert!(parts[0].ends_with("recovery=Stopped cleanup_pending=false"));
+        assert_eq!(parts[1], "faults=Global:[created action failed after cancellation]");
+        assert!(parts[2].starts_with("capabilities="));
+        assert_eq!(parts[3..parts.len() - 1].concat().matches("85:[").count(), 40);
+        assert_eq!(parts.last(), Some(&"capability_reasons="));
+    }
+
+    #[test]
+    fn center_mode_name_waits_for_the_next_tick_and_cancels_when_stale() {
+        use funrounds_core::Phase;
+
+        assert!(!super::center_display_due(true, Phase::Preparing, 10, 10));
+        assert!(super::center_display_due(true, Phase::Preparing, 11, 10));
+        assert!(!super::center_display_due(false, Phase::Preparing, 11, 10));
+        assert!(!super::center_display_due(true, Phase::Idle, 11, 10));
+    }
+
+    #[test]
+    fn center_mode_name_is_rendered_as_text_not_html() {
+        assert_eq!(super::escape_html_text("示例 & <example>"), "示例 &amp; &lt;example&gt;");
+    }
+
+    #[test]
+    fn center_action_revalidates_generation_phase_and_effect_readiness() {
+        use funrounds_core::Phase;
+
+        assert!(super::center_display_action_valid(true, Phase::Preparing, true));
+        assert!(!super::center_display_action_valid(false, Phase::Preparing, true));
+        assert!(!super::center_display_action_valid(true, Phase::Idle, true));
+        assert!(!super::center_display_action_valid(true, Phase::Preparing, false));
+    }
+
+    #[test]
+    fn classic_console_output_starts_on_a_separate_line() {
+        assert_eq!(super::separate_console_output("[FunRounds] mode".into()), "\n[FunRounds] mode");
+    }
+
+    #[test]
+    fn miss_damage_preserves_native_self_damage_and_final_health_point() {
+        let mut damage = crate::damage::Damage {
+            victim: 42,
+            attacker: 42,
+            inflictor: 42,
+            weapon_kind: 0,
+            hit_group: -1,
+            traced_head: false,
+            amount: 36.0,
+            damage_type: Some(0),
+        };
+        assert!(super::mode65_self_damage(&damage, 42, 200));
+        assert!(!super::mode65_self_damage(&damage, 43, 200));
+        for damage_type in [8, 64, 256, 0x0200_0000] {
+            damage.damage_type = Some(damage_type);
+            assert!(!super::mode65_self_damage(&damage, 42, 200));
+        }
+        damage.amount = 1.0;
+        assert!(super::mode65_self_damage(&damage, 42, 1));
+        assert!(!super::mode65_self_damage(&damage, 42, 2));
+        damage.damage_type = None;
+        assert!(!super::mode65_self_damage(&damage, 42, 1));
+        damage.damage_type = Some(2);
+        assert!(!super::mode65_self_damage(&damage, 42, 200));
+        damage.weapon_kind = 1;
+        assert!(super::mode65_self_damage(&damage, 42, 200));
+    }
+
+    #[test]
+    fn team_info_includes_preparation_without_starting_the_clock() {
+        assert_eq!(super::team_match_info(false, None, 0.0), "");
+        assert_eq!(
+            super::team_match_info(true, None, 0.0),
+            "\n比分：T 0 : 0 CT\n剩余时间：计时未开始（冻结结束后开始）"
+        );
+        let game = funrounds_core::TeamDeathmatch::start(10.0, 60.0).unwrap();
+        assert_eq!(super::team_match_info(true, Some(&game), 12.0), "\n比分：T 0 : 0 CT\n剩余时间：58s");
+    }
+    use super::discard_map_effects;
+    use std::collections::HashMap;
+
+    #[test]
+    fn event_tick_rewinds_do_not_discard_map_state_but_frame_rewinds_do() {
+        let mut last = None;
+        assert!(!super::observe_lifecycle_tick(&mut last, 1294, None));
+        assert!(!super::observe_lifecycle_tick(&mut last, 1293, Some("player_hurt")));
+        assert!(!super::observe_lifecycle_tick(&mut last, 1295, Some("weapon_fire")));
+        assert_eq!(last, Some(1294));
+        assert!(!super::observe_lifecycle_tick(&mut last, 1294, None));
+        assert!(!super::observe_lifecycle_tick(&mut last, 1295, None));
+        assert!(super::observe_lifecycle_tick(&mut last, 0, None));
+        assert_eq!(last, Some(0));
+    }
+
+    #[test]
+    fn new_map_round_boundaries_before_frame_discard_old_state_and_reach_running() {
+        use funrounds_core::{Capabilities, Config, Phase, RoundController};
+        use rand::{SeedableRng, rngs::StdRng};
+
+        let config = Config::parse(include_str!("../../../config/funrounds.example.toml")).unwrap();
+        let capabilities = Capabilities {
+            classic: true,
+            equipment: true,
+            health: true,
+            armor: true,
+            gravity: true,
+            ..Capabilities::default()
+        };
+        for first_event in ["round_prestart", "round_start"] {
+            let mut controller = RoundController::new(Some(config.clone()), capabilities).unwrap();
+            let mut rng = StdRng::seed_from_u64(1);
+            let mut last = Some(10000);
+            let old_key = controller.round_key(10000);
+            assert!(controller.start_round(old_key, false, &mut rng));
+            assert!(controller.freeze_end(old_key));
+
+            assert!(super::observe_lifecycle_tick(&mut last, 1, Some(first_event)));
+            controller.reset();
+            let new_key = controller.round_key(1);
+            assert_ne!(new_key, old_key);
+            assert!(!super::observe_lifecycle_tick(&mut last, 1, Some("round_start")));
+            assert!(controller.start_round(new_key, false, &mut rng));
+            assert_eq!(controller.phase(), Phase::Preparing);
+            assert!(!super::observe_lifecycle_tick(&mut last, 1, None));
+            assert!(controller.freeze_end(new_key));
+            assert_eq!(controller.phase(), Phase::Running);
+        }
+    }
+
+    #[test]
+    fn lifesteal_excludes_self_world_and_dead_attackers() {
+        assert!(super::lifesteal_eligible(1, 2, true));
+        assert!(!super::lifesteal_eligible(1, 1, true));
+        assert!(!super::lifesteal_eligible(-1, 2, true));
+        assert!(!super::lifesteal_eligible(1, -1, true));
+        assert!(!super::lifesteal_eligible(1, 2, false));
+    }
+
+    #[test]
+    fn team_respawn_works_during_freeze_without_starting_the_score_timer() {
+        use funrounds_core::Phase;
+        assert!(super::respawn_window_open(Phase::Preparing, None));
+        assert!(super::respawn_window_open(Phase::Running, Some(3.0)));
+        assert!(!super::respawn_window_open(Phase::Running, Some(0.0)));
+        assert!(!super::respawn_window_open(Phase::Running, None));
+        assert!(!super::respawn_window_open(Phase::Idle, Some(30.0)));
+    }
+
+    #[test]
+    fn respawn_rejects_changed_handles_team_and_external_resurrection() {
+        let player = crate::game::LivePlayer {
+            slot: 1,
+            controller_handle: 0x4001,
+            pawn_handle: 0x4002,
+        };
+        assert!(super::respawn_target_valid(player, Some(player), 2, 2, false));
+        assert!(!super::respawn_target_valid(player, Some(player), 2, 3, false));
+        assert!(!super::respawn_target_valid(player, Some(player), 2, 2, true));
+        assert!(!super::respawn_target_valid(player, None, 2, 2, false));
+        assert!(!super::respawn_target_valid(
+            player,
+            Some(crate::game::LivePlayer {
+                pawn_handle: 0x8002,
+                ..player
+            }),
+            2,
+            2,
+            false
+        ));
+        assert!(!super::respawn_target_valid(
+            player,
+            Some(crate::game::LivePlayer {
+                controller_handle: 0x8001,
+                ..player
+            }),
+            2,
+            2,
+            false
+        ));
+    }
+
+    #[test]
+    fn map_change_discards_active_and_retired_entity_snapshots() {
+        let mut effects = HashMap::from([(1, "active")]);
+        let mut retired_effects = vec!["retired"];
+        discard_map_effects(&mut effects, &mut retired_effects);
+        assert!(effects.is_empty());
+        assert!(retired_effects.is_empty());
+    }
+
+    #[test]
+    fn failed_retired_restoration_keeps_its_snapshot_for_retry() {
+        let mut retained = vec!["mode 37 color"];
+        let result = super::restore_or_retain(&mut retained, 0, |_| Err("color readback failed".into()));
+        assert_eq!(result, Err("color readback failed".into()));
+        assert_eq!(retained, ["mode 37 color"]);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                super::restore_or_retain(&mut retained, 0, |_| panic!("restoration panic"))
+            }))
+            .is_err()
+        );
+        assert_eq!(retained, ["mode 37 color"]);
+        super::restore_or_retain(&mut retained, 0, |_| Ok(false)).unwrap();
+        assert_eq!(retained, ["mode 37 color"]);
+        super::restore_or_retain(&mut retained, 0, |_| Ok(true)).unwrap();
+        assert!(retained.is_empty());
+    }
+}
