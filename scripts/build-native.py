@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the native plugin against the project's pinned public SDK inputs."""
+"""Build and stage the native plugin and its pinned, patched S2SDK provider."""
 
 from __future__ import annotations
 
@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
 
-S2SDK_URL = "https://github.com/untrustedmodders/plugify-plugin-s2sdk.git"
-S2SDK_COMMIT = "d1a484e9108a16d2345ead2a7f3a9a1e37b2c66d"
-S2SDK_VERSION = "3.0.1"
+S2SDK_URL = "https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk.git"
+# funrounds branch; pin the patched provider used by both plugins and the bundle.
+S2SDK_COMMIT = "021b5d5a90abb6014df0ca128a4af4d3725888d0"
+S2SDK_VERSION = "3.0.2"
 SOURCESDK_URL = "https://github.com/Wend4r/sourcesdk.git"
-SOURCESDK_COMMIT = "4bc263ddc8e1a65b16ba1b07d195389bcfbd9475"
+SOURCESDK_COMMIT = "d0539abb26d950d12338ef24aa300aface789710"
 
 
 class BuildError(RuntimeError):
@@ -218,6 +219,39 @@ def windows_generator() -> str:
     return generators[int(match.group(1))]
 
 
+def build_s2sdk(sdk: Path, work_dir: Path, output_dir: Path, cmake: str, options: Sequence[str]) -> None:
+    run(["git", "-C", str(sdk), "submodule", "update", "--init", "--recursive", "--depth", "1", "--",
+         "external/parallel-hashmap", "external/zydis"])
+    build = work_dir / "build-s2sdk"
+    # S2SDK does not use protobuf's gzip API; avoid linking MSVC against a discovered MinGW zlib.
+    protobuf_options = ["-Dprotobuf_WITH_ZLIB=OFF"] if platform.system() == "Windows" else []
+    run([cmake, "-S", str(sdk), "-B", str(build), *options, *protobuf_options,
+         "-DCMAKE_SUPPRESS_REGENERATION=ON", "-DSOURCESDK_GAME_TARGET=cs2", "-DSOURCESDK_USE_ABI0=ON",
+         f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={build / 'bin'}", f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY={build / 'bin'}"])
+    run([cmake, "--build", str(build), "--config", "Release", "--target", "plugify-plugin-s2sdk", "--parallel", "4"])
+    name = "plugify-plugin-s2sdk.dll" if platform.system() == "Windows" else "libplugify-plugin-s2sdk.so"
+    binary_dir = build / "bin" / "Release" if platform.system() == "Windows" else build / "bin"
+    staged = output_dir / "s2sdk"
+    (staged / "bin").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(binary_dir / name, staged / "bin" / name)
+    for name in ("plugify-plugin-s2sdk.pplugin", "gamedata.jsonc", "settings.jsonc", "translations.jsonc"):
+        shutil.copy2(build / name, staged / name)
+    licenses = {
+        "S2SDK-GPL-3.0.txt": sdk / "LICENSE",
+        "parallel-hashmap.txt": sdk / "external/parallel-hashmap/LICENSE",
+        "Zydis.txt": sdk / "external/zydis/LICENSE",
+        "Zycore.txt": sdk / "external/zydis/dependencies/zycore/LICENSE",
+        "protobuf.txt": sdk / "external/sourcesdk/thirdparty/protobuf/LICENSE",
+    }
+    (staged / "licenses").mkdir(exist_ok=True)
+    for name, path in licenses.items():
+        shutil.copy2(path, staged / "licenses" / name)
+    (staged / "source.json").write_text(json.dumps({
+        "repository": S2SDK_URL, "commit": S2SDK_COMMIT, "version": S2SDK_VERSION,
+        "sourcesdk_commit": SOURCESDK_COMMIT,
+    }, indent=2) + "\n", encoding="utf-8")
+
+
 def configure_and_build(repo_root: Path, work_dir: Path, output_dir: Path) -> Path:
     system = platform.system()
     if system not in {"Windows", "Linux"}:
@@ -253,17 +287,20 @@ def configure_and_build(repo_root: Path, work_dir: Path, output_dir: Path) -> Pa
     ]
 
     if system == "Windows":
-        configure.extend(["-G", windows_generator(), "-A", "x64"])
+        options = ["-G", windows_generator(), "-A", "x64"]
     else:
         gcc, gxx = check_linux_compilers()
-        configure.extend(
-            [
-                "-DCMAKE_BUILD_TYPE=Release",
-                f"-DCMAKE_C_COMPILER={gcc}",
-                f"-DCMAKE_CXX_COMPILER={gxx}",
-                "-DCMAKE_SHARED_LINKER_FLAGS=-static-libstdc++ -static-libgcc",
-            ]
-        )
+        options = [
+            "-DCMAKE_BUILD_TYPE=Release",
+            f"-DCMAKE_C_COMPILER={gcc}",
+            f"-DCMAKE_CXX_COMPILER={gxx}",
+            "-DCMAKE_SHARED_LINKER_FLAGS=-static-libstdc++ -static-libgcc",
+            "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON",
+            "-DCMAKE_INSTALL_RPATH=$ORIGIN",
+            "-DSOURCESDK_LINK_ENABLE_RPATH=OFF",
+        ]
+    build_s2sdk(sdk, work_dir, output_dir, cmake, options)
+    configure.extend(options)
 
     run(configure)
     run([cmake, "--build", str(build_dir), "--config", "Release", "--target", "funrounds-native", "--parallel"])
@@ -293,7 +330,7 @@ def configure_and_build(repo_root: Path, work_dir: Path, output_dir: Path) -> Pa
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build and stage the native plugin for the current platform.")
+    parser = argparse.ArgumentParser(description="Build and stage the native plugin and patched S2SDK for the current platform.")
     parser.add_argument("--work-dir", type=Path, default=Path(".work/native"), help="isolated SDK and build workspace")
     parser.add_argument("--output-dir", type=Path, default=Path(".work/native-output"), help="native plugin package root")
     return parser.parse_args(argv)

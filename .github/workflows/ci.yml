@@ -74,7 +74,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Run Rust tests
         run: cargo test --workspace --locked
-      - name: Build Windows plugins
+      - name: Build Windows plugins and patched S2SDK
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -82,7 +82,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/build-native.py --work-dir .work/native --output-dir .work/native-output
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Build Linux plugins against Steam Runtime
+      - name: Build Linux plugins and patched S2SDK against Steam Runtime
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -100,8 +100,8 @@ jobs:
               cargo build --release --workspace --locked --offline
               python3 scripts/build-native.py --work-dir .work/native --output-dir .work/native-output
             '
-          python scripts/ci.py abi target/release/libfunrounds_plugin.so .work/native-output/bin/libfunrounds-native.so
-      - name: Package the plugins, gamedata, example and license notices
+          python scripts/ci.py abi target/release/libfunrounds_plugin.so .work/native-output/bin/libfunrounds-native.so .work/native-output/s2sdk/bin/libplugify-plugin-s2sdk.so
+      - name: Package the plugins, patched S2SDK, resources, example and licenses
         run: python scripts/ci.py package --platform ${{ matrix.platform }} --native-output .work/native-output
       - uses: actions/upload-artifact@v7
         with:

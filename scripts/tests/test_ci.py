@@ -38,7 +38,7 @@ class CITests(unittest.TestCase):
         native = {"version": version, "dependencies": [{"name": "s2sdk", "constraints": "=3.0.1"}]}
         self.write("packaging/funrounds.pplugin", json.dumps(main))
         self.write("native/funrounds-native/funrounds-native.pplugin", json.dumps(native))
-        self.write("bindings/s2sdk.pplugin", '{"version":"3.0.1"}')
+        self.write("bindings/s2sdk.pplugin", '{"version":"3.0.1","dependencies":[{"name":"configs","constraints":">=2.1.0"}]}')
         self.write("native/funrounds-native/gamedata/funrounds-native.jsonc", '{}')
         self.write("config/funrounds.example.toml", '# Generic example\n')
         self.write("LICENSE", "License")
@@ -50,6 +50,14 @@ class CITests(unittest.TestCase):
         for platform in ci.PLATFORMS:
             (output / f"funrounds-{version}-{platform}.zip").write_bytes(b"archive")
         return output
+
+    def sdk_fixture(self, platform, version="3.0.1"):
+        name = "plugify-plugin-s2sdk.dll" if platform == "windows-x64" else "libplugify-plugin-s2sdk.so"
+        self.write(f"native-output/s2sdk/bin/{name}", "patched SDK")
+        self.write("native-output/s2sdk/plugify-plugin-s2sdk.pplugin", json.dumps({"name": "s2sdk", "version": version}))
+        for name in ("gamedata.jsonc", "settings.jsonc", "translations.jsonc", "source.json"):
+            self.write(f"native-output/s2sdk/{name}", "{}")
+        self.write("native-output/s2sdk/licenses/S2SDK-GPL-3.0.txt", "SDK notice")
 
     def env(self):
         event = {"repository": {"default_branch": "main"}, "before": "a" * 40}
@@ -107,6 +115,7 @@ class CITests(unittest.TestCase):
             with self.subTest(platform=platform):
                 self.write(f"target/release/{rust_name}", "binary")
                 native = self.root / "native-output"
+                self.sdk_fixture(platform)
                 self.write(f"native-output/bin/{native_name}", "native binary")
                 for path in ("funrounds-native.pplugin", "gamedata/funrounds-native.jsonc"):
                     self.write(f"native-output/{path}", (self.root / "native/funrounds-native" / path).read_text("utf-8"))
@@ -118,10 +127,31 @@ class CITests(unittest.TestCase):
                     self.assertIn(f"addons/plugify/envs/funrounds/bin/{rust_entry}", names)
                     self.assertIn(f"addons/plugify/envs/funrounds_native/bin/{native_name}", names)
                     self.assertIn("licenses/dependency.txt", names)
+                    self.assertIn("licenses/s2sdk/S2SDK-GPL-3.0.txt", names)
+                    self.assertIn("addons/plugify/envs/s2sdk/plugify-plugin-s2sdk.pplugin", names)
+                    self.assertIn("addons/plugify/envs/s2sdk/source.json", names)
+                    self.assertIn("addons/plugify/envs/s2sdk/settings.jsonc", names)
+                    self.assertIn("addons/plugify/envs/s2sdk/gamedata.jsonc", names)
+                    self.assertIn("addons/plugify/envs/s2sdk/translations.jsonc", names)
+                    self.assertTrue(any(name.startswith("addons/plugify/envs/s2sdk/bin/") for name in names))
                     self.assertIn("addons/plugify/configs/funrounds.example.toml", names)
                     self.assertFalse(any("fr_players" in name or "private" in name or name.endswith("/funrounds.toml") for name in names))
 
     def test_missing_binary_fails_before_creating_archive(self):
+        with self.assertRaisesRegex(ValueError, "Missing or empty"):
+            ci.package("windows-x64", self.root / "native-output", self.root / "dist", self.root)
+        self.assertFalse((self.root / "dist").exists())
+
+    def test_package_rejects_wrong_sdk_version_and_missing_resources(self):
+        self.write("target/release/funrounds_plugin.dll", "binary")
+        self.write("native-output/bin/funrounds-native.dll", "native binary")
+        for path in ("funrounds-native.pplugin", "gamedata/funrounds-native.jsonc"):
+            self.write(f"native-output/{path}", (self.root / "native/funrounds-native" / path).read_text("utf-8"))
+        self.sdk_fixture("windows-x64", version="3.0.0")
+        with self.assertRaisesRegex(ValueError, "Bundled S2SDK"):
+            ci.package("windows-x64", self.root / "native-output", self.root / "dist", self.root)
+        self.sdk_fixture("windows-x64")
+        (self.root / "native-output/s2sdk/gamedata.jsonc").unlink()
         with self.assertRaisesRegex(ValueError, "Missing or empty"):
             ci.package("windows-x64", self.root / "native-output", self.root / "dist", self.root)
         self.assertFalse((self.root / "dist").exists())
@@ -133,6 +163,16 @@ class CITests(unittest.TestCase):
         output.side_effect = ["GLIBC_2.32"]
         with self.assertRaises(ValueError):
             ci.check_linux_abi([Path("sample.so")])
+
+    @patch.object(ci.subprocess, "check_output")
+    def test_linux_binaries_do_not_depend_on_build_machine_paths(self, output):
+        for dynamic in ("(RUNPATH) Library runpath: [$ORIGIN:/workspace/sdk/lib]",
+                        "(NEEDED) Shared library: [/workspace/sdk/libv8.so]"):
+            output.side_effect = ["GLIBC_2.29", dynamic]
+            with self.assertRaisesRegex(ValueError, "Build-machine"):
+                ci.check_linux_abi([Path("sample.so")])
+        output.side_effect = ["GLIBC_2.29", "(RUNPATH) Library runpath: [$ORIGIN]"]
+        ci.check_linux_abi([Path("sample.so")])
         output.side_effect = ["GLIBC_2.31", "Shared library: [libstdc++.so.6]"]
         with self.assertRaises(ValueError):
             ci.check_linux_abi([Path("sample.so")])
@@ -146,7 +186,8 @@ class CITests(unittest.TestCase):
         create, publish = [call.args[0] for call in run.call_args_list]
         self.assertIn("--draft", create)
         self.assertIn("b" * 40, create)
-        self.assertIn("s2sdk =3.0.1", create[create.index("--notes") + 1])
+        self.assertIn("Includes patched S2SDK", create[create.index("--notes") + 1])
+        self.assertIn("configs >=2.1.0", create[create.index("--notes") + 1])
         self.assertIn("--draft=false", publish)
         self.assertIn("--prerelease=false", publish)
 

@@ -93,12 +93,26 @@ def package(platform, native_output, output_dir, root=ROOT):
         "addons/plugify/configs/funrounds.example.toml": root / "config/funrounds.example.toml",
         "LICENSE": root / "LICENSE",
     }
+    sdk = native_output / "s2sdk"
+    sdk_name = "plugify-plugin-s2sdk.dll" if platform == "windows-x64" else "libplugify-plugin-s2sdk.so"
+    entries[f"{envs}/s2sdk/bin/{sdk_name}"] = sdk / "bin" / sdk_name
+    for name in ("plugify-plugin-s2sdk.pplugin", "gamedata.jsonc", "settings.jsonc", "translations.jsonc", "source.json"):
+        entries[f"{envs}/s2sdk/{name}"] = sdk / name
+    sdk_licenses = list((sdk / "licenses").glob("*.txt"))
+    if not sdk_licenses:
+        raise ValueError("Missing or empty S2SDK license notices")
+    for path in sdk_licenses:
+        entries[f"licenses/s2sdk/{path.name}"] = path
     for path in (root / "licenses").rglob("*"):
         if path.is_file():
             entries[path.relative_to(root).as_posix()] = path
     for path in entries.values():
         if not path.is_file() or path.stat().st_size == 0:
             raise ValueError(f"Missing or empty package input: {path}")
+    sdk_manifest = json.loads((sdk / "plugify-plugin-s2sdk.pplugin").read_text("utf-8"))
+    expected_sdk = json.loads((root / "bindings/s2sdk.pplugin").read_text("utf-8"))["version"]
+    if sdk_manifest["name"] != "s2sdk" or sdk_manifest["version"] != expected_sdk:
+        raise ValueError("Bundled S2SDK does not match the binding provider")
     built_manifest = json.loads((native_output / "funrounds-native.pplugin").read_text("utf-8"))
     if built_manifest != json.loads((root / "native/funrounds-native/funrounds-native.pplugin").read_text("utf-8")):
         raise ValueError("Built native manifest differs from the source manifest")
@@ -130,6 +144,10 @@ def check_linux_abi(paths):
         dynamic = subprocess.check_output(["readelf", "-d", str(path)], text=True)
         if "Shared library: [libstdc++" in dynamic:
             raise ValueError(f"Unexpected shared C++ runtime in {path}")
+        needed = re.findall(r"Shared library: \[([^]]+)\]", dynamic)
+        rpaths = re.findall(r"\((?:RUNPATH|RPATH)\).*?\[([^]]*)\]", dynamic)
+        if any("/" in name for name in needed) or any(entry.startswith("/") for value in rpaths for entry in value.split(":")):
+            raise ValueError(f"Build-machine library path in {path}")
 
 
 def publish(artifact_dir, env=os.environ, root=ROOT):
@@ -163,9 +181,14 @@ def publish(artifact_dir, env=os.environ, root=ROOT):
         command = ["gh", "release", "upload", tag, *map(str, assets), "--clobber", "--repo", repo]
     else:
         native = json.loads((root / "native/funrounds-native/funrounds-native.pplugin").read_text("utf-8"))
-        dependencies = ", ".join(f"{item['name']} {item['constraints']}" for item in native["dependencies"])
+        provider = json.loads((root / "bindings/s2sdk.pplugin").read_text("utf-8"))
+        required = {item["name"]: item for item in provider["dependencies"] if not item.get("optional", False)}
+        required.update({item["name"]: item for item in native["dependencies"] if item["name"] != "s2sdk"})
+        dependencies = ", ".join(f"{item['name']} {item['constraints']}" for item in required.values())
         notes = (f"Requires Plugify with the Rust and C++ language modules, {dependencies}. "
-                 "Dependencies are not bundled. Includes a generic funrounds.example.toml, not an active server configuration.")
+                 "Includes patched S2SDK from https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk/tree/funrounds "
+                 "with source commit details in s2sdk/source.json; other Plugify dependencies are not bundled. "
+                 "Includes a generic funrounds.example.toml, not an active server configuration.")
         command = ["gh", "release", "create", tag, *map(str, assets), "--draft", "--target", sha,
                    "--title", info["display"], "--notes", notes, "--generate-notes", "--repo", repo]
         if info["prerelease"]:

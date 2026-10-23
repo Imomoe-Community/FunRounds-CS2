@@ -12,7 +12,7 @@
   "dependencies": [
     {
       "name": "s2sdk",
-      "constraints": "=3.0.1"
+      "constraints": "=3.0.2"
     },
     {
       "name": "polyhook",

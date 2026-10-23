@@ -63,10 +63,12 @@ class BuildNativeTests(unittest.TestCase):
                 patch.object(build_native, "require_tool", return_value="cmake"), \
                 patch.object(build_native, "check_linux_compilers", return_value=("/usr/bin/gcc-14", "/usr/bin/g++-14")), \
                 patch.object(build_native, "windows_generator", return_value="Visual Studio 18 2026"), \
+                patch.object(build_native, "build_s2sdk") as provider_build, \
                 patch.object(build_native, "run", side_effect=fake_run):
             result = build_native.configure_and_build(ROOT, work, output)
 
         self.assertEqual(result, output)
+        self.assertEqual(provider_build.call_args.args[:3], (work / "s2sdk", work, output))
         self.assertEqual((output / "bin" / binary_name).read_bytes(), b"native fixture")
         manifest = ROOT / "native/funrounds-native/funrounds-native.pplugin"
         gamedata = ROOT / "native/funrounds-native/gamedata/funrounds-native.jsonc"
@@ -77,7 +79,7 @@ class BuildNativeTests(unittest.TestCase):
     def test_generates_pinned_s2sdk_import_manifest(self):
         sdk = self.root / "sdk"
         sdk.mkdir()
-        (sdk / "version.txt").write_text("3.0.1\n", encoding="utf-8")
+        (sdk / "version.txt").write_text("3.0.2\n", encoding="utf-8")
         (sdk / "plugify-plugin-s2sdk.pplugin.in").write_text(
             '{"version":"${S2SDK_VERSION}","name":"${S2SDK_PACKAGE}"}', encoding="utf-8"
         )
@@ -93,7 +95,7 @@ class BuildNativeTests(unittest.TestCase):
             build_native.generate_s2sdk_imports(sdk, generated_include)
 
         rendered = json.loads((self.root / "generated/plugify-plugin-s2sdk.pplugin").read_text("utf-8"))
-        self.assertEqual(rendered, {"version": "3.0.1", "name": "s2sdk"})
+        self.assertEqual(rendered, {"version": "3.0.2", "name": "s2sdk"})
         self.assertEqual(commands[0][1:7], ["-manifest", str(self.root / "generated/plugify-plugin-s2sdk.pplugin"), "-output", str(generated_include), "-lang", "cpp"])
         self.assertIn("-overwrite", commands[0])
         self.assertTrue((generated_include / "external/plugify/include/s2sdk/s2sdk.cpp").is_file())
@@ -107,6 +109,9 @@ class BuildNativeTests(unittest.TestCase):
         self.assertIn("-DCMAKE_CXX_COMPILER=/usr/bin/g++-14", configure)
         self.assertIn("-DSOURCESDK_USE_ABI0=ON", configure)
         self.assertIn("-DCMAKE_SHARED_LINKER_FLAGS=-static-libstdc++ -static-libgcc", configure)
+        self.assertIn("-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON", configure)
+        self.assertIn("-DCMAKE_INSTALL_RPATH=$ORIGIN", configure)
+        self.assertIn("-DSOURCESDK_LINK_ENABLE_RPATH=OFF", configure)
         self.assertIn(
             "-DFUNROUNDS_S2SDK_GENERATED_INCLUDE_DIR="
             + str(self.root / "work/generated-s2sdk/include/external/plugify/include"),
@@ -137,6 +142,35 @@ class BuildNativeTests(unittest.TestCase):
                 patch.object(build_native, "capture", return_value="17.14.37806.7") as capture:
             self.assertEqual(build_native.windows_generator(), "Visual Studio 17 2022")
         self.assertEqual(capture.call_args.args[0][1:], ["-latest", "-products", "*", "-property", "installationVersion"])
+
+    def test_builds_and_stages_patched_s2sdk_on_both_platforms(self):
+        for system, binary in (("Linux", "libplugify-plugin-s2sdk.so"), ("Windows", "plugify-plugin-s2sdk.dll")):
+            with self.subTest(system=system):
+                work = self.root / system
+                sdk = work / "s2sdk"
+                for path in ("LICENSE", "external/parallel-hashmap/LICENSE", "external/zydis/LICENSE",
+                             "external/zydis/dependencies/zycore/LICENSE", "external/sourcesdk/thirdparty/protobuf/LICENSE"):
+                    target = sdk / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("notice", "utf-8")
+                build = work / "build-s2sdk"
+                binary_dir = build / "bin" / "Release" if system == "Windows" else build / "bin"
+                binary_dir.mkdir(parents=True)
+                (binary_dir / binary).write_bytes(b"patched provider")
+                for name in ("plugify-plugin-s2sdk.pplugin", "gamedata.jsonc", "settings.jsonc", "translations.jsonc"):
+                    (build / name).write_text("{}", "utf-8")
+                output = work / "output"
+                with patch.object(build_native.platform, "system", return_value=system), patch.object(build_native, "run") as run:
+                    build_native.build_s2sdk(sdk, work, output, "cmake", ["-DCMAKE_BUILD_TYPE=Release"])
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertIn("external/zydis", commands[0])
+                self.assertEqual("-Dprotobuf_WITH_ZLIB=OFF" in commands[1], system == "Windows")
+                self.assertIn("plugify-plugin-s2sdk", commands[2])
+                self.assertEqual((output / "s2sdk/bin" / binary).read_bytes(), b"patched provider")
+                self.assertEqual(len(list((output / "s2sdk/licenses").glob("*.txt"))), 5)
+                source = json.loads((output / "s2sdk/source.json").read_text("utf-8"))
+                self.assertEqual(source["repository"], "https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk.git")
+                self.assertEqual(source["commit"], "021b5d5a90abb6014df0ca128a4af4d3725888d0")
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@
   "entry": "bin/funrounds_plugin",
   "language": "rust",
   "dependencies": [
-    { "name": "s2sdk", "constraints": "=3.0.1" },
+    { "name": "s2sdk", "constraints": "=3.0.2" },
     { "name": "funrounds_native", "constraints": "=0.2.0-alpha.test" }
   ],
   "methods": []
