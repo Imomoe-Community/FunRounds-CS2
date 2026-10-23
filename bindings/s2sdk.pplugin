@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/untrustedmodders/plugify/refs/heads/main/schemas/plugin.schema.json",
-  "version": "3.0.0",
+  "version": "3.0.2",
   "name": "s2sdk",
   "description": "Provides functionality for other plugins from Source 2 engine",
   "author": "untrustedmodders",
@@ -263,61 +263,6 @@
       "retType": {
         "type": "int32",
         "description": "The entity handle of the created item, or INVALID_EHANDLE_INDEX if the client or item is invalid."
-      }
-    },
-    {
-      "name": "TakeClientDamage",
-      "group": "Clients",
-      "description": "Apply damage to an client.",
-      "funcName": "TakeClientDamage",
-      "paramTypes": [
-        {
-          "name": "playerSlot",
-          "type": "int32",
-          "ref": false,
-          "description": "The index of the player's slot receiving damage"
-        },
-        {
-          "name": "inflictorSlot",
-          "type": "int32",
-          "ref": false,
-          "description": "The index of the player's slot inflicting damage (e.g., projectile)"
-        },
-        {
-          "name": "attackerSlot",
-          "type": "int32",
-          "ref": false,
-          "description": "The index of the attacking client"
-        },
-        {
-          "name": "force",
-          "type": "vec3",
-          "ref": false,
-          "description": "Direction and magnitude of force to apply"
-        },
-        {
-          "name": "hitPos",
-          "type": "vec3",
-          "ref": false,
-          "description": "Position where the damage hit occurred"
-        },
-        {
-          "name": "damage",
-          "type": "float",
-          "ref": false,
-          "description": "Amount of damage to apply"
-        },
-        {
-          "name": "damageTypes",
-          "type": "int32",
-          "ref": false,
-          "description": "Bitfield of damage type flags",
-          "enum": "DamageTypes"
-        }
-      ],
-      "retType": {
-        "type": "int32",
-        "description": "Amount of damage actually applied to the client"
       }
     },
     {
@@ -1498,61 +1443,6 @@
       }
     },
     {
-      "name": "TakeEntityDamage",
-      "group": "Entities",
-      "description": "Apply damage to an entity.",
-      "funcName": "TakeEntityDamage",
-      "paramTypes": [
-        {
-          "name": "entityHandle",
-          "type": "int32",
-          "ref": false,
-          "description": "The handle of the entity receiving damage"
-        },
-        {
-          "name": "inflictorHandle",
-          "type": "int32",
-          "ref": false,
-          "description": "The handle of the entity inflicting damage (e.g., projectile)"
-        },
-        {
-          "name": "attackerHandle",
-          "type": "int32",
-          "ref": false,
-          "description": "The handle of the attacking entity"
-        },
-        {
-          "name": "force",
-          "type": "vec3",
-          "ref": false,
-          "description": "Direction and magnitude of force to apply"
-        },
-        {
-          "name": "hitPos",
-          "type": "vec3",
-          "ref": false,
-          "description": "Position where the damage hit occurred"
-        },
-        {
-          "name": "damage",
-          "type": "float",
-          "ref": false,
-          "description": "Amount of damage to apply"
-        },
-        {
-          "name": "damageTypes",
-          "type": "int32",
-          "ref": false,
-          "description": "Bitfield of damage type flags",
-          "enum": "DamageTypes"
-        }
-      ],
-      "retType": {
-        "type": "int32",
-        "description": "Amount of damage actually applied to the entity"
-      }
-    },
-    {
       "name": "TerminateRound",
       "group": "Gamerules",
       "description": "Forces the round to end with a specified reason and delay.",
@@ -1577,44 +1467,6 @@
       }
     },
     {
-      "funcName": "HookPlayerTakeDamagePre",
-      "description": "Install the synchronous pre-damage bridge callback.",
-      "name": "HookPlayerTakeDamagePre",
-      "group": "Damage",
-      "retType": {
-        "description": "Whether the hook was installed.",
-        "type": "bool"
-      },
-      "paramTypes": [
-        {
-          "prototype": "DamagePreCallback",
-          "ref": false,
-          "description": "Rust damage decision callback.",
-          "type": "function",
-          "name": "callback"
-        }
-      ]
-    },
-    {
-      "funcName": "UnhookPlayerTakeDamagePre",
-      "description": "Remove the synchronous pre-damage bridge callback.",
-      "name": "UnhookPlayerTakeDamagePre",
-      "group": "Damage",
-      "retType": {
-        "description": "Whether the hook was removed.",
-        "type": "bool"
-      },
-      "paramTypes": [
-        {
-          "prototype": "DamagePreCallback",
-          "ref": false,
-          "description": "Rust damage decision callback.",
-          "type": "function",
-          "name": "callback"
-        }
-      ]
-    },
-    {
       "name": "GetWeaponItemDefinition",
       "group": "Weapons",
       "description": "Retrieves the weapon definition index for a given entity handle.",
@@ -1631,62 +1483,6 @@
         "type": "uint16",
         "description": "The weapon definition index as a `uint16_t`, or 0 if the entity handle is invalid.",
         "enum": "WeaponDefIndex"
-      }
-    },
-    {
-      "name": "GetWeaponVData",
-      "group": "Weapons",
-      "description": "Retrieves the weapon VData for a given weapon.",
-      "funcName": "GetWeaponVData",
-      "paramTypes": [
-        {
-          "name": "entityHandle",
-          "type": "int32",
-          "ref": false,
-          "description": "The handle of the entity from which to retrieve the weapon VData."
-        }
-      ],
-      "retType": {
-        "type": "ptr64",
-        "description": "A pointer to the `CCSWeaponBaseVData` if the entity handle is valid and represents a player weapon; otherwise, nullptr."
-      }
-    },
-    {
-      "name": "HookPlayerTakeDamagePreV2",
-      "group": "Damage",
-      "description": "Registers the V2 player damage callback with native damage type, including world damage. Shares exclusive ownership with V1.",
-      "funcName": "HookPlayerTakeDamagePreV2",
-      "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "ref": false,
-          "description": "Receives player damage before health and armor are changed.",
-          "prototype": "DamagePreCallbackV2"
-        }
-      ],
-      "retType": {
-        "type": "bool",
-        "description": "True when all required damage and trace capabilities are ready."
-      }
-    },
-    {
-      "name": "UnhookPlayerTakeDamagePreV2",
-      "group": "Damage",
-      "description": "Revokes the V2 player damage callback with native damage type, including world damage. Shares exclusive ownership with V1.",
-      "funcName": "UnhookPlayerTakeDamagePreV2",
-      "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "ref": false,
-          "description": "The callback previously registered by HookPlayerTakeDamagePre.",
-          "prototype": "DamagePreCallbackV2"
-        }
-      ],
-      "retType": {
-        "type": "bool",
-        "description": "True when the callback is revoked and the native hook is removed."
       }
     },
     {
@@ -2277,78 +2073,6 @@
       }
     },
     {
-      "name": "SetEntityDefaultCollisionGroup",
-      "group": "Entities",
-      "description": "Sets an entity to the standard default collision group.",
-      "funcName": "SetEntityDefaultCollisionGroup",
-      "paramTypes": [
-        {
-          "name": "entityHandle",
-          "type": "int32",
-          "ref": false,
-          "description": "The handle of the entity whose collision group is to be set."
-        }
-      ],
-      "retType": {
-        "type": "void"
-      }
-    },
-    {
-      "name": "HookEntityTouchPre",
-      "group": "Entities",
-      "description": "Detours the Touch function address used by this entity. The callback is shared by every entity using that same function address, not limited to entityHandle.",
-      "funcName": "HookEntityTouchPre",
-      "paramTypes": [
-        {
-          "name": "entityHandle",
-          "type": "int32",
-          "ref": false,
-          "description": "The full handle used to select the current Touch function address."
-        },
-        {
-          "name": "callback",
-          "type": "function",
-          "ref": false,
-          "description": "Called for every entity using the selected function address, with the actual entity and other full handles; nonzero supersedes native Touch. Filter entityHandle in the callback.",
-          "prototype": "EntityTouchPreCallback"
-        }
-      ],
-      "retType": {
-        "type": "bool",
-        "description": "True when the selected function address is hooked for this callback."
-      }
-    },
-    {
-      "name": "UnhookEntityTouchPre",
-      "group": "Entities",
-      "description": "Removes every Touch function-address detour registered by the callback and revokes it.",
-      "funcName": "UnhookEntityTouchPre",
-      "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "ref": false,
-          "description": "The callback previously registered by HookEntityTouchPre.",
-          "prototype": "EntityTouchPreCallback"
-        }
-      ],
-      "retType": {
-        "type": "bool",
-        "description": "True when the callback is revoked and native hooks are removed."
-      }
-    },
-    {
-      "name": "IsEntityTouchPreHookAvailable",
-      "group": "Entities",
-      "description": "Reports whether the native Touch detour and its required external gamedata offset are available on this server.",
-      "funcName": "IsEntityTouchPreHookAvailable",
-      "paramTypes": [],
-      "retType": {
-        "type": "bool",
-        "description": "True when CBaseEntity::Touch has a configured vtable offset and the entity system is initialized."
-      }
-    },
-    {
       "name": "SetEntityOwner",
       "group": "Entities",
       "description": "Sets the owner of an entity.",
@@ -2890,6 +2614,276 @@
       "retType": {
         "type": "void"
       }
+    },
+    {
+      "name": "IsClientAuthorized",
+      "group": "Clients",
+      "description": "Checks if a certain player has been authenticated.",
+      "funcName": "IsClientAuthorized",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "true if the player is authenticated, false otherwise."
+      }
+    },
+    {
+      "name": "GetClientSteamID64",
+      "group": "Clients",
+      "description": "Returns the client's SteamID64 - a unique 64-bit identifier of a Steam account.",
+      "funcName": "GetClientSteamID64",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "uint64",
+        "description": "uint64_t The client's SteamID64."
+      }
+    },
+    {
+      "name": "GetEntityAngRotation",
+      "group": "Entities",
+      "description": "Retrieves the angular rotation of an entity.",
+      "funcName": "GetEntityAngRotation",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity whose angular rotation is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "A vector where the angular rotation will be stored."
+      }
+    },
+    {
+      "name": "QueryInterface",
+      "group": "Engine",
+      "description": "Queries an interface from a specified module.",
+      "funcName": "QueryInterface",
+      "paramTypes": [
+        {
+          "name": "module",
+          "type": "string",
+          "description": "The name of the module to query the interface from."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "description": "The name of the interface to find."
+        }
+      ],
+      "retType": {
+        "type": "ptr64",
+        "description": "A pointer to the queried interface."
+      }
+    },
+    {
+      "name": "LoadGameConfigFile",
+      "group": "Gameconfig",
+      "description": "Loads a game configuration file.",
+      "funcName": "LoadGameConfigFile",
+      "paramTypes": [
+        {
+          "name": "paths",
+          "type": "string[]",
+          "ref": false,
+          "description": "The paths to the game configuration file to be loaded."
+        }
+      ],
+      "retType": {
+        "type": "uint32",
+        "description": "A id to the loaded game configuration object, or -1 if loading fails.",
+        "alias": {
+          "name": "ConfigId"
+        }
+      }
+    },
+    {
+      "name": "CloseGameConfigFile",
+      "group": "Gameconfig",
+      "description": "Closes a game configuration file.",
+      "funcName": "CloseGameConfigFile",
+      "paramTypes": [
+        {
+          "name": "id",
+          "type": "uint32",
+          "ref": false,
+          "description": "An id to the game configuration to be closed.",
+          "alias": {
+            "name": "ConfigId"
+          }
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetGameConfigOffset",
+      "group": "Gameconfig",
+      "description": "Retrieves the offset associated with a name from the game configuration.",
+      "funcName": "GetGameConfigOffset",
+      "paramTypes": [
+        {
+          "name": "id",
+          "type": "uint32",
+          "ref": false,
+          "description": "An id to the game configuration from which to retrieve the offset.",
+          "alias": {
+            "name": "ConfigId"
+          }
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "ref": false,
+          "description": "The name whose offset is to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The offset associated with the specified name."
+      }
+    },
+    {
+      "name": "GetGameConfigSignature",
+      "group": "Gameconfig",
+      "description": "Retrieves the signature associated with a name from the game configuration.",
+      "funcName": "GetGameConfigSignature",
+      "paramTypes": [
+        {
+          "name": "id",
+          "type": "uint32",
+          "ref": false,
+          "description": "An id to the game configuration from which to retrieve the signature.",
+          "alias": {
+            "name": "ConfigId"
+          }
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "ref": false,
+          "description": "The name whose signature is to be resolved and retrieved."
+        }
+      ],
+      "retType": {
+        "type": "ptr64",
+        "description": "A pointer to the signature associated with the specified name."
+      }
+    },
+    {
+      "name": "GetGameConfigVTable",
+      "group": "Gameconfig",
+      "description": "Retrieves a vtable associated with the game configuration.",
+      "funcName": "GetGameConfigVTable",
+      "paramTypes": [
+        {
+          "name": "id",
+          "type": "uint32",
+          "ref": false,
+          "description": "An id to the game configuration from which to retrieve the vtable.",
+          "alias": {
+            "name": "ConfigId"
+          }
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the vtable to be retrieved."
+        }
+      ],
+      "retType": {
+        "type": "ptr64",
+        "description": "A pointer to the vtable associated with the specified name"
+      }
+    },
+    {
+      "name": "IsEntityPlayerPawn",
+      "group": "Entities",
+      "description": "Checks if an entity is a player pawn.",
+      "funcName": "IsEntityPlayerPawn",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True if the entity is a player pawn, false otherwise."
+      }
+    },
+    {
+      "name": "IsEntityPlayerController",
+      "group": "Entities",
+      "description": "Checks if an entity is a player controller.",
+      "funcName": "IsEntityPlayerController",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True if the entity is a player controller, false otherwise."
+      }
+    },
+    {
+      "name": "GetEntityEyePosition",
+      "group": "Entities",
+      "description": "Get vector to eye position - absolute coords.",
+      "funcName": "GetEntityEyePosition",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity"
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "Eye position in absolute/world coordinates"
+      }
+    },
+    {
+      "name": "GetEntityEyeAngles",
+      "group": "Entities",
+      "description": "Get the qangles that this entity is looking at.",
+      "funcName": "GetEntityEyeAngles",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity"
+        }
+      ],
+      "retType": {
+        "type": "vec3",
+        "description": "Eye angles as a vector (pitch, yaw, roll)"
+      }
     }
   ],
   "classes": [],
@@ -2947,148 +2941,6 @@
         "type": "int32",
         "description": "Indicates the result of the action execution.",
         "enum": "ResultType"
-      }
-    },
-    {
-      "retType": {
-        "description": "0 allow, 1 block.",
-        "type": "int32"
-      },
-      "funcName": "DamagePreCallback",
-      "description": "Synchronous player-damage policy callback.",
-      "paramTypes": [
-        {
-          "description": "Victim entity handle.",
-          "type": "int32",
-          "name": "victimHandle"
-        },
-        {
-          "description": "Attacker entity handle.",
-          "type": "int32",
-          "name": "attackerHandle"
-        },
-        {
-          "description": "Inflictor entity handle.",
-          "type": "int32",
-          "name": "inflictorHandle"
-        },
-        {
-          "description": "0 other, 1 firearm, 2 knife, 3 Zeus.",
-          "type": "int32",
-          "name": "weaponKind"
-        },
-        {
-          "description": "Engine hit group, or -1 if unavailable.",
-          "type": "int32",
-          "name": "hitGroup"
-        },
-        {
-          "description": "Whether melee/Zeus view trace hit the victim head.",
-          "type": "bool",
-          "name": "tracedHead"
-        },
-        {
-          "description": "Original pending damage.",
-          "type": "float",
-          "name": "damage"
-        },
-        {
-          "ref": true,
-          "description": "Output damage multiplier.",
-          "type": "float",
-          "name": "multiplier"
-        },
-        {
-          "ref": true,
-          "description": "Output headshot marker flag.",
-          "type": "bool",
-          "name": "markHeadshot"
-        }
-      ],
-      "name": "DamagePreCallback"
-    },
-    {
-      "name": "DamagePreCallbackV2",
-      "funcName": "DamagePreCallbackV2",
-      "description": "Synchronous V2 damage decision, with native damage type and unchanged attacker attribution for world damage.",
-      "paramTypes": [
-        {
-          "name": "victimHandle",
-          "type": "int32",
-          "description": "The damaged player's entity handle."
-        },
-        {
-          "name": "attackerHandle",
-          "type": "int32",
-          "description": "The attacking player's entity handle."
-        },
-        {
-          "name": "inflictorHandle",
-          "type": "int32",
-          "description": "The damage inflictor's entity handle."
-        },
-        {
-          "name": "weaponKind",
-          "type": "int32",
-          "description": "Weapon kind: other, firearm, knife, or Zeus."
-        },
-        {
-          "name": "hitGroup",
-          "type": "int32",
-          "description": "The engine-reported hit group."
-        },
-        {
-          "name": "tracedHead",
-          "type": "bool",
-          "description": "Whether a knife or Zeus eye trace reached the victim's head."
-        },
-        {
-          "name": "damage",
-          "type": "float",
-          "description": "Damage before the callback's multiplier is applied."
-        },
-        {
-          "name": "damageType",
-          "type": "uint32",
-          "description": "Native DamageTypes_t bitmask before any headshot marking."
-        },
-        {
-          "name": "multiplier",
-          "type": "float",
-          "ref": true,
-          "description": "Output damage multiplier."
-        },
-        {
-          "name": "markHeadshot",
-          "type": "bool",
-          "ref": true,
-          "description": "Output flag to mark the damage as a headshot."
-        }
-      ],
-      "retType": {
-        "type": "int32",
-        "description": "Allow (0) or block (1) this damage."
-      }
-    },
-    {
-      "name": "EntityTouchPreCallback",
-      "funcName": "EntityTouchPreCallback",
-      "description": "Synchronous decision for touches on every entity sharing the selected Touch function address. Return zero to continue native Touch or nonzero to supersede it.",
-      "paramTypes": [
-        {
-          "name": "entityHandle",
-          "type": "int32",
-          "description": "The full handle of the entity whose Touch method ran."
-        },
-        {
-          "name": "otherHandle",
-          "type": "int32",
-          "description": "The other full handle, or -1 when the engine reports no entity."
-        }
-      ],
-      "retType": {
-        "type": "int32",
-        "description": "Zero continues the native Touch function; nonzero supersedes it."
       }
     },
     {
@@ -3383,132 +3235,6 @@
           "value": 3,
           "name": "CT",
           "description": "Counter-Terrorist team."
-        }
-      ]
-    },
-    {
-      "name": "DamageTypes",
-      "description": "Enum representing various damage types.",
-      "values": [
-        {
-          "value": 0,
-          "name": "DMG_GENERIC",
-          "description": "Generic damage."
-        },
-        {
-          "value": 1,
-          "name": "DMG_CRUSH",
-          "description": "Crush damage."
-        },
-        {
-          "value": 2,
-          "name": "DMG_BULLET",
-          "description": "Bullet damage."
-        },
-        {
-          "value": 4,
-          "name": "DMG_SLASH",
-          "description": "Slash damage."
-        },
-        {
-          "value": 8,
-          "name": "DMG_BURN",
-          "description": "Burn damage."
-        },
-        {
-          "value": 16,
-          "name": "DMG_VEHICLE",
-          "description": "Vehicle damage."
-        },
-        {
-          "value": 32,
-          "name": "DMG_FALL",
-          "description": "Fall damage."
-        },
-        {
-          "value": 64,
-          "name": "DMG_BLAST",
-          "description": "Blast damage."
-        },
-        {
-          "value": 128,
-          "name": "DMG_CLUB",
-          "description": "Club damage."
-        },
-        {
-          "value": 256,
-          "name": "DMG_SHOCK",
-          "description": "Shock damage."
-        },
-        {
-          "value": 512,
-          "name": "DMG_SONIC",
-          "description": "Sonic damage."
-        },
-        {
-          "value": 1024,
-          "name": "DMG_ENERGYBEAM",
-          "description": "Energy beam damage."
-        },
-        {
-          "value": 16384,
-          "name": "DMG_DROWN",
-          "description": "Drowning damage."
-        },
-        {
-          "value": 32768,
-          "name": "DMG_POISON",
-          "description": "Poison damage."
-        },
-        {
-          "value": 65536,
-          "name": "DMG_RADIATION",
-          "description": "Radiation damage."
-        },
-        {
-          "value": 131072,
-          "name": "DMG_DROWNRECOVER",
-          "description": "Recovering from drowning damage."
-        },
-        {
-          "value": 262144,
-          "name": "DMG_ACID",
-          "description": "Acid damage."
-        },
-        {
-          "value": 1048576,
-          "name": "DMG_PHYSGUN",
-          "description": "Physgun damage."
-        },
-        {
-          "value": 2097152,
-          "name": "DMG_DISSOLVE",
-          "description": "Dissolve damage."
-        },
-        {
-          "value": 4194304,
-          "name": "DMG_BLAST_SURFACE",
-          "description": "Surface blast damage."
-        },
-        {
-          "value": 16777216,
-          "name": "DMG_BUCKSHOT",
-          "description": "Buckshot damage."
-        },
-        {
-          "value": 16777216,
-          "name": "DMG_LASTGENERICFLAG",
-          "description": "Last generic flag damage."
-        },
-        {
-          "value": 33554432,
-          "name": "DMG_HEADSHOT",
-          "description": "Headshot damage."
-        },
-        {
-          "value": 67108864,
-          "name": "DMG_DANGERZONE",
-          "description": "Danger zone damage."
         }
       ]
     },
@@ -4635,17 +4361,61 @@
       "name": "MoveType",
       "description": "Enum representing various movement types for entities.",
       "values": [
-        { "value": 0, "name": "None", "description": "Never moves." },
-        { "value": 1, "name": "Isometric", "description": "Previously isometric movement type." },
-        { "value": 2, "name": "Walk", "description": "Player only - moving on the ground." },
-        { "value": 3, "name": "Fly", "description": "No gravity, but still collides with stuff." },
-        { "value": 4, "name": "Flygravity", "description": "Flies through the air and is affected by gravity." },
-        { "value": 5, "name": "Vphysics", "description": "Uses VPHYSICS for simulation." },
-        { "value": 6, "name": "Push", "description": "No clip to world, push and crush." },
-        { "value": 7, "name": "Noclip", "description": "No gravity, no collisions, still has velocity/avelocity." },
-        { "value": 8, "name": "Ladder", "description": "Used by players only when going onto a ladder." },
-        { "value": 9, "name": "Observer", "description": "Observer movement, depends on player's observer mode." },
-        { "value": 10, "name": "Custom", "description": "Allows the entity to describe its own physics." }
+        {
+          "value": 0,
+          "name": "None",
+          "description": "Never moves."
+        },
+        {
+          "value": 1,
+          "name": "Isometric",
+          "description": "Previously isometric movement type."
+        },
+        {
+          "value": 2,
+          "name": "Walk",
+          "description": "Player only - moving on the ground."
+        },
+        {
+          "value": 3,
+          "name": "Fly",
+          "description": "No gravity, but still collides with stuff."
+        },
+        {
+          "value": 4,
+          "name": "Flygravity",
+          "description": "Flies through the air and is affected by gravity."
+        },
+        {
+          "value": 5,
+          "name": "Vphysics",
+          "description": "Uses VPHYSICS for simulation."
+        },
+        {
+          "value": 6,
+          "name": "Push",
+          "description": "No clip to world, push and crush."
+        },
+        {
+          "value": 7,
+          "name": "Noclip",
+          "description": "No gravity, no collisions, still has velocity/avelocity."
+        },
+        {
+          "value": 8,
+          "name": "Ladder",
+          "description": "Used by players only when going onto a ladder."
+        },
+        {
+          "value": 9,
+          "name": "Observer",
+          "description": "Observer movement, depends on player's observer mode."
+        },
+        {
+          "value": 10,
+          "name": "Custom",
+          "description": "Allows the entity to describe its own physics."
+        }
       ]
     }
   ]

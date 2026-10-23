@@ -36,7 +36,7 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "funrounds-core"
-version = "0.1.0"
+version = "0.2.0-alpha.test"
 dependencies = [
  "rand",
  "serde",
@@ -45,11 +45,13 @@ dependencies = [
 
 [[package]]
 name = "funrounds-plugin"
-version = "0.1.0"
+version = "0.2.0-alpha.test"
 dependencies = [
  "funrounds-core",
  "plugify",
  "rand",
+ "serde",
+ "toml",
 ]
 
 [[package]]

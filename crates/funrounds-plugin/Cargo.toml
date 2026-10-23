@@ -13,3 +13,5 @@ crate-type = ["cdylib"]
 funrounds-core = { path = "../funrounds-core" }
 plugify.workspace = true
 rand.workspace = true
+serde.workspace = true
+toml.workspace = true

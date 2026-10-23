@@ -1,72 +1,132 @@
 // Copyright (C) 2026 Mai Ooizumi
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::{Config, Mode};
+use crate::{Ammo, Config, Headshots, Mode, TeamFilter, WeaponDamage, WinCondition};
 use rand::{Rng, seq::SliceRandom};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Capabilities {
-    pub classic: bool,
     pub equipment: bool,
     pub health: bool,
     pub armor: bool,
     pub gravity: bool,
-    pub unlimited_reserve: bool,
+    pub speed: bool,
+    pub helmet: bool,
+    pub clear_weapons: bool,
+    pub give_weapons: bool,
+    pub give_knife: bool,
+    pub ammo: bool,
     pub taser_charge: bool,
     pub bunnyhop: bool,
     pub friction: bool,
-    pub no_spread_recoil: bool,
+    pub no_spread: bool,
+    pub no_recoil: bool,
     pub recoil_view: bool,
-    pub blue: bool,
-    pub replenish_he: bool,
+    pub color: bool,
+    pub single_shot: bool,
+    pub fast_switch: bool,
+    pub weapon_damage: bool,
+    pub grenade_replenishment: bool,
     pub random_loadout: bool,
+    pub suicide: bool,
+    pub random_damage: bool,
     pub kill_loadout: bool,
     pub lifesteal: bool,
-    pub unlimited_clip: bool,
-    pub headshots_only: bool,
-    pub miss_damage: bool,
-    pub team_deathmatch: bool,
+    pub headshots: bool,
+    pub self_damage: bool,
+    pub native_self_damage: bool,
+    pub reflect_damage: bool,
+    pub reflection_lifesteal_frame: bool,
+    pub energy_shield: bool,
+    pub combat_protection: bool,
+    pub translucent: bool,
+    pub delayed_damage: bool,
+    pub win_condition: bool,
     pub bomb_timing: bool,
     pub chicken_bomb: bool,
     pub carry_bomb: bool,
     pub bomb_bounce: bool,
     pub dodgeball: bool,
     pub throwing_knives: bool,
-    pub no_headshots: bool,
-    pub replenish_decoy: bool,
     pub view_punch_decay: bool,
+    pub no_scope: bool,
+    pub fov: bool,
+    pub hide_crosshair: bool,
+    pub health_damage: bool,
+    pub health_speed: bool,
+    pub health_decay: bool,
+    pub self_push: bool,
+    pub periodic_speed: bool,
+    pub periodic_gravity: bool,
+    pub c4_assignment: bool,
+    pub c4_purchase: bool,
+    pub round_respawn: bool,
+    pub respawn: bool,
+    pub buy_time: bool,
+    pub buy_limit: bool,
+    pub friendly_fire_scale: bool,
+    pub teammates_as_enemies: bool,
+    pub random_spawn: bool,
+    pub drop_weapons: bool,
+    pub drop_grenades: bool,
+    pub fall_damage_scale: bool,
 }
 
 impl Capabilities {
-    pub fn supports_basic_effects(self) -> bool {
-        self.equipment && self.health && self.armor && self.gravity
-    }
-
     pub fn supports_mode(self, mode: &Mode) -> bool {
         self.missing_for(mode).is_empty()
     }
 
     pub fn missing_for(self, mode: &Mode) -> Vec<&'static str> {
         [
-            (true, self.equipment, "equipment"),
+            (mode.clear_weapons != TeamFilter::None, self.clear_weapons, "clear_weapons"),
+            (
+                mode.give_weapons != TeamFilter::None && !mode.weapons.is_empty(),
+                self.give_weapons,
+                "give_weapons",
+            ),
+            (mode.give_knife != TeamFilter::None, self.give_knife, "give_knife"),
+            (
+                mode.give_weapons != TeamFilter::None && !mode.weapons.is_empty(),
+                self.equipment,
+                "equipment",
+            ),
             (true, self.health, "health"),
             (true, self.armor, "armor"),
+            (true, self.helmet, "helmet"),
             (true, self.gravity, "gravity"),
-            (mode.unlimited_reserve, self.unlimited_reserve, "unlimited_reserve"),
+            (true, self.speed, "speed"),
+            (matches!(mode.ammo, Ammo::Reserve | Ammo::Clip), self.ammo, "ammo"),
+            (mode.ammo == Ammo::SingleShot, self.single_shot, "single_shot"),
             (mode.taser_charge.is_some(), self.taser_charge, "taser_charge"),
-            (mode.bunnyhop, self.bunnyhop, "bunnyhop"),
+            (mode.bunnyhop.is_some(), self.bunnyhop, "bunnyhop"),
             (mode.friction.is_some(), self.friction, "friction"),
-            (mode.no_spread_recoil, self.no_spread_recoil, "no_spread_recoil"),
+            (mode.no_spread.is_some(), self.no_spread, "no_spread"),
+            (mode.no_recoil, self.no_recoil, "no_recoil"),
             (mode.recoil_view.is_some(), self.recoil_view, "recoil_view"),
-            (mode.blue, self.blue, "blue"),
-            (mode.replenish_he, self.replenish_he, "replenish_he"),
+            (mode.color.is_some(), self.color, "color"),
+            (mode.fast_switch, self.fast_switch, "fast_switch"),
+            (mode.weapon_damage != WeaponDamage::default(), self.weapon_damage, "weapon_damage"),
+            (!mode.replenish.is_empty(), self.grenade_replenishment, "grenade_replenishment"),
             (mode.random_loadout, self.random_loadout, "random_loadout"),
+            (mode.suicide, self.suicide, "suicide"),
+            (mode.random_damage, self.random_damage, "random_damage"),
             (mode.kill_loadout, self.kill_loadout, "kill_loadout"),
             (mode.lifesteal, self.lifesteal, "lifesteal"),
-            (mode.unlimited_clip, self.unlimited_clip, "unlimited_clip"),
-            (mode.headshots_only, self.headshots_only, "headshots_only"),
-            (mode.miss_damage, self.miss_damage, "miss_damage"),
-            (mode.team_deathmatch, self.team_deathmatch, "team_deathmatch"),
+            (mode.headshots != Headshots::Normal, self.headshots, "headshots"),
+            (mode.self_damage.is_some(), self.self_damage, "self_damage"),
+            (mode.native_self_damage_enabled(), self.native_self_damage, "native_self_damage"),
+            (mode.reflect_damage.is_some(), self.reflect_damage, "reflect_damage"),
+            (
+                mode.reflect_damage.is_some() && mode.lifesteal,
+                self.reflection_lifesteal_frame,
+                "reflection_lifesteal_frame",
+            ),
+            (mode.energy_shield, self.energy_shield, "energy_shield"),
+            (mode.combat_protection, self.combat_protection, "combat_protection"),
+            (mode.translucent, self.translucent, "translucent"),
+            (mode.delayed_damage, self.delayed_damage, "delayed_damage"),
+            (mode.win_condition == WinCondition::TeamDeathmatch, self.win_condition, "win_condition"),
             (mode.bomb.is_some(), self.bomb_timing, "bomb_timing"),
             (
                 mode.bomb.as_ref().is_some_and(|bomb| bomb.kind == crate::BombKind::Chicken),
@@ -81,9 +141,28 @@ impl Capabilities {
             (mode.bomb.as_ref().is_some_and(|bomb| bomb.bounce), self.bomb_bounce, "bomb_bounce"),
             (mode.dodgeball, self.dodgeball, "dodgeball"),
             (mode.throwing_knives, self.throwing_knives, "throwing_knives"),
-            (mode.no_headshots, self.no_headshots, "no_headshots"),
-            (mode.replenish_decoy, self.replenish_decoy, "replenish_decoy"),
             (mode.view_punch_decay.is_some(), self.view_punch_decay, "view_punch_decay"),
+            (mode.no_scope, self.no_scope, "no_scope"),
+            (mode.fov.is_some(), self.fov, "fov"),
+            (mode.hide_crosshair_after.is_some(), self.hide_crosshair, "hide_crosshair"),
+            (mode.health_damage, self.health_damage, "health_damage"),
+            (mode.health_speed, self.health_speed, "health_speed"),
+            (mode.health_decay, self.health_decay, "health_decay"),
+            (mode.self_push, self.self_push, "self_push"),
+            (mode.periodic_speed, self.periodic_speed, "periodic_speed"),
+            (mode.periodic_gravity, self.periodic_gravity, "periodic_gravity"),
+            (mode.c4_count.is_some(), self.c4_assignment, "c4_assignment"),
+            (mode.c4_buy, self.c4_purchase, "c4_purchase"),
+            (mode.round_respawn, self.round_respawn, "round_respawn"),
+            (mode.respawn.is_some(), self.respawn, "respawn"),
+            (mode.buy_time.is_some(), self.buy_time, "buy_time"),
+            (mode.buy_limit.is_some(), self.buy_limit, "buy_limit"),
+            (mode.friendly_fire_scale.is_some(), self.friendly_fire_scale, "friendly_fire_scale"),
+            (mode.teammates_as_enemies.is_some(), self.teammates_as_enemies, "teammates_as_enemies"),
+            (mode.random_spawn.is_some(), self.random_spawn, "random_spawn"),
+            (mode.drop_weapons.is_some(), self.drop_weapons, "drop_weapons"),
+            (mode.drop_grenades.is_some(), self.drop_grenades, "drop_grenades"),
+            (mode.fall_damage_scale.is_some(), self.fall_damage_scale, "fall_damage_scale"),
         ]
         .into_iter()
         .filter(|(required, available, _)| *required && !*available)
@@ -189,9 +268,6 @@ impl RoundController {
 
     pub fn queue_reload(&mut self, source: &str) -> Result<(), String> {
         let config = Config::parse(source)?;
-        if !self.capabilities.classic {
-            return Err("public behavior requires all classic capabilities".into());
-        }
         self.pending_config = Some(config);
         Ok(())
     }
@@ -201,14 +277,12 @@ impl RoundController {
             NextMode::Random => self.forced_next = None,
             NextMode::Id(id) => {
                 let config = self.pending_config.as_ref().or(self.config.as_ref());
-                if !self.capabilities.classic
-                    || !config.is_some_and(|config| {
-                        config
-                            .modes
-                            .iter()
-                            .any(|mode| mode.id == id && mode.enabled && self.capabilities.supports_mode(mode))
-                    })
-                {
+                if !config.is_some_and(|config| {
+                    config
+                        .modes
+                        .iter()
+                        .any(|mode| mode.id == id && mode.enabled && self.capabilities.supports_mode(mode))
+                }) {
                     return Err(format!("mode is disabled, unavailable or unknown: {id}"));
                 }
                 self.forced_next = Some(id);
@@ -258,15 +332,12 @@ impl RoundController {
             self.config = Some(config);
             self.remaining.clear();
         }
-        if warmup || !self.enabled || !self.capabilities.supports_basic_effects() {
+        if warmup || !self.enabled {
             return true;
         }
         let Some(config) = &self.config else {
             return true;
         };
-        if !self.capabilities.classic {
-            return true;
-        }
         if self.remaining.is_empty() {
             self.remaining = config
                 .modes
@@ -343,88 +414,104 @@ mod tests {
     use std::collections::HashSet;
 
     const EXAMPLE: &str = include_str!("../../../config/funrounds.example.toml");
-    const AVAILABLE: Capabilities = Capabilities {
-        classic: true,
-        equipment: true,
-        health: true,
-        armor: true,
-        gravity: true,
-        unlimited_reserve: false,
-        taser_charge: false,
-        bunnyhop: false,
-        friction: false,
-        no_spread_recoil: false,
-        recoil_view: false,
-        blue: false,
-        replenish_he: false,
-        random_loadout: false,
-        kill_loadout: false,
-        lifesteal: false,
-        unlimited_clip: false,
-        headshots_only: false,
-        miss_damage: false,
-        team_deathmatch: false,
-        bomb_timing: false,
-        chicken_bomb: false,
-        carry_bomb: false,
-        bomb_bounce: false,
-        dodgeball: false,
-        throwing_knives: false,
-        no_headshots: false,
-        replenish_decoy: false,
-        view_punch_decay: false,
-    };
-    const FULLY_AVAILABLE: Capabilities = Capabilities {
-        classic: true,
-        unlimited_reserve: true,
-        taser_charge: true,
-        bunnyhop: true,
-        friction: true,
-        no_spread_recoil: true,
-        recoil_view: true,
-        blue: true,
-        replenish_he: true,
-        random_loadout: true,
-        kill_loadout: true,
-        lifesteal: true,
-        unlimited_clip: true,
-        headshots_only: true,
-        miss_damage: true,
-        team_deathmatch: true,
-        bomb_timing: true,
-        chicken_bomb: true,
-        carry_bomb: true,
-        bomb_bounce: true,
-        dodgeball: true,
-        throwing_knives: true,
-        no_headshots: true,
-        replenish_decoy: true,
-        view_punch_decay: true,
-        ..AVAILABLE
-    };
+    fn available() -> Capabilities {
+        Capabilities {
+            equipment: true,
+            health: true,
+            armor: true,
+            gravity: true,
+            speed: true,
+            helmet: true,
+            clear_weapons: true,
+            give_weapons: true,
+            give_knife: true,
+            ..Capabilities::default()
+        }
+    }
+
+    fn fully_available() -> Capabilities {
+        Capabilities {
+            ammo: true,
+            taser_charge: true,
+            bunnyhop: true,
+            friction: true,
+            no_spread: true,
+            no_recoil: true,
+            recoil_view: true,
+            color: true,
+            single_shot: true,
+            fast_switch: true,
+            weapon_damage: true,
+            grenade_replenishment: true,
+            random_loadout: true,
+            suicide: true,
+            random_damage: true,
+            kill_loadout: true,
+            lifesteal: true,
+            headshots: true,
+            self_damage: true,
+            native_self_damage: true,
+            reflect_damage: true,
+            reflection_lifesteal_frame: true,
+            energy_shield: true,
+            combat_protection: true,
+            translucent: true,
+            delayed_damage: true,
+            win_condition: true,
+            bomb_timing: true,
+            chicken_bomb: true,
+            carry_bomb: true,
+            bomb_bounce: true,
+            dodgeball: true,
+            throwing_knives: true,
+            view_punch_decay: true,
+            no_scope: true,
+            fov: true,
+            hide_crosshair: true,
+            health_damage: true,
+            health_speed: true,
+            health_decay: true,
+            self_push: true,
+            periodic_speed: true,
+            periodic_gravity: true,
+            c4_assignment: true,
+            c4_purchase: true,
+            round_respawn: true,
+            respawn: true,
+            buy_time: true,
+            buy_limit: true,
+            friendly_fire_scale: true,
+            teammates_as_enemies: true,
+            random_spawn: true,
+            drop_weapons: true,
+            drop_grenades: true,
+            fall_damage_scale: true,
+            ..available()
+        }
+    }
 
     #[test]
-    fn shared_behavior_capability_gates_every_config() {
+    fn equipment_capability_gates_the_public_example() {
         let config = Config::parse(EXAMPLE).unwrap();
-        let missing_classic = Capabilities {
-            classic: false,
-            ..FULLY_AVAILABLE
+        let missing_equipment = Capabilities {
+            equipment: false,
+            ..fully_available()
         };
-        let mut controller = RoundController::new(Some(config), missing_classic).unwrap();
+        let mut controller = RoundController::new(Some(config), missing_equipment).unwrap();
         let mut rng = StdRng::seed_from_u64(1);
         assert!(controller.start_round(controller.round_key(1), false, &mut rng));
         assert_eq!(controller.phase(), Phase::Idle);
         assert!(controller.force_next(NextMode::Id("example".into())).is_err());
-        assert!(controller.queue_reload(EXAMPLE).is_err());
-        assert!(controller.pending_config().is_none());
-        controller.set_capabilities(FULLY_AVAILABLE);
+        assert!(controller.queue_reload(EXAMPLE).is_ok());
+        assert!(controller.pending_config().is_some());
+        controller.set_capabilities(fully_available());
         assert!(controller.force_next(NextMode::Id("example".into())).is_ok());
         assert!(controller.start_round(controller.round_key(2), false, &mut rng));
         assert_eq!(controller.phase(), Phase::Preparing);
     }
 
     fn controller() -> RoundController {
-        RoundController::new(Some(Config::parse(EXAMPLE).unwrap()), AVAILABLE).unwrap()
+        RoundController::new(Some(Config::parse(EXAMPLE).unwrap()), available()).unwrap()
     }
 
     fn generic_pool(count: usize) -> Config {
@@ -445,7 +532,7 @@ mod tests {
     fn cycles_cover_each_mode_and_avoid_boundary_repetition() {
         for seed in 0..64 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let mut controller = RoundController::new(Some(generic_pool(3)), AVAILABLE).unwrap();
+            let mut controller = RoundController::new(Some(generic_pool(3)), available()).unwrap();
             let mut previous = None;
             for cycle in 0..20 {
                 let mut ids = HashSet::new();
@@ -466,7 +553,7 @@ mod tests {
         let mut config = generic_pool(3);
         config.modes[0].enabled = false;
         config.modes[1].enabled = false;
-        let mut controller = RoundController::new(Some(config), AVAILABLE).unwrap();
+        let mut controller = RoundController::new(Some(config), available()).unwrap();
         let mut rng = StdRng::seed_from_u64(0);
         for round in 0..10 {
             controller.start_round(controller.round_key(round), false, &mut rng);
@@ -476,7 +563,7 @@ mod tests {
 
     #[test]
     fn forced_selection_consumes_the_pending_cycle_and_random_cancels_it() {
-        let mut controller = RoundController::new(Some(generic_pool(3)), AVAILABLE).unwrap();
+        let mut controller = RoundController::new(Some(generic_pool(3)), available()).unwrap();
         let mut rng = StdRng::seed_from_u64(1);
         controller.force_next(NextMode::Id("example_0".into())).unwrap();
         controller.start_round(controller.round_key(1), false, &mut rng);
@@ -507,7 +594,7 @@ mod tests {
             assert_eq!(controller.config(), active.as_ref());
             assert_eq!(controller.pending_config(), pending.as_ref());
         }
-        assert!(controller.queue_reload("modes = []").is_err());
+        assert!(controller.queue_reload("diagnostics = false\nmodes = []").is_err());
         assert_eq!(controller.current_mode().unwrap().health, 120);
         assert_eq!(controller.pending_config().unwrap().modes[0].health, 140);
         controller.force_next(NextMode::Id("example".into())).unwrap();
@@ -585,11 +672,11 @@ mod tests {
 
     #[test]
     fn missing_configuration_can_be_recovered_on_a_later_round() {
-        let mut controller = RoundController::new(None, AVAILABLE).unwrap();
+        let mut controller = RoundController::new(None, available()).unwrap();
         let mut rng = StdRng::seed_from_u64(0);
         controller.start_round(controller.round_key(1), false, &mut rng);
         assert!(controller.current_mode().is_none());
-        assert!(controller.queue_reload("modes = []").is_err());
+        assert!(controller.queue_reload("diagnostics = false\nmodes = []").is_err());
         assert!(controller.config().is_none());
         controller.queue_reload(EXAMPLE).unwrap();
         controller.start_round(controller.round_key(2), false, &mut rng);
@@ -605,7 +692,7 @@ mod tests {
     fn constructor_rejects_unvalidated_public_configuration() {
         let mut config = Config::parse(EXAMPLE).unwrap();
         config.modes[0].health = 0;
-        assert!(RoundController::new(Some(config), AVAILABLE).is_err());
+        assert!(RoundController::new(Some(config), available()).is_err());
     }
 
     #[test]
@@ -657,8 +744,8 @@ mod tests {
     #[test]
     fn unavailable_capability_filters_only_the_dependent_mode() {
         let mut config = generic_pool(2);
-        config.modes[1].bunnyhop = true;
-        let mut capabilities = FULLY_AVAILABLE;
+        config.modes[1].bunnyhop = Some(true);
+        let mut capabilities = fully_available();
         capabilities.bunnyhop = false;
         assert!(capabilities.supports_mode(&config.modes[0]));
         assert!(!capabilities.supports_mode(&config.modes[1]));

@@ -6,16 +6,33 @@ use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mechanism {
-    InfiniteAmmo,
+    Ammo,
     TaserCharge,
     Bunnyhop,
     Friction,
-    Recoil,
+    NoSpread,
+    NoRecoil,
+    BuyTime,
+    BuyLimit,
+    FriendlyFireScale,
+    TeammatesAsEnemies,
+    RandomSpawn,
+    DropWeapons,
+    DropGrenades,
+    FallDamageScale,
     RecoilView,
-    Blue,
+    Color,
+    SingleShot,
+    FastSwitch,
     GrenadeRefill,
-    RandomLoadout,
-    MissDamage,
+    KillLoadout,
+    SelfDamage,
+    NativeSelfDamage,
+    EnergyShield,
+    Translucent,
+    DelayedDamage,
+    Reflection,
+    ReflectionLifestealFrame,
     TeamDeathmatch,
     BombTiming,
     ChickenBomb,
@@ -24,29 +41,58 @@ pub enum Mechanism {
     ProjectileDamage,
     ThrowingKnives,
     ViewPunchDecay,
+    NoScope,
+    Fov,
+    Crosshair,
+    PeriodicMovement,
+    NoC4,
     Classic,
+    HealthSpeed,
+    HealthDecay,
+    PeriodicSpeed,
+    PeriodicGravity,
+    WinCondition,
+    C4Assignment,
+    RandomDamage,
+    Suicide,
 }
 
 impl Mechanism {
     fn exclude(self, capabilities: &mut Capabilities) {
         match self {
-            Self::InfiniteAmmo => {
-                capabilities.unlimited_reserve = false;
-                capabilities.unlimited_clip = false;
+            Self::Ammo => {
+                capabilities.ammo = false;
+                capabilities.single_shot = false;
             }
             Self::TaserCharge => capabilities.taser_charge = false,
             Self::Bunnyhop => capabilities.bunnyhop = false,
             Self::Friction => capabilities.friction = false,
-            Self::Recoil => capabilities.no_spread_recoil = false,
+            Self::NoSpread => capabilities.no_spread = false,
+            Self::NoRecoil => capabilities.no_recoil = false,
+            Self::BuyTime => capabilities.buy_time = false,
+            Self::BuyLimit => capabilities.buy_limit = false,
+            Self::FriendlyFireScale => capabilities.friendly_fire_scale = false,
+            Self::TeammatesAsEnemies => capabilities.teammates_as_enemies = false,
+            Self::RandomSpawn => capabilities.random_spawn = false,
+            Self::DropWeapons => capabilities.drop_weapons = false,
+            Self::DropGrenades => capabilities.drop_grenades = false,
+            Self::FallDamageScale => capabilities.fall_damage_scale = false,
             Self::RecoilView => capabilities.recoil_view = false,
-            Self::Blue => capabilities.blue = false,
+            Self::Color => capabilities.color = false,
+            Self::SingleShot => capabilities.single_shot = false,
+            Self::FastSwitch => capabilities.fast_switch = false,
             Self::GrenadeRefill => {
-                capabilities.replenish_he = false;
-                capabilities.replenish_decoy = false;
+                capabilities.grenade_replenishment = false;
             }
-            Self::RandomLoadout => capabilities.random_loadout = false,
-            Self::MissDamage => capabilities.miss_damage = false,
-            Self::TeamDeathmatch => capabilities.team_deathmatch = false,
+            Self::KillLoadout => capabilities.kill_loadout = false,
+            Self::SelfDamage => capabilities.self_damage = false,
+            Self::NativeSelfDamage => capabilities.native_self_damage = false,
+            Self::EnergyShield => capabilities.energy_shield = false,
+            Self::Translucent => capabilities.translucent = false,
+            Self::DelayedDamage => capabilities.delayed_damage = false,
+            Self::Reflection => capabilities.reflect_damage = false,
+            Self::ReflectionLifestealFrame => capabilities.reflection_lifesteal_frame = false,
+            Self::TeamDeathmatch | Self::WinCondition => capabilities.win_condition = false,
             Self::BombTiming => capabilities.bomb_timing = false,
             Self::ChickenBomb => capabilities.chicken_bomb = false,
             Self::CarryBomb => capabilities.carry_bomb = false,
@@ -60,7 +106,21 @@ impl Mechanism {
             }
             Self::ThrowingKnives => capabilities.throwing_knives = false,
             Self::ViewPunchDecay => capabilities.view_punch_decay = false,
-            Self::Classic => capabilities.classic = false,
+            Self::NoScope => capabilities.no_scope = false,
+            Self::Fov => capabilities.fov = false,
+            Self::Crosshair => capabilities.hide_crosshair = false,
+            Self::PeriodicMovement => {
+                capabilities.periodic_speed = false;
+                capabilities.periodic_gravity = false;
+            }
+            Self::PeriodicSpeed => capabilities.periodic_speed = false,
+            Self::PeriodicGravity => capabilities.periodic_gravity = false,
+            Self::NoC4 | Self::C4Assignment => capabilities.c4_assignment = false,
+            Self::Classic => capabilities.speed = false,
+            Self::HealthSpeed => capabilities.health_speed = false,
+            Self::HealthDecay => capabilities.health_decay = false,
+            Self::RandomDamage => capabilities.random_damage = false,
+            Self::Suicide => capabilities.suicide = false,
         }
     }
 }
@@ -193,48 +253,50 @@ impl Faults {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use funrounds_core::{Config, NextMode, Phase, RoundController};
+    use funrounds_core::{Config, NextMode, Phase, RoundController, TeamFilter};
     use rand::{SeedableRng, rngs::StdRng};
 
     fn available() -> Capabilities {
         Capabilities {
-            classic: true,
+            ammo: true,
+            single_shot: true,
             equipment: true,
             health: true,
             armor: true,
             gravity: true,
-            unlimited_reserve: true,
-            unlimited_clip: true,
-            replenish_he: true,
-            replenish_decoy: true,
+            speed: true,
+            helmet: true,
+            clear_weapons: true,
+            give_weapons: true,
+            give_knife: true,
+            grenade_replenishment: true,
             bomb_timing: true,
             chicken_bomb: true,
             carry_bomb: true,
             bomb_bounce: true,
             dodgeball: true,
             throwing_knives: true,
-            team_deathmatch: true,
+            win_condition: true,
             ..Capabilities::default()
         }
     }
 
     #[test]
-    fn dependency_failures_exclude_shared_aliases_without_disabling_other_capabilities() {
+    fn mechanism_failures_disable_only_their_capabilities() {
         let original = available();
         for (mechanism, expected) in [
             (
-                Mechanism::InfiniteAmmo,
+                Mechanism::Ammo,
                 Capabilities {
-                    unlimited_reserve: false,
-                    unlimited_clip: false,
+                    ammo: false,
+                    single_shot: false,
                     ..original
                 },
             ),
             (
                 Mechanism::GrenadeRefill,
                 Capabilities {
-                    replenish_he: false,
-                    replenish_decoy: false,
+                    grenade_replenishment: false,
                     ..original
                 },
             ),
@@ -307,7 +369,7 @@ mod tests {
         assert_eq!(faults.capabilities(), Capabilities::default());
         assert!(!faults.finish_cleanup(false));
         assert!(!faults.finish_cleanup(true));
-        faults.record(&Fault::mechanism(Mechanism::InfiniteAmmo, "ammo mismatch"));
+        faults.record(&Fault::mechanism(Mechanism::Ammo, "ammo mismatch"));
         assert_eq!(faults.recovery, Recovery::Stopped);
         assert_eq!(faults.capabilities(), Capabilities::default());
         assert!(faults.reasons().contains("mp_buytime restoration mismatch"));
@@ -323,7 +385,7 @@ mod tests {
         feature_mode.id = "feature".into();
         feature_mode.name = "Feature".into();
         feature_mode.throwing_knives = true;
-        feature_mode.weapons.push("weapon_knife".into());
+        feature_mode.give_knife = TeamFilter::All;
         config.modes.push(feature_mode);
         let mut faults = Faults::new(available());
         let mut controller = RoundController::new(Some(config), faults.capabilities()).unwrap();
@@ -346,21 +408,17 @@ mod tests {
         assert!(!controller.start_round(blocked, false, &mut rng));
         assert!(!controller.is_new_round(first));
         assert_eq!(controller.phase(), Phase::Idle);
-        let basic_source = source.replace("id = \"example\"", "id = \"basic\"").replace("通用示例", "Basic");
-        let feature_source = source
-            .split_once("[[modes]]")
-            .unwrap()
-            .1
-            .split_once('\n')
-            .unwrap()
-            .1
+        let base = source.replace("diagnostics = false", "");
+        let basic_source = base
+            .replace("id = \"example\"", "id = \"basic\"")
+            .replace("name = \"通用示例\"", "name = \"Basic\"");
+        let feature_source = base
             .replace("id = \"example\"", "id = \"feature\"")
             .replace("name = \"通用示例\"", "name = \"Feature\"")
             .replace(
                 "weapons = [\"weapon_famas\", \"weapon_p250\"]",
-                "weapons = [\"weapon_famas\", \"weapon_p250\", \"weapon_knife\"]",
-            )
-            .replace("throwing_knives = false", "throwing_knives = true");
+                "weapons = [\"weapon_famas\", \"weapon_p250\"]\ngive_knife = \"all\"\nthrowing_knives = true",
+            );
         let reloaded_source = format!("{basic_source}\n{feature_source}");
         controller.queue_reload(&reloaded_source).unwrap();
         controller.set_enabled(false);

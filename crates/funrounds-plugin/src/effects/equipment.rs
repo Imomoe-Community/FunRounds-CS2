@@ -9,31 +9,10 @@ use crate::{
     game::LivePlayer,
     s2sdk,
 };
-use funrounds_core::{Mode, PlayerTask};
+pub use funrounds_core::GrenadeKind;
+use funrounds_core::{Mode, PlayerTask, TeamFilter};
 use plugify::Str;
 use std::collections::{HashMap, HashSet};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GrenadeKind {
-    He,
-    Decoy,
-}
-
-impl GrenadeKind {
-    fn classname(self) -> &'static str {
-        match self {
-            Self::He => "weapon_hegrenade",
-            Self::Decoy => "weapon_decoy",
-        }
-    }
-
-    pub fn enabled(self, mode: &Mode) -> bool {
-        match self {
-            Self::He => mode.replenish_he,
-            Self::Decoy => mode.replenish_decoy,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Refill {
@@ -96,10 +75,11 @@ pub struct Completion {
 
 impl Refills {
     pub fn queue(&mut self, task: PlayerTask, player: LivePlayer, kind: GrenadeKind, diagnostics: bool) -> (u64, Option<i32>) {
+        let classname = kind.classname();
         let spent = s2sdk::GetClientWeapons(player.slot)
             .iter()
             .copied()
-            .find(|handle| s2sdk::IsValidEntHandle(*handle) && s2sdk::GetEntityClassname(*handle).to_string() == kind.classname());
+            .find(|handle| s2sdk::IsValidEntHandle(*handle) && s2sdk::GetEntityClassname(*handle).to_string() == classname);
         (self.queue_recorded(task, player, kind, spent, diagnostics), spent)
     }
 
@@ -344,59 +324,60 @@ fn execute_refill(refill: Refill, mut current: impl FnMut() -> bool) -> RefillRe
     if !valid() {
         return result(Outcome::Cancelled, None, "player or task changed before refill");
     }
-    let Some(handle) = spent_grenade_owned(spent, s2sdk::GetClientWeapons(player.slot).iter().copied())
-        .filter(|handle| s2sdk::IsValidEntHandle(*handle) && s2sdk::GetEntityClassname(*handle).to_string() == classname)
-    else {
-        return result(Outcome::Cancelled, None, "spent weapon unavailable");
-    };
-    let weapon = s2sdk::EntHandleToEntPointer(handle);
-    if weapon == 0 {
-        return result(Outcome::Cancelled, None, "spent weapon entity unavailable");
-    }
-    let throw_animating = s2sdk::GetEntSchema2(weapon, &Str::from_str("CBaseCSGrenade"), &Str::from_str("m_bThrowAnimating"), 0);
-    let redraw = s2sdk::GetEntSchema2(weapon, &Str::from_str("CBaseCSGrenade"), &Str::from_str("m_bRedraw"), 0);
-    match grenade_redraw_ready(throw_animating, redraw) {
-        Some(false) => return result(Outcome::Waiting, None, ""),
-        None => {
+    let inventory = s2sdk::GetClientWeapons(player.slot).iter().copied().collect::<Vec<_>>();
+    let handle = spent_grenade_owned(spent, inventory.iter().copied())
+        .filter(|handle| s2sdk::IsValidEntHandle(*handle) && s2sdk::GetEntityClassname(*handle).to_string() == classname);
+    let active_before = s2sdk::GetClientActiveWeapon(player.slot);
+    let preserve_active = refill_selection_to_preserve(
+        active_before,
+        handle,
+        inventory.contains(&active_before) && s2sdk::IsValidEntHandle(active_before),
+    );
+    let mut redraw_state = None;
+    if let Some(handle) = handle {
+        let weapon = s2sdk::EntHandleToEntPointer(handle);
+        if weapon == 0 {
+            return result(Outcome::Cancelled, None, "spent weapon entity unavailable");
+        }
+        let throw_animating = s2sdk::GetEntSchema2(weapon, &Str::from_str("CBaseCSGrenade"), &Str::from_str("m_bThrowAnimating"), 0);
+        let redraw = s2sdk::GetEntSchema2(weapon, &Str::from_str("CBaseCSGrenade"), &Str::from_str("m_bRedraw"), 0);
+        redraw_state = Some((throw_animating, redraw));
+        match grenade_throw_safe_to_refill(throw_animating, redraw, preserve_active.is_some()) {
+            Some(false) => return result(Outcome::Waiting, None, ""),
+            None => {
+                return result(
+                    Outcome::Failed(crate::fault::Scope::Mechanism(Mechanism::GrenadeRefill)),
+                    None,
+                    &format!("invalid native throw-redraw state throw_animating={throw_animating} redraw={redraw}"),
+                );
+            }
+            Some(true) => {}
+        }
+        if !valid() {
+            return result(Outcome::Cancelled, None, "task changed before removing spent weapon");
+        }
+        s2sdk::RemoveWeapon(player.slot, handle);
+        if !valid() {
+            return result(Outcome::Cancelled, None, "task changed during spent weapon removal");
+        }
+        if s2sdk::GetClientWeapons(player.slot).iter().any(|current| *current == handle) {
             return result(
-                Outcome::Failed(crate::fault::Scope::Mechanism(Mechanism::GrenadeRefill)),
+                Outcome::Failed(crate::fault::Scope::Global),
                 None,
-                &format!("invalid native throw-redraw state throw_animating={throw_animating} redraw={redraw}"),
+                "spent item remained in inventory after removal",
             );
         }
-        Some(true) => {}
     }
     if !valid() {
-        return result(Outcome::Cancelled, None, "task changed before removing spent weapon");
-    }
-    let active_before = if refill.diagnostics {
-        s2sdk::GetClientActiveWeapon(player.slot)
-    } else {
-        -1
-    };
-    s2sdk::RemoveWeapon(player.slot, handle);
-    if !valid() {
-        return result(Outcome::Cancelled, None, "task changed during spent weapon removal");
-    }
-    if s2sdk::GetClientWeapons(player.slot).iter().any(|current| *current == handle) {
-        return result(
-            Outcome::Failed(crate::fault::Scope::Global),
-            None,
-            "spent item remained in inventory after removal",
-        );
+        return result(Outcome::Cancelled, None, "task changed before replacement grant");
     }
     let inventory_before = s2sdk::GetClientWeapons(player.slot).iter().copied().collect::<Vec<_>>();
     let replacement = s2sdk::GiveNamedItem(player.slot, &Str::from_str(classname));
     let replacement_valid = s2sdk::IsValidEntHandle(replacement);
     let returned_class = replacement_valid.then(|| s2sdk::GetEntityClassname(replacement).to_string());
     let mut created = Vec::new();
-    track_created_weapon(
-        &mut created,
-        &[(handle, classname.into())],
-        &inventory_before,
-        replacement,
-        returned_class.as_deref(),
-    );
+    let previous = handle.map(|handle| (handle, classname.into())).into_iter().collect::<Vec<_>>();
+    track_created_weapon(&mut created, &previous, &inventory_before, replacement, returned_class.as_deref());
     let created = created.first().map(|(handle, _)| *handle);
     if !valid() {
         return result(Outcome::Cancelled, created, "task changed during replacement grant");
@@ -411,22 +392,23 @@ fn execute_refill(refill: Refill, mut current: impl FnMut() -> bool) -> RefillRe
             &format!("GiveNamedItem returned unusable handle={replacement}"),
         );
     }
-    let active_after_give = s2sdk::GetClientActiveWeapon(player.slot);
-    if active_after_give != replacement {
-        s2sdk::SelectWeapon(player.slot, replacement);
+    let selected_after_give = s2sdk::GetClientActiveWeapon(player.slot);
+    let selected_after_refill = preserve_active.unwrap_or(replacement);
+    if selected_after_give != selected_after_refill {
+        s2sdk::SelectWeapon(player.slot, selected_after_refill);
     }
     if !valid() {
         return result(Outcome::Cancelled, created, "task changed during replacement selection");
     }
     let active_after = s2sdk::GetClientActiveWeapon(player.slot);
-    if active_after != replacement {
+    if active_after != selected_after_refill {
         return result(
             Outcome::Failed(crate::fault::Scope::Mechanism(Mechanism::GrenadeRefill)),
             created,
-            &format!("active weapon remained {active_after}"),
+            &format!("active weapon remained {active_after}, expected {selected_after_refill}"),
         );
     }
-    if s2sdk::GetClientWeapons(player.slot).iter().any(|current| *current == handle) {
+    if handle.is_some_and(|handle| s2sdk::GetClientWeapons(player.slot).iter().any(|current| *current == handle)) {
         return result(Outcome::Failed(crate::fault::Scope::Global), created, "spent item remained in inventory");
     }
     let replacement_weapon = s2sdk::EntHandleToEntPointer(replacement);
@@ -447,19 +429,23 @@ fn execute_refill(refill: Refill, mut current: impl FnMut() -> bool) -> RefillRe
         Outcome::Completed,
         created,
         &format!(
-            "grenade replenished slot={} weapon={classname} old_handle={handle} new_handle={replacement} active_before={active_before} active_after_give={active_after_give} active_after={active_after} completed_throw_animating={throw_animating} completed_redraw={redraw} new_throw_animating={new_throw_animating} new_redraw={new_redraw} transaction={} action={}",
+            "grenade replenished slot={} weapon={classname} old_handle={handle:?} new_handle={replacement} active_before={active_before} active_after_give={selected_after_give} active_after={active_after} completed_throw_redraw={redraw_state:?} new_throw_animating={new_throw_animating} new_redraw={new_redraw} transaction={} action={}",
             player.slot, refill.id, refill.action_id,
         ),
     )
+}
+
+fn refill_selection_to_preserve(active_before: i32, spent: Option<i32>, still_owned: bool) -> Option<i32> {
+    (still_owned && spent != Some(active_before)).then_some(active_before)
 }
 
 fn spent_grenade_owned(thrown: Option<i32>, mut inventory: impl Iterator<Item = i32>) -> Option<i32> {
     thrown.filter(|handle| inventory.any(|current| current == *handle))
 }
 
-fn grenade_redraw_ready(throw_animating: i64, redraw: i64) -> Option<bool> {
+fn grenade_throw_safe_to_refill(throw_animating: i64, redraw: i64, switched_weapon: bool) -> Option<bool> {
     match (throw_animating, redraw) {
-        (0 | 1, 0 | 1) => Some(throw_animating == 0 && redraw == 1),
+        (0 | 1, 0 | 1) => Some(throw_animating == 0 && (redraw == 1 || switched_weapon)),
         _ => None,
     }
 }
@@ -490,9 +476,11 @@ pub(super) struct EquipmentReplacement {
     created: Vec<(i32, String)>,
     retiring: Vec<i32>,
     pending_grant: Option<(i32, Vec<i32>)>,
+    last_grant: Option<(i32, EquipmentGrantOutcome, bool)>,
+    rollback_ready: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EquipmentGrantOutcome {
     InInventory,
     Duplicate,
@@ -500,29 +488,69 @@ enum EquipmentGrantOutcome {
 }
 
 impl super::Effect {
-    pub(super) fn replace_equipment_inner(&mut self, equipment: &[String], mode: &Mode) -> Result<(), Fault> {
+    pub(super) fn replace_equipment_inner(&mut self, equipment: &[String], mode: &Mode, current: &impl Fn() -> bool) -> Result<(), Fault> {
+        self.replace_equipment_targets(equipment, mode, None, current)
+    }
+
+    pub(super) fn replace_weapon_inner(&mut self, target: i32, equipment: &[String], mode: &Mode, current: &impl Fn() -> bool) -> Result<(), Fault> {
+        self.replace_equipment_targets(equipment, mode, Some(target), current)
+    }
+
+    fn replace_equipment_targets(
+        &mut self,
+        equipment: &[String],
+        mode: &Mode,
+        target: Option<i32>,
+        current: &impl Fn() -> bool,
+    ) -> Result<(), Fault> {
         if LivePlayer::resolve(self.player.slot) != Some(self.player) {
             return Err(Fault::cancelled("player identity changed before replacing equipment"));
         }
-        let previous = replacement_targets(
-            s2sdk::GetClientWeapons(self.player.slot)
-                .iter()
-                .copied()
-                .filter(|handle| s2sdk::IsValidEntHandle(*handle))
-                .map(|handle| (handle, s2sdk::GetEntityClassname(handle).to_string())),
-        );
+        let team = s2sdk::GetClientTeam(self.player.slot);
+        let clear_weapons = target.is_some() || team_filter_matches(mode.clear_weapons, team);
+        let give_weapons = target.is_some() || team_filter_matches(mode.give_weapons, team);
+        let give_knife = target.is_none() && team_filter_matches(mode.give_knife, team);
+        let inventory = s2sdk::GetClientWeapons(self.player.slot)
+            .iter()
+            .copied()
+            .filter(|handle| s2sdk::IsValidEntHandle(*handle))
+            .map(|handle| (handle, s2sdk::GetEntityClassname(handle).to_string()))
+            .collect::<Vec<_>>();
+        let previous = if target.is_some() {
+            selected_replacement_targets(inventory.clone(), target)
+        } else if clear_weapons {
+            replacement_targets(inventory.clone())
+        } else {
+            Vec::new()
+        };
+        if target.is_some() && previous.is_empty() {
+            return Err(Fault::cancelled("upgrade target is no longer a valid owned weapon"));
+        }
+        let mut equipment_to_give = if give_weapons { equipment.to_vec() } else { Vec::new() };
+        if give_knife && !equipment_to_give.iter().any(|weapon| weapon == "weapon_knife") && (clear_weapons || !inventory_has_knife(&inventory)) {
+            equipment_to_give.push("weapon_knife".into());
+        }
         if self.replacement.is_some() {
             return Err(Fault::global("previous loadout replacement remains unsettled"));
+        }
+        if target.is_none() && !clear_weapons {
+            let item_definition_reader = unsafe { __s2sdk_GetWeaponItemDefinition };
+            equipment_to_give.retain(|requested| !inventory_has_item(&inventory, team_weapon(requested, team), item_definition_reader));
+        }
+        if previous.is_empty() && equipment_to_give.is_empty() {
+            return Ok(());
         }
         self.replacement = Some(EquipmentReplacement {
             previous,
             created: Vec::new(),
             retiring: Vec::new(),
             pending_grant: None,
+            last_grant: None,
+            rollback_ready: false,
         });
         let previous = self.replacement.as_ref().expect("loadout transaction exists").previous.clone();
         for (handle, _) in previous {
-            s2sdk::RemoveWeapon(self.player.slot, handle);
+            super::run_equipment_action(current, || s2sdk::RemoveWeapon(self.player.slot, handle))?;
             if LivePlayer::resolve(self.player.slot) != Some(self.player) {
                 return Err(Fault::cancelled("player changed during loadout removal"));
             }
@@ -530,23 +558,24 @@ impl super::Effect {
                 return Err("engine did not remove the previous loadout".into());
             }
         }
-        for (equipment_index, requested) in equipment.iter().enumerate() {
-            let name = team_weapon(requested, s2sdk::GetClientTeam(self.player.slot));
+        for (equipment_index, requested) in equipment_to_give.iter().enumerate() {
+            let name = team_weapon(requested, team);
             let is_random_draw = mode.random_loadout && equipment_index < 2;
+            let verify_upgrade_identity = target.is_some();
             let expected_definition = shared_item_definition(name).unwrap_or(0);
-            let definition_reader = if is_random_draw && expected_definition != 0 {
-                Some(
-                    unsafe { __s2sdk_GetWeaponItemDefinition }
-                        .ok_or_else(|| Fault::mechanism(Mechanism::RandomLoadout, "GetWeaponItemDefinition unavailable"))?,
-                )
+            let definition_reader = if (is_random_draw || verify_upgrade_identity) && expected_definition != 0 {
+                Some(unsafe { __s2sdk_GetWeaponItemDefinition }.expect("required SDK import checked at startup"))
             } else {
                 None
             };
             let inventory_before = s2sdk::GetClientWeapons(self.player.slot).iter().copied().collect::<Vec<_>>();
-            let handle = s2sdk::GiveNamedItem(self.player.slot, &Str::from_str(name));
             let replacement = self.replacement.as_mut().expect("loadout transaction exists");
-            replacement.pending_grant = Some((handle, inventory_before));
-            let returned_class = replacement.account_grant();
+            let (handle, returned_class) = replacement.give_and_record(
+                inventory_before,
+                current,
+                || s2sdk::GiveNamedItem(self.player.slot, &Str::from_str(name)),
+                |handle| s2sdk::IsValidEntHandle(handle).then(|| s2sdk::GetEntityClassname(handle).to_string()),
+            )?;
             let handle_valid = returned_class.is_some();
             if LivePlayer::resolve(self.player.slot) != Some(self.player) {
                 return Err(Fault::cancelled("player changed during loadout grant"));
@@ -556,8 +585,13 @@ impl super::Effect {
             } else {
                 0
             };
-            let grant_name = if is_random_draw {
-                item_identity_matches(name, returned_class.as_deref(), actual_definition).then_some(name)
+            let requested_item_matches = if is_random_draw || verify_upgrade_identity {
+                item_identity_matches(name, returned_class.as_deref(), actual_definition)
+            } else {
+                returned_class.as_deref() == Some(name)
+            };
+            let grant_name = if is_random_draw || verify_upgrade_identity {
+                requested_item_matches.then_some(name)
             } else {
                 returned_class.as_deref()
             };
@@ -573,7 +607,7 @@ impl super::Effect {
                     }
             });
             let outcome = equipment_grant_outcome(
-                    is_random_draw,
+                    is_random_draw || (verify_upgrade_identity && handle_valid && requested_item_matches),
                     handle_valid,
                     grant_name,
                     name,
@@ -594,6 +628,7 @@ impl super::Effect {
                         returned_class.as_deref().unwrap_or("<invalid-handle>"),
                     )
                 })?;
+            self.replacement.as_mut().expect("loadout transaction exists").last_grant = Some((handle, outcome, requested_item_matches));
             if self.diagnostics && (outcome != EquipmentGrantOutcome::InInventory || (is_random_draw && returned_class.as_deref() != Some(name))) {
                 let current_weapons = inventory
                     .iter()
@@ -609,7 +644,7 @@ impl super::Effect {
                     returned_class.as_deref().unwrap_or("<invalid-handle>"),
                 )));
             }
-            if mode.no_spread_recoil
+            if mode.no_recoil
                 && is_firearm(name)
                 && let Some(recoil_handle) = matching_inventory_handle.or_else(|| handle_in_inventory.then_some(handle))
             {
@@ -630,12 +665,8 @@ impl super::Effect {
             self.replacement = None;
             return Ok(());
         }
-        let result = replacement.restore_previous(self.player);
-        replacement.retire_created(refills);
-        if result.is_ok() && replacement.retiring.is_empty() {
-            self.replacement = None;
-        }
-        result
+        replacement.rollback_ready = true;
+        Ok(())
     }
 }
 
@@ -643,8 +674,42 @@ fn replaces_weapon(name: &str) -> bool {
     name != "weapon_c4"
 }
 
+fn team_filter_matches(filter: TeamFilter, team: s2sdk::CSTeam) -> bool {
+    filter.matches(team as i32)
+}
+
+fn inventory_has_knife(inventory: &[(i32, String)]) -> bool {
+    inventory
+        .iter()
+        .any(|(_, name)| matches!(name.as_str(), "weapon_knife" | "weapon_knife_t"))
+}
+
+fn inventory_has_item(inventory: &[(i32, String)], requested: &str, item_definition_reader: Option<unsafe extern "C" fn(i32) -> u16>) -> bool {
+    if matches!(requested, "weapon_knife" | "weapon_knife_t") {
+        return inventory_has_knife(inventory);
+    }
+    inventory.iter().any(|(handle, classname)| {
+        let definition = item_definition_reader.map_or(0, |read| unsafe { read(*handle) });
+        item_identity_matches(requested, Some(classname), definition)
+    })
+}
+
 fn replacement_targets(weapons: impl IntoIterator<Item = (i32, String)>) -> Vec<(i32, String)> {
     weapons.into_iter().filter(|(_, name)| replaces_weapon(name)).collect()
+}
+
+fn selected_replacement_targets(weapons: Vec<(i32, String)>, target: Option<i32>) -> Vec<(i32, String)> {
+    match target {
+        Some(target) => weapons
+            .into_iter()
+            .filter(|(handle, name)| *handle == target && upgrade_target(name))
+            .collect(),
+        None => replacement_targets(weapons),
+    }
+}
+
+fn upgrade_target(name: &str) -> bool {
+    !matches!(name, "weapon_knife" | "weapon_knife_t" | "weapon_c4")
 }
 
 fn track_created_weapon(
@@ -705,6 +770,19 @@ fn equipment_grant_outcome(
 }
 
 impl EquipmentReplacement {
+    pub(super) fn rollback_ready(&self) -> bool {
+        self.rollback_ready && self.created.is_empty() && self.retiring.is_empty() && self.pending_grant.is_none()
+    }
+
+    pub(super) fn rollback_complete(&self) -> bool {
+        self.previous.is_empty() && self.retiring.is_empty() && self.pending_grant.is_none()
+    }
+
+    pub(super) fn latest_upgrade_grant(&self) -> Option<i32> {
+        let (handle, _, requested_item_matches) = self.last_grant.as_ref()?;
+        (*requested_item_matches && self.created.iter().any(|(created, _)| created == handle)).then_some(*handle)
+    }
+
     fn account_grant(&mut self) -> Option<String> {
         self.account_grant_with(|handle| s2sdk::IsValidEntHandle(handle).then(|| s2sdk::GetEntityClassname(handle).to_string()))
     }
@@ -715,6 +793,31 @@ impl EquipmentReplacement {
         track_created_weapon(&mut self.created, &self.previous, inventory_before, *handle, returned_class.as_deref());
         self.pending_grant = None;
         returned_class
+    }
+
+    fn record_grant(
+        &mut self,
+        handle: i32,
+        inventory_before: Vec<i32>,
+        classname: impl FnOnce(i32) -> Option<String>,
+        current: &impl Fn() -> bool,
+    ) -> Result<(i32, Option<String>), Fault> {
+        self.pending_grant = Some((handle, inventory_before));
+        let returned_class = self.account_grant_with(classname);
+        super::ensure_equipment_action_current(current)?;
+        Ok((handle, returned_class))
+    }
+
+    fn give_and_record(
+        &mut self,
+        inventory_before: Vec<i32>,
+        current: &impl Fn() -> bool,
+        give: impl FnOnce() -> i32,
+        classname: impl FnOnce(i32) -> Option<String>,
+    ) -> Result<(i32, Option<String>), Fault> {
+        super::ensure_equipment_action_current(current)?;
+        let handle = give();
+        self.record_grant(handle, inventory_before, classname, current)
     }
 
     fn retire_created(&mut self, refills: &mut Refills) {
@@ -728,19 +831,27 @@ impl EquipmentReplacement {
         self.retiring.is_empty()
     }
 
-    fn restore_previous(&mut self, player: LivePlayer) -> Result<(), String> {
+    pub(super) fn restore_previous(&mut self, player: LivePlayer, current: &impl Fn() -> bool) -> Result<(), Fault> {
+        if !self.rollback_ready {
+            return Err(Fault::cancelled("equipment rollback is not staged"));
+        }
         while let Some((handle, name)) = self.previous.last().cloned() {
-            if !s2sdk::GetClientWeapons(player.slot).iter().any(|current| *current == handle) {
+            super::ensure_equipment_action_current(current)?;
+            let inventory = s2sdk::GetClientWeapons(player.slot);
+            super::ensure_equipment_action_current(current)?;
+            if !inventory.iter().any(|current| *current == handle) {
                 let inventory_before = s2sdk::GetClientWeapons(player.slot).iter().copied().collect::<Vec<_>>();
-                let restored = s2sdk::GiveNamedItem(player.slot, &Str::from_str(&name));
-                self.pending_grant = Some((restored, inventory_before));
-                let classname = self.account_grant();
+                let (restored, classname) = self.give_and_record(
+                    inventory_before,
+                    current,
+                    || s2sdk::GiveNamedItem(player.slot, &Str::from_str(&name)),
+                    |handle| s2sdk::IsValidEntHandle(handle).then(|| s2sdk::GetEntityClassname(handle).to_string()),
+                )?;
                 if LivePlayer::resolve(player.slot) != Some(player) {
-                    self.previous.clear();
-                    return Ok(());
+                    return Err(Fault::cancelled("player changed during equipment rollback"));
                 }
                 if classname.as_deref() != Some(&name) || !s2sdk::GetClientWeapons(player.slot).iter().any(|current| *current == restored) {
-                    return Err(format!("loadout rollback failed for {name}"));
+                    return Err(Fault::mechanism(Mechanism::KillLoadout, format!("loadout rollback failed for {name}")));
                 }
                 self.created.retain(|(created, _)| *created != restored);
             }
@@ -771,6 +882,8 @@ mod tests {
             created: Vec::new(),
             retiring: Vec::new(),
             pending_grant: Some((handle, vec![11])),
+            last_grant: None,
+            rollback_ready: false,
         };
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -810,6 +923,8 @@ mod tests {
             created: Vec::new(),
             retiring: Vec::new(),
             pending_grant: Some((11, vec![11])),
+            last_grant: None,
+            rollback_ready: false,
         };
         replacement.account_grant_with(|_| Some("weapon_mag7".into()));
         replacement.pending_grant = Some((13, vec![11]));
@@ -896,12 +1011,18 @@ mod tests {
     }
 
     #[test]
-    fn grenade_refill_waits_for_native_redraw_only() {
-        for (throw_animating, redraw, expected) in [(0, 0, false), (1, 0, false), (1, 1, false), (0, 1, true)] {
-            assert_eq!(grenade_redraw_ready(throw_animating, redraw), Some(expected));
+    fn grenade_refill_waits_for_native_redraw_or_weapon_switch() {
+        for (throw_animating, redraw, switched, expected) in [
+            (0, 0, false, false),
+            (1, 0, false, false),
+            (1, 1, false, false),
+            (0, 1, false, true),
+            (0, 0, true, true),
+        ] {
+            assert_eq!(grenade_throw_safe_to_refill(throw_animating, redraw, switched), Some(expected));
         }
         for state in [(-1, 0), (0, 2), (2, 1), (1, -1)] {
-            assert_eq!(grenade_redraw_ready(state.0, state.1), None);
+            assert_eq!(grenade_throw_safe_to_refill(state.0, state.1, false), None);
         }
     }
 
@@ -1136,7 +1257,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_loadouts_keep_the_legacy_t_knife_alias_contract() {
+    fn strict_loadouts_preserve_the_terrorist_knife_alias() {
         assert_eq!(
             super::equipment_grant_outcome(false, true, Some("weapon_knife"), "weapon_knife_t", true, true),
             Ok(super::EquipmentGrantOutcome::InInventory),

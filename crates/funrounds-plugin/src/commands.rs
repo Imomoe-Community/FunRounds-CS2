@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Mai Ooizumi
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use crate::preferences::Knock;
 use funrounds_core::NextMode;
 
 pub const NAMES: &[&str] = &[
@@ -12,8 +13,10 @@ pub const NAMES: &[&str] = &[
     "fr_info",
     "fr_help",
     "fr_knock",
+    "fr_c4",
+    "fr_suicide",
 ];
-pub const HELP: &str = "fr_info / !frinfo — 查看当前模式\nfr_help / !frhelp — 查看帮助\nfr_knock [0|1] / !knock [0|1] — 设置开枪自推（无参数切换）";
+pub const HELP: &str = "fr_info / !frinfo — 查看当前模式\nfr_help / !frhelp — 查看帮助\nfr_knock [0|1|2] / !knock [0|1|2] — 自推：0关闭／1地面及空中／2仅空中（默认）；无参数依次切换\nfr_c4 / !c4 — 允许普通购买时，用10000现金购买C4\nfr_suicide / !suicide — 允许自爆时，使用已有C4或购买后自爆";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
@@ -24,35 +27,40 @@ pub enum Command {
     Enable(bool),
     Info,
     Help,
-    Knock(Option<bool>),
+    C4,
+    Suicide,
+    Knock(Option<Knock>),
 }
 
 impl Command {
     pub fn parse(args: &[String]) -> Result<Self, &'static str> {
         match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+            ["fr_c4"] => Ok(Self::C4),
+            ["fr_suicide"] => Ok(Self::Suicide),
             ["fr_status"] => Ok(Self::Status),
             ["fr_list"] => Ok(Self::List),
             ["fr_info"] => Ok(Self::Info),
             ["fr_help"] => Ok(Self::Help),
             ["fr_knock"] => Ok(Self::Knock(None)),
-            ["fr_knock", "0"] => Ok(Self::Knock(Some(false))),
-            ["fr_knock", "1"] => Ok(Self::Knock(Some(true))),
+            ["fr_knock", "0"] => Ok(Self::Knock(Some(Knock::Off))),
+            ["fr_knock", "1"] => Ok(Self::Knock(Some(Knock::Always))),
+            ["fr_knock", "2"] => Ok(Self::Knock(Some(Knock::Airborne))),
             ["fr_reload"] => Ok(Self::Reload),
             ["fr_enable", "0"] => Ok(Self::Enable(false)),
             ["fr_enable", "1"] => Ok(Self::Enable(true)),
             ["fr_next", "random"] => Ok(Self::Next(NextMode::Random)),
             ["fr_next", id] if !id.is_empty() => Ok(Self::Next(NextMode::Id((*id).into()))),
-            _ => Err("usage: fr_status | fr_list | fr_next <id|random> | fr_reload | fr_enable <0|1> | fr_info | fr_help | fr_knock [0|1]"),
+            _ => Err("usage: fr_status | fr_list | fr_next <id|random> | fr_reload | fr_enable <0|1> | fr_info | fr_help | fr_knock [0|1|2]"),
         }
     }
 
     pub fn permits_player(&self) -> bool {
-        matches!(self, Self::Info | Self::Help | Self::Knock(_))
+        matches!(self, Self::Info | Self::Help | Self::Knock(_) | Self::C4 | Self::Suicide)
     }
 }
 
 pub fn client_executable(name: &str) -> bool {
-    matches!(name, "fr_info" | "fr_help" | "fr_knock")
+    matches!(name, "fr_info" | "fr_help" | "fr_knock" | "fr_c4" | "fr_suicide")
 }
 
 pub fn status_reply_parts(message: &str) -> impl Iterator<Item = &str> {
@@ -88,6 +96,8 @@ pub fn parse_chat(args: &[String], chat_context: bool) -> Option<Result<Command,
     let name = match (chat_context, first.as_str()) {
         (true, "frinfo") | (false, "!frinfo") => "fr_info",
         (true, "frhelp") | (false, "!frhelp") => "fr_help",
+        (true, "c4") | (false, "!c4") => "fr_c4",
+        (true, "suicide") | (false, "!suicide") => "fr_suicide",
         (true, "knock") | (false, "!knock") => "fr_knock",
         _ => return None,
     };
@@ -111,8 +121,8 @@ mod tests {
         assert!(parts.iter().all(|part| !part.is_empty() && part.len() <= 1024));
         assert_eq!(parts.concat(), message);
         assert_eq!(
-            status_reply_parts("recovery=Stopped\nfaults=Global:[failure]\nexcluded=85:[classic]").collect::<Vec<_>>(),
-            ["recovery=Stopped", "faults=Global:[failure]", "excluded=85:[classic]",]
+            status_reply_parts("recovery=Stopped\nfaults=Global:[failure]\nexcluded=sample:[equipment]").collect::<Vec<_>>(),
+            ["recovery=Stopped", "faults=Global:[failure]", "excluded=sample:[equipment]",]
         );
     }
 
@@ -121,7 +131,10 @@ mod tests {
         let args = |words: &[&str]| words.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
         assert_eq!(parse_chat(&args(&["frinfo"]), true), Some(Ok(Command::Info)));
         assert_eq!(parse_chat(&args(&["say", "!frhelp"]), false), Some(Ok(Command::Help)));
-        assert_eq!(parse_chat(&args(&["say_team", "!knock 0"]), false), Some(Ok(Command::Knock(Some(false)))));
+        assert_eq!(
+            parse_chat(&args(&["say_team", "!knock 0"]), false),
+            Some(Ok(Command::Knock(Some(Knock::Off))))
+        );
         assert_eq!(parse_chat(&args(&["knock"]), true), Some(Ok(Command::Knock(None))));
         for words in [vec!["say", "hello"], vec!["say", "!fr_enable 0"], vec!["fr_enable", "0"], vec!["frinfo"]] {
             assert!(parse_chat(&args(&words), false).is_none());
@@ -134,7 +147,8 @@ mod tests {
             assert!(client_executable(name));
             assert!(Command::parse(&args(&[name])).unwrap().permits_player());
         }
-        for words in [vec!["fr_knock", "2"], vec!["fr_knock", "1", "extra"], vec!["fr_help", "extra"]] {
+        assert_eq!(parse(&["fr_knock", "2"]), Ok(Command::Knock(Some(Knock::Airborne))));
+        for words in [vec!["fr_knock", "1", "extra"], vec!["fr_help", "extra"]] {
             assert!(Command::parse(&args(&words)).is_err());
         }
     }
@@ -146,7 +160,9 @@ mod tests {
             [
                 "fr_info / !frinfo — 查看当前模式",
                 "fr_help / !frhelp — 查看帮助",
-                "fr_knock [0|1] / !knock [0|1] — 设置开枪自推（无参数切换）",
+                "fr_knock [0|1|2] / !knock [0|1|2] — 自推：0关闭／1地面及空中／2仅空中（默认）；无参数依次切换",
+                "fr_c4 / !c4 — 允许普通购买时，用10000现金购买C4",
+                "fr_suicide / !suicide — 允许自爆时，使用已有C4或购买后自爆",
             ]
         );
     }

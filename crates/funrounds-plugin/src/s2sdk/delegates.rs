@@ -14,7 +14,3 @@ pub type ConCommandCallback = unsafe extern "C" fn(i32, ConCommandContext, &Arr<
 /// Handles events triggered by the game event system. This function processes the event data, determines the necessary action, and optionally prevents event broadcasting.
 #[allow(unused)]
 pub type EventCallback = unsafe extern "C" fn(&Str, usize, bool) -> ResultType;
-
-/// Synchronous decision for touches on every entity sharing the selected Touch function address. Return zero to continue native Touch or nonzero to supersede it.
-#[allow(unused)]
-pub type EntityTouchPreCallback = unsafe extern "C" fn(i32, i32) -> i32;

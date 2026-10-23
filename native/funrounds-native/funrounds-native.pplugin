@@ -1,0 +1,197 @@
+{
+  "$schema": "https://raw.githubusercontent.com/untrustedmodders/plugify/refs/tags/v3.1.0/schemas/plugin.schema.json",
+  "version": "0.2.0-alpha.test",
+  "name": "funrounds_native",
+  "description": "Native Source 2 damage, pickup, touch, collision, and suicide-input hooks for FunRounds",
+  "author": "Mai Ooizumi",
+  "website": "https://github.com/Mai-Ooizumi",
+  "license": "AGPL-3.0-or-later",
+  "entry": "bin/funrounds-native",
+  "platforms": [],
+  "language": "cpp",
+  "dependencies": [
+    {
+      "name": "s2sdk",
+      "constraints": "=3.0.2"
+    },
+    {
+      "name": "polyhook",
+      "constraints": "=2.5.6"
+    }
+  ],
+  "methods": [
+    {
+      "name": "HasSuicideSupport",
+      "funcName": "HasSuicideSupport",
+      "group": "Suicide",
+      "description": "Reports whether the optional CanAcquire hook and inspect-button schema are available.",
+      "paramTypes": [],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "GetLookAtWeaponButtonState",
+      "funcName": "GetLookAtWeaponButtonState",
+      "group": "Suicide",
+      "description": "Returns live IN_LOOK_AT_WEAPON state for an exact pawn handle, or -1 when unavailable.",
+      "paramTypes": [
+        { "name": "pawnHandle", "type": "int32", "ref": false }
+      ],
+      "retType": { "type": "int32" }
+    },
+    {
+      "name": "HookPlayerCanAcquire",
+      "funcName": "HookPlayerCanAcquire",
+      "group": "Suicide",
+      "description": "Hooks pickup acquisition decisions so only active suicide bombers are denied weapon pickups.",
+      "paramTypes": [
+        { "name": "callback", "type": "function", "prototype": "PlayerCanAcquireCallback", "ref": false }
+      ],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "UnhookPlayerCanAcquire",
+      "funcName": "UnhookPlayerCanAcquire",
+      "group": "Suicide",
+      "description": "Removes the optional CanAcquire detour and callback.",
+      "paramTypes": [
+        { "name": "callback", "type": "function", "prototype": "PlayerCanAcquireCallback", "ref": false }
+      ],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "HasPlayerTakeDamagePre",
+      "funcName": "HasPlayerTakeDamagePre",
+      "group": "Damage",
+      "description": "Reports whether the current native damage-hook prerequisites are available.",
+      "paramTypes": [],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "HookPlayerTakeDamagePre",
+      "funcName": "HookPlayerTakeDamagePre",
+      "group": "Damage",
+      "description": "Installs the exclusive synchronous player damage policy callback.",
+      "paramTypes": [
+        { "name": "callback", "type": "function", "prototype": "DamagePreCallback", "ref": false }
+      ],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "UnhookPlayerTakeDamagePre",
+      "funcName": "UnhookPlayerTakeDamagePre",
+      "group": "Damage",
+      "description": "Revokes the player damage callback and removes its detour.",
+      "paramTypes": [
+        { "name": "callback", "type": "function", "prototype": "DamagePreCallback", "ref": false }
+      ],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "GetCurrentDamageFrameToken",
+      "funcName": "GetCurrentDamageFrameToken",
+      "group": "Damage",
+      "description": "Returns the current nested damage-call token, or zero outside a damage call.",
+      "paramTypes": [],
+      "retType": { "type": "uint64" }
+    },
+    {
+      "name": "TakeEntityDamageWithWeapon",
+      "funcName": "TakeEntityDamageWithWeapon",
+      "group": "Damage",
+      "description": "Applies native damage with an exact ability weapon handle and optional callback-specific rule bypass.",
+      "paramTypes": [
+        { "name": "victimHandle", "type": "int32", "ref": false },
+        { "name": "inflictorHandle", "type": "int32", "ref": false },
+        { "name": "attackerHandle", "type": "int32", "ref": false },
+        { "name": "force", "type": "vec3", "ref": false },
+        { "name": "position", "type": "vec3", "ref": false },
+        { "name": "amount", "type": "float", "ref": false },
+        { "name": "damageType", "type": "int32", "ref": false },
+        { "name": "weaponHandle", "type": "int32", "ref": false },
+        { "name": "skipPluginRules", "type": "bool", "ref": false }
+      ],
+      "retType": { "type": "int32" }
+    },
+    {
+      "name": "IsEntityTouchPreHookAvailable",
+      "funcName": "IsEntityTouchPreHookAvailable",
+      "group": "Entities",
+      "description": "Reports whether the Touch vtable offset is available in the native gamedata.",
+      "paramTypes": [],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "HookEntityTouchPre",
+      "funcName": "HookEntityTouchPre",
+      "group": "Entities",
+      "description": "Hooks the entity's current Touch implementation address; the callback sees all entities sharing it.",
+      "paramTypes": [
+        { "name": "entityHandle", "type": "int32", "ref": false },
+        { "name": "callback", "type": "function", "prototype": "EntityTouchPreCallback", "ref": false }
+      ],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "UnhookEntityTouchPre",
+      "funcName": "UnhookEntityTouchPre",
+      "group": "Entities",
+      "description": "Revokes the Touch callback and removes all Touch implementation detours it owns.",
+      "paramTypes": [
+        { "name": "callback", "type": "function", "prototype": "EntityTouchPreCallback", "ref": false }
+      ],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "SetEntityDefaultCollisionGroup",
+      "funcName": "SetEntityDefaultCollisionGroup",
+      "group": "Entities",
+      "description": "Sets both collision-group fields to the standard default and notifies collision rules.",
+      "paramTypes": [
+        { "name": "entityHandle", "type": "int32", "ref": false }
+      ],
+      "retType": { "type": "void" }
+    }
+  ],
+  "prototypes": [
+    {
+      "name": "PlayerCanAcquireCallback",
+      "funcName": "PlayerCanAcquireCallback",
+      "description": "Synchronous pickup decision for exact player pawn and controller handles.",
+      "paramTypes": [
+        { "name": "pawnHandle", "type": "int32" },
+        { "name": "controllerHandle", "type": "int32" }
+      ],
+      "retType": { "type": "int32" }
+    },
+    {
+      "name": "DamagePreCallback",
+      "funcName": "DamagePreCallback",
+      "description": "Synchronous player damage decision with native damage type, exact weapon handle, and per-call rule scope.",
+      "paramTypes": [
+        { "name": "victimHandle", "type": "int32" },
+        { "name": "attackerHandle", "type": "int32" },
+        { "name": "inflictorHandle", "type": "int32" },
+        { "name": "weaponKind", "type": "int32" },
+        { "name": "hitGroup", "type": "int32" },
+        { "name": "tracedHead", "type": "bool" },
+        { "name": "damage", "type": "float" },
+        { "name": "damageType", "type": "uint32" },
+        { "name": "multiplier", "type": "float", "ref": true },
+        { "name": "markHeadshot", "type": "bool", "ref": true },
+        { "name": "weaponHandle", "type": "int32" },
+        { "name": "skipPluginRules", "type": "bool" }
+      ],
+      "retType": { "type": "int32" }
+    },
+    {
+      "name": "EntityTouchPreCallback",
+      "funcName": "EntityTouchPreCallback",
+      "description": "Synchronous decision for every entity sharing the selected Touch implementation.",
+      "paramTypes": [
+        { "name": "entityHandle", "type": "int32" },
+        { "name": "otherHandle", "type": "int32" }
+      ],
+      "retType": { "type": "int32" }
+    }
+  ]
+}

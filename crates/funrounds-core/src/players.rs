@@ -106,7 +106,7 @@ impl PlayerTracker {
 
     pub fn respawn_task(&self, slot: i32, round: RoundGeneration) -> Option<PlayerTask> {
         let player = self.players.get(&slot).copied()?;
-        (player.last_spawn.is_some() && !player.pending_pawn && player.pawn_handle == u32::MAX).then_some(PlayerTask { round, player })
+        (!player.pending_pawn && player.pawn_handle == u32::MAX).then_some(PlayerTask { round, player })
     }
 
     pub fn validates_respawn(&self, task: PlayerTask, round: RoundGeneration) -> bool {
@@ -115,12 +115,48 @@ impl PlayerTracker {
             && self
                 .players
                 .get(&task.player.slot)
-                .is_some_and(|player| *player == task.player && player.last_spawn.is_some() && !player.pending_pawn)
+                .is_some_and(|player| *player == task.player && !player.pending_pawn)
     }
 
     // The adapter must also resolve this handle and validate it against the live engine pawn.
     pub fn validates(&self, task: PlayerTask, round: RoundGeneration, live_pawn_handle: u32) -> bool {
         task.round == round && task.player.pawn_handle == live_pawn_handle && self.identity(task.player.slot) == Some(task.player)
+    }
+
+    // A reflected hit may retain a dead source, but never a respawned/reconnected source.
+    pub fn validates_damage_source(&self, task: PlayerTask, round: RoundGeneration, live_pawn_handle: u32) -> bool {
+        task.round == round
+            && task.player.pawn_handle != u32::MAX
+            && task.player.pawn_handle == live_pawn_handle
+            && self.players.get(&task.player.slot).is_some_and(|current| {
+                *current == task.player
+                    || current.connection == task.player.connection
+                        && current.last_spawn == task.player.last_spawn
+                        && task.player.life.checked_add(1) == Some(current.life)
+                        && current.pawn_handle == u32::MAX
+                        && !current.pending_pawn
+            })
+    }
+
+    pub fn damage_source_task(&self, slot: i32, round: RoundGeneration, live_pawn_handle: u32) -> Option<PlayerTask> {
+        if live_pawn_handle == u32::MAX {
+            return None;
+        }
+        let current = *self.players.get(&slot)?;
+        let player = if current.pawn_handle == live_pawn_handle && !current.pending_pawn {
+            current
+        } else if current.pawn_handle == u32::MAX && !current.pending_pawn && current.last_spawn.is_some() {
+            PlayerIdentity {
+                life: current.life.checked_sub(1)?,
+                pawn_handle: live_pawn_handle,
+                pending_pawn: false,
+                ..current
+            }
+        } else {
+            return None;
+        };
+        let task = PlayerTask { round, player };
+        self.validates_damage_source(task, round, live_pawn_handle).then_some(task)
     }
 
     pub fn clear(&mut self) {
@@ -196,11 +232,15 @@ mod tests {
     fn round_end_disable_and_map_change_invalidate_player_tasks() {
         let config = Config::parse(include_str!("../../../config/funrounds.example.toml")).unwrap();
         let capabilities = Capabilities {
-            classic: true,
             equipment: true,
             health: true,
             armor: true,
             gravity: true,
+            speed: true,
+            helmet: true,
+            clear_weapons: true,
+            give_weapons: true,
+            give_knife: true,
             ..Capabilities::default()
         };
         let mut controller = RoundController::new(Some(config), capabilities).unwrap();
@@ -279,13 +319,10 @@ mod tests {
         let mut rounds = RoundController::new(None, Capabilities::default()).unwrap();
         let round = rounds.generation();
         assert!(players.connect(0));
-        assert!(players.respawn_task(0, round).is_none());
-        let connected = PlayerTask {
-            round,
-            player: players.players[&0],
-        };
-        assert!(!players.validates_respawn(connected, round));
+        let joined = players.respawn_task(0, round).unwrap();
+        assert!(players.validates_respawn(joined, round));
         assert!(players.spawn(0, 1, 0x4001).is_some());
+        assert!(!players.validates_respawn(joined, round));
         assert!(players.death(0));
         let task = players.respawn_task(0, round).unwrap();
         assert!(players.validates_respawn(task, round));

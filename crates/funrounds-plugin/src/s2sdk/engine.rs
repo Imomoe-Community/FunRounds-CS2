@@ -52,3 +52,21 @@ pub type _GetGameTime = unsafe extern "C" fn() -> f32;
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_GetGameTime: Option<_GetGameTime> = None;
+
+/// Queries an interface from a specified module.
+///
+/// # Arguments
+/// * `module` - (string): The name of the module to query the interface from.
+/// * `name` - (string): The name of the interface to find.
+///
+/// # Returns - (ptr64):
+/// A pointer to the queried interface.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn QueryInterface(module: &Str, name: &Str) -> usize {
+    unsafe { __s2sdk_QueryInterface.expect("QueryInterface function was not found")(module, name) }
+}
+pub type _QueryInterface = unsafe extern "C" fn(&Str, &Str) -> usize;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_QueryInterface: Option<_QueryInterface> = None;

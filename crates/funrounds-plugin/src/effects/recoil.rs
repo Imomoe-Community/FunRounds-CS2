@@ -119,7 +119,7 @@ impl super::Effect {
         }
         let classname = s2sdk::GetEntityClassname(handle).to_string();
         let weapon = weapon_pointer(handle, &classname).map_err(Fault::cancelled)?;
-        let shooting_state = if mode.no_spread_recoil && is_firearm(&classname) {
+        let shooting_state = if mode.no_recoil && is_firearm(&classname) {
             let cleared_aim_punch = AimPunchState::read(player)?.without_angles();
             cleared_aim_punch.write(player)?;
             self.capture_weapon_recoil(handle)?;
@@ -172,12 +172,12 @@ impl super::Effect {
         }
         let classname = s2sdk::GetEntityClassname(handle).to_string();
         let pointer = weapon_pointer(handle, &classname).map_err(Fault::cancelled)?;
-        ensure_weapon_recoil_fields().map_err(|error| Fault::mechanism(Mechanism::Recoil, error))?;
+        ensure_weapon_recoil_fields().map_err(|error| Fault::mechanism(Mechanism::NoRecoil, error))?;
         let recoil_index = s2sdk::GetEntSchemaFloat2(pointer, &Str::from_str("CCSWeaponBase"), &Str::from_str("m_flRecoilIndex"), 0);
         let accuracy_penalty = s2sdk::GetEntSchemaFloat2(pointer, &Str::from_str("CCSWeaponBase"), &Str::from_str("m_fAccuracyPenalty"), 0);
         if !recoil_index.is_finite() || !accuracy_penalty.is_finite() {
             return Err(Fault::mechanism(
-                Mechanism::Recoil,
+                Mechanism::NoRecoil,
                 format!("invalid recoil fields on {classname} handle={handle}"),
             ));
         }
@@ -192,7 +192,7 @@ impl super::Effect {
 
     fn clear_weapon_recoil(&self, handle: i32, classname: &str) -> Result<(f64, f64), Fault> {
         let pointer = weapon_pointer(handle, classname).map_err(Fault::cancelled)?;
-        ensure_weapon_recoil_fields().map_err(|error| Fault::mechanism(Mechanism::Recoil, error))?;
+        ensure_weapon_recoil_fields().map_err(|error| Fault::mechanism(Mechanism::NoRecoil, error))?;
         for field in WEAPON_RECOIL_FIELDS {
             s2sdk::SetEntSchemaFloat2(pointer, &Str::from_str("CCSWeaponBase"), &Str::from_str(field), 0.0, true, 0);
         }
@@ -200,7 +200,7 @@ impl super::Effect {
         let accuracy_penalty = s2sdk::GetEntSchemaFloat2(pointer, &Str::from_str("CCSWeaponBase"), &Str::from_str("m_fAccuracyPenalty"), 0);
         if !recoil_index.is_finite() || !accuracy_penalty.is_finite() || recoil_index.abs() > 0.0001 || accuracy_penalty.abs() > 0.0001 {
             return Err(Fault::mechanism(
-                Mechanism::Recoil,
+                Mechanism::NoRecoil,
                 format!("recoil write verification failed for {classname} handle={handle}"),
             ));
         }
@@ -224,7 +224,7 @@ impl AimPunchState {
 
     fn read(player: LivePlayer) -> Result<Self, Fault> {
         let services = aim_punch_services(player)?;
-        ensure_aim_punch_fields().map_err(|error| Fault::mechanism(Mechanism::Recoil, error))?;
+        ensure_aim_punch_fields().map_err(|error| Fault::mechanism(Mechanism::NoRecoil, error))?;
         let state = Self {
             predictable_tick: s2sdk::GetEntSchema2(services, &Str::from_str(AIM_PUNCH_COMPONENT), &Str::from_str("m_predictableBaseTick"), 0),
             predictable_angle: s2sdk::GetEntSchemaVector3D2(
@@ -256,14 +256,14 @@ impl AimPunchState {
             .iter()
             .any(|value| !vec3_is_finite(*value))
         {
-            return Err(Fault::mechanism(Mechanism::Recoil, "invalid aim punch schema values"));
+            return Err(Fault::mechanism(Mechanism::NoRecoil, "invalid aim punch schema values"));
         }
         Ok(state)
     }
 
     pub(super) fn write(self, player: LivePlayer) -> Result<(), Fault> {
         let services = aim_punch_services(player)?;
-        ensure_aim_punch_fields().map_err(|error| Fault::mechanism(Mechanism::Recoil, error))?;
+        ensure_aim_punch_fields().map_err(|error| Fault::mechanism(Mechanism::NoRecoil, error))?;
         s2sdk::SetEntSchema2(
             services,
             &Str::from_str(AIM_PUNCH_COMPONENT),
@@ -311,7 +311,7 @@ impl AimPunchState {
             || actual.unpredictable_tick != self.unpredictable_tick
             || !equal_vec3(actual.unpredictable_angle, self.unpredictable_angle)
         {
-            return Err(Fault::mechanism(Mechanism::Recoil, "aim punch write verification failed"));
+            return Err(Fault::mechanism(Mechanism::NoRecoil, "aim punch write verification failed"));
         }
         Ok(())
     }
@@ -370,13 +370,13 @@ fn aim_punch_services(player: LivePlayer) -> Result<usize, Fault> {
     }
     if s2sdk::GetSchemaOffset(&Str::from_str("CCSPlayerPawn"), &Str::from_str("m_pAimPunchServices")) < 0 {
         return Err(Fault::mechanism(
-            Mechanism::Recoil,
+            Mechanism::NoRecoil,
             "CCSPlayerPawn.m_pAimPunchServices schema unavailable",
         ));
     }
     let services = s2sdk::GetEntSchema2(pawn, &Str::from_str("CCSPlayerPawn"), &Str::from_str("m_pAimPunchServices"), 0) as usize;
     if services == 0 {
-        Err(Fault::mechanism(Mechanism::Recoil, "player aim punch services unavailable"))
+        Err(Fault::mechanism(Mechanism::NoRecoil, "player aim punch services unavailable"))
     } else {
         Ok(services)
     }
@@ -547,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_recoil_view_one_hundred_maps_to_a_strong_ten_unit_shake() {
+    fn recoil_view_one_hundred_maps_to_a_strong_ten_unit_shake() {
         assert_eq!(super::shake_amplitude(100.0), 10.0);
         assert_eq!(super::SHAKE_START_COMMAND, 0);
     }

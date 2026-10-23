@@ -67,7 +67,7 @@ impl Mode {
             if !self.weapons.iter().any(|weapon| weapon == "weapon_glock") {
                 return Err(format!("{}: kill loadout requires an initial Glock", self.id));
             }
-            return Ok(vec!["weapon_glock", "weapon_knife"]);
+            return Ok(vec!["weapon_glock"]);
         }
         if self.random_loadout {
             let mut candidates = Vec::new();
@@ -82,19 +82,18 @@ impl Mode {
             return Ok(vec![
                 candidates.choose(rng).copied().expect("nonempty candidates"),
                 candidates.choose(rng).copied().expect("nonempty candidates"),
-                "weapon_knife",
             ]);
         }
         let mut candidates: [Vec<&str>; 4] = Default::default();
         for weapon in &self.weapons {
+            if weapon == "weapon_knife" {
+                return Err(format!("{}: knife is configured separately from equipment", self.id));
+            }
             let slot = weapon_slot(weapon).ok_or_else(|| format!("{}: unsupported weapon: {weapon}", self.id))?;
             let pool = &mut candidates[slot as usize];
             if !pool.contains(&weapon.as_str()) {
                 pool.push(weapon);
             }
-        }
-        if self.weapons.is_empty() {
-            return Err(format!("{}: equipment must not be empty", self.id));
         }
         Ok(candidates.iter().filter_map(|pool| pool.choose(rng).copied()).collect())
     }
@@ -136,12 +135,14 @@ mod tests {
             .modes
             .remove(0);
         let mut rng = StdRng::seed_from_u64(0);
-        mode.weapons = vec!["weapon_knife".into(), "weapon_knife".into()];
-        assert_eq!(mode.select_equipment(&mut rng).unwrap(), ["weapon_knife"]);
-        mode.weapons.push("weapon_shield".into());
+        mode.weapons = vec!["weapon_famas".into(), "weapon_famas".into()];
+        assert_eq!(mode.select_equipment(&mut rng).unwrap(), ["weapon_famas"]);
+        mode.weapons = vec!["weapon_knife".into()];
+        assert!(mode.select_equipment(&mut rng).is_err());
+        mode.weapons = vec!["weapon_shield".into()];
         assert!(mode.select_equipment(&mut rng).is_err());
         mode.weapons.clear();
-        assert!(mode.select_equipment(&mut rng).is_err());
+        assert!(mode.select_equipment(&mut rng).unwrap().is_empty());
     }
 
     #[test]
@@ -212,24 +213,18 @@ mod tests {
     }
 
     #[test]
-    fn extra_equipment_is_one_shared_selection_after_existing_slots() {
+    fn equipment_selects_at_most_one_candidate_for_each_available_slot() {
         let mut mode = Config::parse(include_str!("../../../config/funrounds.example.toml"))
             .unwrap()
             .modes
             .remove(0);
-        mode.weapons = vec![
-            "weapon_famas".into(),
-            "weapon_p250".into(),
-            "weapon_knife".into(),
-            "weapon_hegrenade".into(),
-        ];
+        mode.weapons = vec!["weapon_famas".into(), "weapon_p250".into(), "weapon_hegrenade".into()];
         let mut rng = StdRng::seed_from_u64(44);
         let equipment = mode.select_equipment(&mut rng).unwrap();
-        assert_eq!(equipment.len(), 4);
+        assert_eq!(equipment.len(), 3);
         assert!(matches!(weapon_slot(equipment[0]), Some(super::WeaponSlot::Primary)));
         assert!(matches!(weapon_slot(equipment[1]), Some(super::WeaponSlot::Secondary)));
-        assert_eq!(equipment[2], "weapon_knife");
-        assert!(matches!(weapon_slot(equipment[3]), Some(super::WeaponSlot::Extra)));
+        assert!(matches!(weapon_slot(equipment[2]), Some(super::WeaponSlot::Extra)));
     }
 
     #[test]
@@ -243,17 +238,16 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(5);
         for _ in 0..2 {
             let loadout = mode.select_equipment(&mut rng).unwrap();
-            assert_eq!(loadout.len(), 3);
+            assert_eq!(loadout.len(), 2);
             assert!(mode.weapons.iter().any(|candidate| candidate == loadout[0]));
             assert!(mode.weapons.iter().any(|candidate| candidate == loadout[1]));
-            assert_eq!(loadout[2], "weapon_knife");
         }
         assert!(mode.select_kill_weapon(&mut rng).is_err());
 
         mode.random_loadout = false;
         mode.kill_loadout = true;
         mode.weapons = vec!["weapon_glock".into(), "weapon_famas".into()];
-        assert_eq!(mode.select_equipment(&mut rng).unwrap(), ["weapon_glock", "weapon_knife"]);
+        assert_eq!(mode.select_equipment(&mut rng).unwrap(), ["weapon_glock"]);
         let kill_weapon = mode.select_kill_weapon(&mut rng).unwrap();
         assert!(mode.weapons.iter().any(|weapon| weapon == kill_weapon));
     }

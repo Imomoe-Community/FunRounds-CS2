@@ -1,6 +1,8 @@
 // Copyright (C) 2026 Mai Ooizumi
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use rand::{Rng, RngExt};
+
 pub const LIFESTEAL_MAX_HEALTH: i32 = 214_748_363;
 pub const DODGEBALL_DAMAGE_MULTIPLIER: f32 = 2.0;
 pub const THROWING_KNIFE_BODY_DAMAGE: f32 = 80.0;
@@ -24,6 +26,52 @@ pub fn lifesteal_recovery(health: i32, armor: i32, health_damage: i32, armor_dam
 
 pub fn low_health_finish(health: i32) -> bool {
     health <= 1
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MovementScale {
+    pub speed: f32,
+    pub gravity: f32,
+}
+
+pub struct PeriodicMovement {
+    next_update: f32,
+    current: Option<MovementScale>,
+}
+
+impl PeriodicMovement {
+    pub fn start(now: f32) -> Result<Self, String> {
+        if !now.is_finite() || now < 0.0 || !(now + 10.0).is_finite() {
+            return Err("periodic movement needs a finite non-negative start time".into());
+        }
+        Ok(Self {
+            next_update: now + 10.0,
+            current: None,
+        })
+    }
+
+    pub fn update(&mut self, now: f32, rng: &mut impl Rng) -> Option<MovementScale> {
+        if !now.is_finite() || now < self.next_update {
+            return None;
+        }
+        let roll = rng.random_range(0..=5);
+        let speed = match roll {
+            0 => 0.3,
+            1 => 0.7,
+            _ => rng.random_range(1..=10) as f32,
+        };
+        let movement = MovementScale {
+            speed,
+            gravity: rng.random_range(0.001..=4.0),
+        };
+        self.current = Some(movement);
+        self.next_update = now + 10.0;
+        Some(movement)
+    }
+
+    pub fn current(&self) -> Option<MovementScale> {
+        self.current
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,7 +160,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lifesteal_saturates_without_exceeding_the_legacy_health_cap() {
+    fn lifesteal_saturates_without_exceeding_the_health_cap() {
         assert_eq!(lifesteal_recovery(100, 20, 12, 7), (112, 27));
         assert_eq!(lifesteal_recovery(LIFESTEAL_MAX_HEALTH - 2, 254, 10, 1), (LIFESTEAL_MAX_HEALTH, 255));
         assert_eq!(
@@ -130,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn throwing_knife_values_match_the_legacy_mode() {
+    fn throwing_knife_values_match_the_capability_contract() {
         assert_eq!(THROWING_KNIFE_BODY_DAMAGE, 80.0);
         assert_eq!(THROWING_KNIFE_HEAD_DAMAGE, 250.0);
         assert_eq!(THROWING_KNIFE_SPEED, 3500.0);
@@ -141,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn low_health_finish_matches_the_legacy_one_health_cleanup_threshold() {
+    fn low_health_finish_matches_the_one_health_cleanup_threshold() {
         assert!(low_health_finish(1));
         assert!(low_health_finish(0));
         assert!(!low_health_finish(2));
