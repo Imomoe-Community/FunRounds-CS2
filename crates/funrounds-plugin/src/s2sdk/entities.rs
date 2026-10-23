@@ -110,47 +110,6 @@ pub type _RemoveEntity = unsafe extern "C" fn(i32);
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_RemoveEntity: Option<_RemoveEntity> = None;
 
-/// Apply damage to an entity.
-///
-/// # Arguments
-/// * `entityHandle` - (int32): The handle of the entity receiving damage
-/// * `inflictorHandle` - (int32): The handle of the entity inflicting damage (e.g., projectile)
-/// * `attackerHandle` - (int32): The handle of the attacking entity
-/// * `force` - (vec3): Direction and magnitude of force to apply
-/// * `hitPos` - (vec3): Position where the damage hit occurred
-/// * `damage` - (float): Amount of damage to apply
-/// * `damageTypes` - (int32): Bitfield of damage type flags
-///
-/// # Returns - (int32):
-/// Amount of damage actually applied to the entity
-#[track_caller]
-#[allow(dead_code, non_snake_case)]
-pub fn TakeEntityDamage(
-    entityHandle: i32,
-    inflictorHandle: i32,
-    attackerHandle: i32,
-    force: &Vec3,
-    hitPos: &Vec3,
-    damage: f32,
-    damageTypes: DamageTypes,
-) -> i32 {
-    unsafe {
-        __s2sdk_TakeEntityDamage.expect("TakeEntityDamage function was not found")(
-            entityHandle,
-            inflictorHandle,
-            attackerHandle,
-            force,
-            hitPos,
-            damage,
-            damageTypes,
-        )
-    }
-}
-pub type _TakeEntityDamage = unsafe extern "C" fn(i32, i32, i32, &Vec3, &Vec3, f32, DamageTypes) -> i32;
-#[allow(dead_code, non_upper_case_globals)]
-#[unsafe(no_mangle)]
-pub static mut __s2sdk_TakeEntityDamage: Option<_TakeEntityDamage> = None;
-
 /// Converts an entity index into an entity handle.
 ///
 /// # Arguments
@@ -310,69 +269,6 @@ pub type _SetEntityGravity = unsafe extern "C" fn(i32, f32);
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_SetEntityGravity: Option<_SetEntityGravity> = None;
-
-/// Sets an entity to the standard default collision group.
-///
-/// # Arguments
-/// * `entityHandle` - (int32): The handle of the entity whose collision group is to be set.
-#[track_caller]
-#[allow(dead_code, non_snake_case)]
-pub fn SetEntityDefaultCollisionGroup(entityHandle: i32) {
-    unsafe { __s2sdk_SetEntityDefaultCollisionGroup.expect("SetEntityDefaultCollisionGroup function was not found")(entityHandle) }
-}
-pub type _SetEntityDefaultCollisionGroup = unsafe extern "C" fn(i32);
-#[allow(dead_code, non_upper_case_globals)]
-#[unsafe(no_mangle)]
-pub static mut __s2sdk_SetEntityDefaultCollisionGroup: Option<_SetEntityDefaultCollisionGroup> = None;
-
-/// Detours the Touch function address used by this entity. The callback is shared by every entity using that same function address, not limited to entityHandle.
-///
-/// # Arguments
-/// * `entityHandle` - (int32): The full handle used to select the current Touch function address.
-/// * `callback` - (function): Called for every entity using the selected function address, with the actual entity and other full handles; nonzero supersedes native Touch. Filter entityHandle in the callback.
-///
-/// # Returns - (bool):
-/// True when the selected function address is hooked for this callback.
-#[track_caller]
-#[allow(dead_code, non_snake_case)]
-pub fn HookEntityTouchPre(entityHandle: i32, callback: EntityTouchPreCallback) -> bool {
-    unsafe { __s2sdk_HookEntityTouchPre.expect("HookEntityTouchPre function was not found")(entityHandle, callback) }
-}
-pub type _HookEntityTouchPre = unsafe extern "C" fn(i32, EntityTouchPreCallback) -> bool;
-#[allow(dead_code, non_upper_case_globals)]
-#[unsafe(no_mangle)]
-pub static mut __s2sdk_HookEntityTouchPre: Option<_HookEntityTouchPre> = None;
-
-/// Removes every Touch function-address detour registered by the callback and revokes it.
-///
-/// # Arguments
-/// * `callback` - (function): The callback previously registered by HookEntityTouchPre.
-///
-/// # Returns - (bool):
-/// True when the callback is revoked and native hooks are removed.
-#[track_caller]
-#[allow(dead_code, non_snake_case)]
-pub fn UnhookEntityTouchPre(callback: EntityTouchPreCallback) -> bool {
-    unsafe { __s2sdk_UnhookEntityTouchPre.expect("UnhookEntityTouchPre function was not found")(callback) }
-}
-pub type _UnhookEntityTouchPre = unsafe extern "C" fn(EntityTouchPreCallback) -> bool;
-#[allow(dead_code, non_upper_case_globals)]
-#[unsafe(no_mangle)]
-pub static mut __s2sdk_UnhookEntityTouchPre: Option<_UnhookEntityTouchPre> = None;
-
-/// Reports whether the native Touch detour and its required external gamedata offset are available on this server.
-///
-/// # Returns - (bool):
-/// True when CBaseEntity::Touch has a configured vtable offset and the entity system is initialized.
-#[track_caller]
-#[allow(dead_code, non_snake_case)]
-pub fn IsEntityTouchPreHookAvailable() -> bool {
-    unsafe { __s2sdk_IsEntityTouchPreHookAvailable.expect("IsEntityTouchPreHookAvailable function was not found")() }
-}
-pub type _IsEntityTouchPreHookAvailable = unsafe extern "C" fn() -> bool;
-#[allow(dead_code, non_upper_case_globals)]
-#[unsafe(no_mangle)]
-pub static mut __s2sdk_IsEntityTouchPreHookAvailable: Option<_IsEntityTouchPreHookAvailable> = None;
 
 /// Sets the owner of an entity.
 ///
@@ -611,3 +507,88 @@ pub type _AcceptEntityInput = unsafe extern "C" fn(i32, &Str, i32, i32, &Var, Fi
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_AcceptEntityInput: Option<_AcceptEntityInput> = None;
+
+/// Retrieves the angular rotation of an entity.
+///
+/// # Arguments
+/// * `entityHandle` - (int32): The handle of the entity whose angular rotation is to be retrieved.
+///
+/// # Returns - (vec3):
+/// A vector where the angular rotation will be stored.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetEntityAngRotation(entityHandle: i32) -> Vec3 {
+    unsafe { __s2sdk_GetEntityAngRotation.expect("GetEntityAngRotation function was not found")(entityHandle) }
+}
+pub type _GetEntityAngRotation = unsafe extern "C" fn(i32) -> Vec3;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetEntityAngRotation: Option<_GetEntityAngRotation> = None;
+
+/// Checks if an entity is a player pawn.
+///
+/// # Arguments
+/// * `entityHandle` - (int32): The handle of the entity.
+///
+/// # Returns - (bool):
+/// True if the entity is a player pawn, false otherwise.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn IsEntityPlayerPawn(entityHandle: i32) -> bool {
+    unsafe { __s2sdk_IsEntityPlayerPawn.expect("IsEntityPlayerPawn function was not found")(entityHandle) }
+}
+pub type _IsEntityPlayerPawn = unsafe extern "C" fn(i32) -> bool;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_IsEntityPlayerPawn: Option<_IsEntityPlayerPawn> = None;
+
+/// Checks if an entity is a player controller.
+///
+/// # Arguments
+/// * `entityHandle` - (int32): The handle of the entity.
+///
+/// # Returns - (bool):
+/// True if the entity is a player controller, false otherwise.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn IsEntityPlayerController(entityHandle: i32) -> bool {
+    unsafe { __s2sdk_IsEntityPlayerController.expect("IsEntityPlayerController function was not found")(entityHandle) }
+}
+pub type _IsEntityPlayerController = unsafe extern "C" fn(i32) -> bool;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_IsEntityPlayerController: Option<_IsEntityPlayerController> = None;
+
+/// Get vector to eye position - absolute coords.
+///
+/// # Arguments
+/// * `entityHandle` - (int32): The handle of the entity
+///
+/// # Returns - (vec3):
+/// Eye position in absolute/world coordinates
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetEntityEyePosition(entityHandle: i32) -> Vec3 {
+    unsafe { __s2sdk_GetEntityEyePosition.expect("GetEntityEyePosition function was not found")(entityHandle) }
+}
+pub type _GetEntityEyePosition = unsafe extern "C" fn(i32) -> Vec3;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetEntityEyePosition: Option<_GetEntityEyePosition> = None;
+
+/// Get the qangles that this entity is looking at.
+///
+/// # Arguments
+/// * `entityHandle` - (int32): The handle of the entity
+///
+/// # Returns - (vec3):
+/// Eye angles as a vector (pitch, yaw, roll)
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetEntityEyeAngles(entityHandle: i32) -> Vec3 {
+    unsafe { __s2sdk_GetEntityEyeAngles.expect("GetEntityEyeAngles function was not found")(entityHandle) }
+}
+pub type _GetEntityEyeAngles = unsafe extern "C" fn(i32) -> Vec3;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetEntityEyeAngles: Option<_GetEntityEyeAngles> = None;

@@ -210,47 +210,6 @@ pub type _GiveNamedItem = unsafe extern "C" fn(i32, &Str) -> i32;
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_GiveNamedItem: Option<_GiveNamedItem> = None;
 
-/// Apply damage to an client.
-///
-/// # Arguments
-/// * `playerSlot` - (int32): The index of the player's slot receiving damage
-/// * `inflictorSlot` - (int32): The index of the player's slot inflicting damage (e.g., projectile)
-/// * `attackerSlot` - (int32): The index of the attacking client
-/// * `force` - (vec3): Direction and magnitude of force to apply
-/// * `hitPos` - (vec3): Position where the damage hit occurred
-/// * `damage` - (float): Amount of damage to apply
-/// * `damageTypes` - (int32): Bitfield of damage type flags
-///
-/// # Returns - (int32):
-/// Amount of damage actually applied to the client
-#[track_caller]
-#[allow(dead_code, non_snake_case)]
-pub fn TakeClientDamage(
-    playerSlot: i32,
-    inflictorSlot: i32,
-    attackerSlot: i32,
-    force: &Vec3,
-    hitPos: &Vec3,
-    damage: f32,
-    damageTypes: DamageTypes,
-) -> i32 {
-    unsafe {
-        __s2sdk_TakeClientDamage.expect("TakeClientDamage function was not found")(
-            playerSlot,
-            inflictorSlot,
-            attackerSlot,
-            force,
-            hitPos,
-            damage,
-            damageTypes,
-        )
-    }
-}
-pub type _TakeClientDamage = unsafe extern "C" fn(i32, i32, i32, &Vec3, &Vec3, f32, DamageTypes) -> i32;
-#[allow(dead_code, non_upper_case_globals)]
-#[unsafe(no_mangle)]
-pub static mut __s2sdk_TakeClientDamage: Option<_TakeClientDamage> = None;
-
 /// Returns the client's armor value.
 ///
 /// # Arguments
@@ -559,3 +518,37 @@ pub type _SwitchWeapon = unsafe extern "C" fn(i32, i32);
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_SwitchWeapon: Option<_SwitchWeapon> = None;
+
+/// Checks if a certain player has been authenticated.
+///
+/// # Arguments
+/// * `playerSlot` - (int32): The index of the player's slot.
+///
+/// # Returns - (bool):
+/// true if the player is authenticated, false otherwise.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn IsClientAuthorized(playerSlot: i32) -> bool {
+    unsafe { __s2sdk_IsClientAuthorized.expect("IsClientAuthorized function was not found")(playerSlot) }
+}
+pub type _IsClientAuthorized = unsafe extern "C" fn(i32) -> bool;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_IsClientAuthorized: Option<_IsClientAuthorized> = None;
+
+/// Returns the client's SteamID64 - a unique 64-bit identifier of a Steam account.
+///
+/// # Arguments
+/// * `playerSlot` - (int32): The index of the player's slot.
+///
+/// # Returns - (uint64):
+/// uint64_t The client's SteamID64.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetClientSteamID64(playerSlot: i32) -> u64 {
+    unsafe { __s2sdk_GetClientSteamID64.expect("GetClientSteamID64 function was not found")(playerSlot) }
+}
+pub type _GetClientSteamID64 = unsafe extern "C" fn(i32) -> u64;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetClientSteamID64: Option<_GetClientSteamID64> = None;

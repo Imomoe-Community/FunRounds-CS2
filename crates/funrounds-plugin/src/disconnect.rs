@@ -5,9 +5,9 @@ pub type Callback = unsafe extern "C" fn(i32, i32);
 type Hook = unsafe extern "C" fn(Callback);
 
 #[unsafe(no_mangle)]
-static mut __s2sdk_OnClientDisconnect_Register: Option<Hook> = None;
+pub(crate) static mut __s2sdk_OnClientDisconnect_Register: Option<Hook> = None;
 #[unsafe(no_mangle)]
-static mut __s2sdk_OnClientDisconnect_Unregister: Option<Hook> = None;
+pub(crate) static mut __s2sdk_OnClientDisconnect_Unregister: Option<Hook> = None;
 
 pub struct Bridge {
     unhook: Hook,
@@ -15,11 +15,11 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    pub fn subscribe(callback: Callback) -> Option<Self> {
-        let hook = unsafe { __s2sdk_OnClientDisconnect_Register }?;
-        let unhook = unsafe { __s2sdk_OnClientDisconnect_Unregister }?;
+    pub fn subscribe(callback: Callback) -> Self {
+        let unhook = unsafe { __s2sdk_OnClientDisconnect_Unregister }.expect("required SDK import checked at startup");
+        let hook = unsafe { __s2sdk_OnClientDisconnect_Register }.expect("required SDK import checked at startup");
         unsafe { hook(callback) };
-        Some(Self { unhook, callback })
+        Self { unhook, callback }
     }
 
     pub fn unsubscribe(self) {
@@ -42,13 +42,12 @@ mod tests {
     }
 
     #[test]
-    fn old_sdk_or_missing_unhook_never_registers_a_callback() {
-        assert!(Bridge::subscribe(callback).is_none());
-        unsafe { __s2sdk_OnClientDisconnect_Register = Some(hook) };
-        assert!(Bridge::subscribe(callback).is_none());
-        assert_eq!(REGISTERED.load(Ordering::Relaxed), 0);
-        unsafe { __s2sdk_OnClientDisconnect_Unregister = Some(unhook) };
-        let bridge = Bridge::subscribe(callback).unwrap();
+    fn bridge_registers_and_releases_its_callback() {
+        unsafe {
+            __s2sdk_OnClientDisconnect_Register = Some(hook);
+            __s2sdk_OnClientDisconnect_Unregister = Some(unhook);
+        }
+        let bridge = Bridge::subscribe(callback);
         assert_eq!(REGISTERED.load(Ordering::Relaxed), 1);
         bridge.unsubscribe();
         assert_eq!(REGISTERED.load(Ordering::Relaxed), 0);

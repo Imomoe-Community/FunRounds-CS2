@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn self_push_uses_the_legacy_weapon_tiers_and_excludes_non_guns() {
+    fn self_push_uses_weapon_tiers_and_excludes_non_guns() {
         for weapon in ["weapon_nova", "weapon_mag7", "weapon_sawedoff", "weapon_xm1014", "weapon_ssg08"] {
             assert_eq!(self_push_force(weapon), Some(700.0));
         }

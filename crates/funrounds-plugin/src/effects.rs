@@ -11,28 +11,25 @@ use plugify::{Str, Vec3, Vec4};
 
 pub(crate) mod equipment;
 mod recoil;
+mod render;
+mod view;
+mod weapon_rules;
 use self::recoil::{AimPunchState, WeaponRecoilState};
 pub(crate) use recoil::{firearm_event, recoil_schema_probe, recoil_shake_probe};
+pub(crate) use render::probe as translucent_probe;
+pub(crate) use view::{crosshair_probe, fov_probe, no_scope_probe};
+pub(crate) use weapon_rules::{fast_switch_probe, single_shot_probe};
 
-#[unsafe(no_mangle)]
-static mut __s2sdk_GetWeaponItemDefinition: Option<unsafe extern "C" fn(i32) -> u16> = None;
-
-pub fn random_loadout_probe() -> crate::capability::Probe {
-    let mut probe = crate::capability::Probe::default();
-    probe.require(unsafe { __s2sdk_GetWeaponItemDefinition }.is_some(), "import:GetWeaponItemDefinition");
-    probe
-}
-
-pub fn classic_probe() -> crate::capability::Probe {
+pub(crate) fn c4_removal_probe() -> crate::capability::Probe {
     let mut probe = crate::capability::Probe::default();
     crate::capability::imports!(probe;
-        __s2sdk_GetClientSpeed, __s2sdk_SetClientSpeed, __s2sdk_GetClientAbsVelocity,
-        __s2sdk_SetClientAbsVelocity, __s2sdk_GetClientEyeAngles, __s2sdk_GetClientButtons,
-        __s2sdk_GetClientFlags, __s2sdk_PrintCentreHtmlAll, __s2sdk_PrintToConsoleAll,
-        __s2sdk_PrintToChat, __s2sdk_IsFakeClient,
+        __s2sdk_GetClientWeapons, __s2sdk_RemoveWeapon, __s2sdk_IsValidEntHandle, __s2sdk_GetEntityClassname,
     );
     probe
 }
+
+#[unsafe(no_mangle)]
+pub(crate) static mut __s2sdk_GetWeaponItemDefinition: Option<unsafe extern "C" fn(i32) -> u16> = None;
 
 fn self_push_suppressed(buttons: u64, flags: i32) -> bool {
     buttons & (4 | 0x10000) != 0 || flags & 2 != 0
@@ -53,6 +50,7 @@ const MAX_HEALTH_FIELD: &str = "m_iMaxHealth";
 
 pub struct Effect {
     pub identity: PlayerIdentity,
+    pub round: funrounds_core::RoundGeneration,
     player: LivePlayer,
     diagnostics: bool,
     health: i32,
@@ -61,17 +59,31 @@ pub struct Effect {
     helmet: bool,
     gravity: f32,
     speed: f32,
+    base_speed: f32,
+    speed_written: Option<f32>,
+    movement_scale: Option<funrounds_core::MovementScale>,
     next_decay: f32,
     color: Option<Vec4>,
     aim_punch: Option<AimPunchState>,
     weapon_recoil: Vec<WeaponRecoilState>,
     replacement: Option<equipment::EquipmentReplacement>,
+    upgraded_weapon: Option<(i32, String)>,
+    translucent: Option<render::Translucent>,
+    view: view::ViewEffects,
+    weapon_rules: weapon_rules::WeaponRules,
 }
 
 impl Effect {
-    pub fn capture(player: LivePlayer, identity: PlayerIdentity, mode: &Mode, diagnostics: bool) -> Result<Self, Fault> {
+    pub fn capture(
+        player: LivePlayer,
+        identity: PlayerIdentity,
+        round: funrounds_core::RoundGeneration,
+        mode: &Mode,
+        diagnostics: bool,
+    ) -> Result<Self, Fault> {
         Ok(Self {
             identity,
+            round,
             player,
             diagnostics,
             health: s2sdk::GetClientHealth(player.slot),
@@ -80,27 +92,65 @@ impl Effect {
             helmet: player.helmet()?,
             gravity: s2sdk::GetClientGravity(player.slot),
             speed: s2sdk::GetClientSpeed(player.slot),
+            base_speed: mode.speed,
+            speed_written: None,
+            movement_scale: None,
             next_decay: s2sdk::GetGameTime() + 2.0,
-            color: mode.blue.then(|| s2sdk::GetClientRenderColor(player.slot)),
-            aim_punch: mode.no_spread_recoil.then(|| AimPunchState::capture(player)).transpose()?,
+            color: mode.color.map(|_| s2sdk::GetClientRenderColor(player.slot)),
+            aim_punch: mode.no_recoil.then(|| AimPunchState::capture(player)).transpose()?,
             weapon_recoil: Vec::new(),
             replacement: None,
+            upgraded_weapon: None,
+            translucent: mode.translucent.then(|| render::Translucent::new(player, identity, round)),
+            view: view::ViewEffects::capture(player, identity, round, mode)?,
+            weapon_rules: weapon_rules::WeaponRules::default(),
         })
     }
 
-    pub fn update_classic(&mut self, mode: &Mode, now: f32) -> Result<(), Fault> {
+    pub fn update_view(&mut self, mode: &Mode, now: f32, round: funrounds_core::RoundGeneration) -> Result<(), Fault> {
+        self.view.update(self.player, self.identity, round, mode, now)?;
+        self.weapon_rules.update(self.player, mode)
+    }
+
+    pub fn release_inactive_scoped_weapon(&mut self, round: funrounds_core::RoundGeneration) -> Result<(), Fault> {
+        self.view.release_inactive_secondary(self.player, self.identity, round)?;
+        self.weapon_rules.release_unowned(self.player)
+    }
+
+    pub fn release_unowned_translucent_weapons(&mut self, round: funrounds_core::RoundGeneration) -> Result<(), Fault> {
+        if let Some(translucent) = &mut self.translucent {
+            translucent.release_unowned_weapons(round)?;
+        }
+        Ok(())
+    }
+
+    pub fn update_translucent(&mut self, mode: &Mode, round: funrounds_core::RoundGeneration) -> Result<(), Fault> {
+        if !mode.translucent {
+            if let Some(translucent) = &mut self.translucent {
+                translucent.restore().map_err(|error| Fault::mechanism(Mechanism::Translucent, error))?;
+            }
+            self.translucent = None;
+            return Ok(());
+        }
+        if let Some(translucent) = &mut self.translucent {
+            translucent.update(self.identity, round)?;
+        }
+        Ok(())
+    }
+
+    pub fn update_classic(&mut self, mode: &Mode, now: f32, speed_owned: bool) -> Result<(), Fault> {
         if LivePlayer::resolve(self.player.slot) != Some(self.player) {
             return Err(Fault::cancelled("player identity changed before classic update"));
         }
         let slot = self.player.slot;
         let mut health = s2sdk::GetClientHealth(slot);
-        if now >= self.next_decay {
+        if mode.health_decay && now >= self.next_decay {
             self.next_decay = now + 2.0;
             let decayed = funrounds_core::decay_health(health, mode.health);
             if decayed != health {
                 s2sdk::SetClientHealth(slot, decayed);
                 if s2sdk::GetClientHealth(slot) != decayed {
-                    return Err("classic health decay write failed".into());
+                    return Err(Fault::mechanism(Mechanism::HealthDecay, "classic health decay write failed"));
                 }
                 if self.diagnostics {
                     s2sdk::PrintToServer(&Str::from_str(&format!(
@@ -110,13 +160,69 @@ impl Effect {
                 health = decayed;
             }
         }
-        let (_, speed) = funrounds_core::health_scaling(health, mode.health);
-        if !speed_matches(s2sdk::GetClientSpeed(slot), speed) {
-            s2sdk::SetClientSpeed(slot, speed);
+        if (mode.health_speed || mode.periodic_speed) && !speed_owned {
+            let health_scale = if mode.health_speed {
+                funrounds_core::health_scaling(health, mode.health).1
+            } else {
+                1.0
+            };
+            let periodic_scale = if mode.periodic_speed {
+                self.movement_scale.map_or(1.0, |movement| movement.speed)
+            } else {
+                1.0
+            };
+            let speed = composed_speed(self.base_speed, health_scale, periodic_scale);
             if !speed_matches(s2sdk::GetClientSpeed(slot), speed) {
-                return Err(Fault::mechanism(Mechanism::Classic, "classic speed write failed"));
+                self.speed_written = Some(speed);
+                s2sdk::SetClientSpeed(slot, speed);
+                if !speed_matches(s2sdk::GetClientSpeed(slot), speed) {
+                    let mechanism = if mode.health_speed {
+                        Mechanism::HealthSpeed
+                    } else {
+                        Mechanism::PeriodicSpeed
+                    };
+                    return Err(Fault::mechanism(mechanism, "classic speed write failed"));
+                }
             }
         }
+        Ok(())
+    }
+
+    pub fn update_periodic_movement(&mut self, movement: funrounds_core::MovementScale, mode: &Mode, speed_owned: bool) -> Result<(), Fault> {
+        if LivePlayer::resolve(self.player.slot) != Some(self.player) {
+            return Err(Fault::cancelled("player identity changed before periodic movement update"));
+        }
+        let periodic_speed = mode.periodic_speed.then(|| {
+            let health_scale = if mode.health_speed {
+                funrounds_core::health_scaling(s2sdk::GetClientHealth(self.player.slot), mode.health).1
+            } else {
+                1.0
+            };
+            composed_speed(self.base_speed, health_scale, movement.speed)
+        });
+        let periodic_gravity = mode.periodic_gravity.then_some(mode.gravity * movement.gravity);
+        if self.movement_scale == Some(movement)
+            && periodic_speed.is_none_or(|speed| speed_owned || speed_matches(s2sdk::GetClientSpeed(self.player.slot), speed))
+            && periodic_gravity.is_none_or(|gravity| speed_matches(s2sdk::GetClientGravity(self.player.slot), gravity))
+        {
+            return Ok(());
+        }
+        if let Some(speed) = periodic_speed.filter(|_| !speed_owned)
+            && !speed_matches(s2sdk::GetClientSpeed(self.player.slot), speed)
+        {
+            self.speed_written = Some(speed);
+            s2sdk::SetClientSpeed(self.player.slot, speed);
+        }
+        if let Some(gravity) = periodic_gravity {
+            s2sdk::SetClientGravity(self.player.slot, gravity);
+        }
+        if periodic_speed.is_some_and(|speed| !speed_owned && !speed_matches(s2sdk::GetClientSpeed(self.player.slot), speed)) {
+            return Err(Fault::mechanism(Mechanism::PeriodicSpeed, "periodic speed write failed"));
+        }
+        if periodic_gravity.is_some_and(|gravity| !speed_matches(s2sdk::GetClientGravity(self.player.slot), gravity)) {
+            return Err(Fault::mechanism(Mechanism::PeriodicGravity, "periodic gravity write failed"));
+        }
+        self.movement_scale = Some(movement);
         Ok(())
     }
 
@@ -149,34 +255,46 @@ impl Effect {
         Ok(())
     }
 
-    pub fn apply(&mut self, mode: &Mode, equipment: &[String]) -> Result<(), Fault> {
+    pub fn apply(&mut self, mode: &Mode, equipment: &[String], current: impl Fn() -> bool) -> Result<(), Fault> {
         if LivePlayer::resolve(self.player.slot) != Some(self.player) {
             return Err(Fault::cancelled("player identity changed before applying effects"));
         }
-        self.replace_equipment_inner(equipment, mode)?;
+        ensure_equipment_action_current(&current)?;
+        self.replace_equipment_inner(equipment, mode, &current)?;
+        ensure_equipment_action_current(&current)?;
         let result: Result<(), Fault> = (|| {
             if let Some(max_health) = mode_max_health(mode) {
                 write_max_health(self.player, max_health)?;
             }
             s2sdk::SetClientHealth(self.player.slot, i32::from(mode.health));
             s2sdk::SetClientArmor(self.player.slot, i32::from(mode.armor));
-            self.player.set_helmet(mode.armor > 0)?;
+            self.player.set_helmet(mode.helmet)?;
+            if !speed_matches(s2sdk::GetClientSpeed(self.player.slot), mode.speed) {
+                self.speed_written = Some(mode.speed);
+                s2sdk::SetClientSpeed(self.player.slot, mode.speed);
+            }
+            if !speed_matches(s2sdk::GetClientSpeed(self.player.slot), mode.speed) {
+                return Err(Fault::mechanism(Mechanism::Classic, "base speed write verification failed"));
+            }
             s2sdk::SetClientGravity(self.player.slot, mode.gravity);
-            if let Some(color) = self.color {
-                let blue = Vec4 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 255.0,
+            if let (Some(color), Some(rgb)) = (self.color, mode.color) {
+                let target = Vec4 {
+                    x: f32::from(rgb[0]),
+                    y: f32::from(rgb[1]),
+                    z: f32::from(rgb[2]),
                     w: color.w,
                 };
-                s2sdk::SetClientRenderColor(self.player.slot, &blue);
-                if s2sdk::GetClientRenderColor(self.player.slot) != blue {
-                    return Err(Fault::mechanism(Mechanism::Blue, "blue render color write verification failed"));
+                s2sdk::SetClientRenderColor(self.player.slot, &target);
+                if s2sdk::GetClientRenderColor(self.player.slot) != target {
+                    return Err(Fault::mechanism(Mechanism::Color, "render color write verification failed"));
                 }
             }
+            self.view.apply(self.player, self.round, mode, s2sdk::GetGameTime())?;
+            self.weapon_rules.update(self.player, mode)?;
             let gravity = s2sdk::GetClientGravity(self.player.slot);
             if s2sdk::GetClientHealth(self.player.slot) != i32::from(mode.health)
                 || s2sdk::GetClientArmor(self.player.slot) != i32::from(mode.armor)
+                || self.player.helmet()? != mode.helmet
                 || !gravity.is_finite()
                 || (gravity - mode.gravity).abs() > 0.0001
             {
@@ -188,22 +306,44 @@ impl Effect {
         if LivePlayer::resolve(self.player.slot) != Some(self.player) {
             return Err(Fault::cancelled("player changed before committing applied effects"));
         }
-        self.replacement = None;
+        commit_equipment_receipt(&mut self.replacement, &current)?;
         Ok(())
     }
 
-    pub fn replace_equipment(&mut self, equipment: &[String], mode: &Mode) -> Result<(), Fault> {
-        self.replace_equipment_inner(equipment, mode)?;
+    pub fn upgraded_weapon(&self) -> Option<(i32, String)> {
+        self.upgraded_weapon.clone()
+    }
+
+    pub fn replace_upgrade_weapon(&mut self, target: i32, equipment: &[String], mode: &Mode, current: impl Fn() -> bool) -> Result<i32, Fault> {
+        ensure_equipment_action_current(&current)?;
+        self.replace_weapon_inner(target, equipment, mode, &current)?;
+        ensure_equipment_action_current(&current)?;
+        let granted = self
+            .replacement
+            .as_ref()
+            .and_then(equipment::EquipmentReplacement::latest_upgrade_grant)
+            .filter(|handle| s2sdk::IsValidEntHandle(*handle))
+            .ok_or_else(|| Fault::mechanism(Mechanism::KillLoadout, "upgrade grant was not a new matching weapon"))?;
         if LivePlayer::resolve(self.player.slot) != Some(self.player) {
-            return Err(Fault::cancelled("player changed before committing loadout"));
+            return Err(Fault::cancelled("player changed before committing upgrade"));
         }
-        self.replacement = None;
-        Ok(())
+        let classname = s2sdk::GetEntityClassname(granted).to_string();
+        commit_equipment_receipt(&mut self.replacement, &current)?;
+        self.upgraded_weapon = Some((granted, classname));
+        Ok(granted)
     }
 
-    pub fn lifesteal(player: LivePlayer, health_damage: i32, armor_damage: i32) -> Result<(), String> {
+    pub fn lifesteal(player: LivePlayer, health_damage: i32, armor_damage: i32, energy_shield: bool) -> Result<(), String> {
         write_max_health(player, funrounds_core::LIFESTEAL_MAX_HEALTH)?;
         let health = s2sdk::GetClientHealth(player.slot);
+        if energy_shield {
+            let (restored_health, _) = funrounds_core::lifesteal_recovery(health, 0, health_damage, 0);
+            s2sdk::SetClientHealth(player.slot, restored_health);
+            if s2sdk::GetClientHealth(player.slot) != restored_health {
+                return Err("lifesteal health write failed".into());
+            }
+            return Ok(());
+        }
         let armor = s2sdk::GetClientArmor(player.slot);
         let helmet = player.helmet()?;
         let (restored_health, restored_armor) = funrounds_core::lifesteal_recovery(health, armor, health_damage, armor_damage);
@@ -228,12 +368,38 @@ impl Effect {
         Ok(())
     }
 
+    pub fn random_damage_heal(player: LivePlayer, amount: i32) -> Result<(), String> {
+        if amount <= 0 || LivePlayer::resolve(player.slot) != Some(player) {
+            return Err("random-damage heal requires a live matching attacker".into());
+        }
+        let health = s2sdk::GetClientHealth(player.slot);
+        let restored = health.saturating_add(amount).min(funrounds_core::LIFESTEAL_MAX_HEALTH);
+        s2sdk::SetClientHealth(player.slot, restored);
+        if s2sdk::GetClientHealth(player.slot) != restored {
+            return Err("random-damage health write failed".into());
+        }
+        Ok(())
+    }
+
     pub fn equipment_restored(&self) -> bool {
         self.replacement.is_none()
     }
 
+    pub fn rollback_ready(&self) -> bool {
+        self.replacement.as_ref().is_some_and(equipment::EquipmentReplacement::rollback_ready)
+    }
+
+    /// Stage equipment cleanup; previous weapons are granted later without holding `RUNTIME`.
     pub fn restore(&mut self, refills: &mut equipment::Refills) -> Result<(), String> {
         let mut errors = Vec::new();
+        if let Err(error) = self.weapon_rules.restore() {
+            errors.push(error);
+        }
+        if let Some(translucent) = &mut self.translucent
+            && let Err(error) = translucent.restore()
+        {
+            errors.push(error);
+        }
         if let Err(error) = self.restore_failed_equipment(refills, true) {
             errors.push(error);
         }
@@ -274,17 +440,41 @@ impl Effect {
         if let Err(error) = self.restore_weapon_recoil() {
             errors.push(error);
         }
+        if let Err(error) = self.view.restore() {
+            errors.push(error);
+        }
         if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+    }
+
+    /// Must run outside `RUNTIME`: `GiveNamedItem` can synchronously re-enter game callbacks.
+    pub fn restore_previous(&mut self, current: impl Fn() -> bool) -> Result<(), Fault> {
+        ensure_equipment_action_current(&current)?;
+        let Some(replacement) = self.replacement.as_mut() else { return Ok(()) };
+        if !replacement.rollback_ready() {
+            return Err(Fault::cancelled("equipment rollback is not staged"));
+        }
+        if LivePlayer::resolve(self.player.slot) != Some(self.player) {
+            return Err(Fault::cancelled("player identity changed before equipment rollback"));
+        }
+        replacement.restore_previous(self.player, &current)?;
+        ensure_equipment_action_current(&current)?;
+        if replacement.rollback_complete() {
+            self.replacement = None;
+        }
+        Ok(())
     }
 
     pub fn restore_retired_state(&mut self, refills: &mut equipment::Refills) -> Result<(), String> {
         finish_rollback(
             [
+                self.translucent.as_mut().map_or(Ok(()), render::Translucent::restore),
                 self.restore_failed_equipment(refills, false),
                 self.restore_owned_max_health(),
                 self.restore_owned_color(),
                 self.restore_weapon_recoil(),
                 self.restore_owned_speed(),
+                self.view.restore(),
+                self.weapon_rules.restore(),
             ]
             .into_iter(),
         )
@@ -292,6 +482,9 @@ impl Effect {
 
     fn restore_owned_speed(&self) -> Result<(), String> {
         let Some(speed) = owned_value_to_restore(Some(self.speed), self.player, LivePlayer::resolve_present(self.player.slot)) else {
+            return Ok(());
+        };
+        let Some(speed) = owned_speed_to_restore(speed, self.speed_written, s2sdk::GetClientSpeed(self.player.slot)) else {
             return Ok(());
         };
         s2sdk::SetClientSpeed(self.player.slot, speed);
@@ -314,7 +507,7 @@ impl Effect {
     }
 
     fn restore_owned_color(&self) -> Result<(), String> {
-        let Some(color) = color_to_restore(self.color, self.player, LivePlayer::resolve_present(self.player.slot)) else {
+        let Some(color) = owned_value_to_restore(self.color, self.player, LivePlayer::resolve_present(self.player.slot)) else {
             return Ok(());
         };
         s2sdk::SetClientRenderColor(self.player.slot, &color);
@@ -330,10 +523,39 @@ fn speed_matches(actual: f32, expected: f32) -> bool {
     actual.is_finite() && (actual - expected).abs() <= 0.0001
 }
 
+fn ensure_equipment_action_current(current: &impl Fn() -> bool) -> Result<(), Fault> {
+    if current() {
+        Ok(())
+    } else {
+        Err(Fault::cancelled("equipment action became stale during engine call"))
+    }
+}
+
+fn commit_equipment_receipt<T>(receipt: &mut Option<T>, current: &impl Fn() -> bool) -> Result<(), Fault> {
+    ensure_equipment_action_current(current)?;
+    *receipt = None;
+    Ok(())
+}
+
+fn run_equipment_action<T>(current: &impl Fn() -> bool, action: impl FnOnce() -> T) -> Result<T, Fault> {
+    ensure_equipment_action_current(current)?;
+    let result = action();
+    ensure_equipment_action_current(current)?;
+    Ok(result)
+}
+
+fn composed_speed(base: f32, health: f32, periodic: f32) -> f32 {
+    base * health * periodic
+}
+
+fn owned_speed_to_restore(before: f32, written: Option<f32>, current: f32) -> Option<f32> {
+    written.filter(|last| speed_matches(current, *last)).map(|_| before)
+}
+
 fn mode_max_health(mode: &Mode) -> Option<i32> {
-    if mode.lifesteal {
+    if mode.lifesteal || mode.random_damage {
         Some(funrounds_core::LIFESTEAL_MAX_HEALTH)
-    } else if mode.miss_damage && mode.health > 100 {
+    } else if matches!(mode.self_damage, Some(funrounds_core::SelfDamage::MissPenalty)) && mode.health > 100 {
         Some(i32::from(mode.health))
     } else {
         None
@@ -376,10 +598,6 @@ fn write_max_health(player: LivePlayer, max_health: i32) -> Result<(), String> {
         Err(format!("{MAX_HEALTH_CLASS}.{MAX_HEALTH_FIELD} write verification failed"))
     }
 }
-fn color_to_restore(color: Option<Vec4>, expected: LivePlayer, current: Option<LivePlayer>) -> Option<Vec4> {
-    owned_value_to_restore(color, expected, current)
-}
-
 fn owned_value_to_restore<T>(value: Option<T>, expected: LivePlayer, current: Option<LivePlayer>) -> Option<T> {
     if current == Some(expected) { value } else { None }
 }
@@ -387,6 +605,7 @@ fn finish_rollback(steps: impl Iterator<Item = Result<(), String>>) -> Result<()
     let errors = steps.filter_map(Result::err).collect::<Vec<_>>();
     if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
 }
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -399,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn self_push_preserves_the_legacy_velocity_and_input_rules() {
+    fn self_push_preserves_velocity_and_input_rules() {
         use plugify::Vec3;
         assert!(!super::self_push_suppressed(1, 1));
         for (buttons, flags) in [(4, 0), (0x10000, 0), (0, 2), (5, 3)] {
@@ -425,14 +644,14 @@ mod tests {
         mode.lifesteal = true;
         assert_eq!(super::mode_max_health(&mode), Some(funrounds_core::LIFESTEAL_MAX_HEALTH));
         mode.lifesteal = false;
-        mode.miss_damage = true;
+        mode.self_damage = Some(funrounds_core::SelfDamage::MissPenalty);
         assert_eq!(super::mode_max_health(&mode), Some(i32::from(mode.health)));
         mode.health = 100;
         assert_eq!(super::mode_max_health(&mode), None);
     }
 
     #[test]
-    fn retired_color_requires_the_original_controller_and_pawn_handles() {
+    fn owned_color_requires_the_original_controller_and_pawn_handles() {
         let original = crate::game::LivePlayer {
             slot: 2,
             controller_handle: 10,
@@ -444,13 +663,13 @@ mod tests {
             z: 255.0,
             w: 255.0,
         };
-        assert_eq!(super::color_to_restore(Some(color), original, Some(original)), Some(color));
+        assert_eq!(super::owned_value_to_restore(Some(color), original, Some(original)), Some(color));
         assert_eq!(
-            super::color_to_restore(Some(color), original, Some(crate::game::LivePlayer { pawn_handle: 21, ..original }),),
+            super::owned_value_to_restore(Some(color), original, Some(crate::game::LivePlayer { pawn_handle: 21, ..original }),),
             None,
         );
         assert_eq!(
-            super::color_to_restore(
+            super::owned_value_to_restore(
                 Some(color),
                 original,
                 Some(crate::game::LivePlayer {

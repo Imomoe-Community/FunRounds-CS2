@@ -91,7 +91,7 @@ pub enum ActionResult {
     CreationFailed { created: Option<i32>, error: Fault },
 }
 
-pub fn capabilities(events: Probe, explosion_event: Probe, carry_disconnect: bool, round_prestart: bool, reasons: &mut Vec<String>) -> Capabilities {
+pub fn capabilities(events: Probe, explosion_event: Probe, round_prestart: bool, reasons: &mut Vec<String>) -> Capabilities {
     let mut entity_iteration = Probe::default();
     imports!(entity_iteration;
         __s2sdk_GetFirstActiveEntity, __s2sdk_GetNextActiveEntity,
@@ -144,10 +144,10 @@ pub fn capabilities(events: Probe, explosion_event: Probe, carry_disconnect: boo
     imports!(chicken;
         __s2sdk_CreateEntityByName, __s2sdk_DispatchSpawn, __s2sdk_SetEntityParent,
         __s2sdk_AcceptEntityInput, __s2sdk_GetEntityParent, __s2sdk_SetEntityLocalOrigin,
-        __s2sdk_GetEntityAbsOrigin, __s2sdk_SetEntityAbsOrigin, __s2sdk_TeleportEntity, __s2sdk_RemoveEntity,
+        __s2sdk_GetEntityAngRotation, __s2sdk_GetEntityAbsOrigin, __s2sdk_SetEntityAbsOrigin,
+        __s2sdk_TeleportEntity, __s2sdk_RemoveEntity,
     );
     let mut carry = timing.clone();
-    carry.require(carry_disconnect, "hook:pre_disconnect");
     carry.include(moving_explosion);
     carry.include(owned_removal);
     carry.schema(C4, "m_bBombPlacedAnimation");
@@ -325,6 +325,11 @@ pub struct Bombs {
 }
 
 impl Bombs {
+    pub fn excludes_suicide_c4(&self, player: LivePlayer, weapon: i32) -> bool {
+        self.planted
+            .is_some_and(|bomb| bomb.proxy == Some(weapon) || bomb.placement.is_some_and(|placement| placement.player == Some(player)))
+    }
+
     pub fn capture_explosion(&mut self, round: RoundGeneration) {
         let Some(bomb) = self.planted else { return };
         if bomb.round != round
@@ -1349,7 +1354,8 @@ fn spawn_chicken(bomb: i32, created: &mut Option<i32>) -> Result<i32, Fault> {
             0,
         );
         let origin = s2sdk::GetEntityAbsOrigin(bomb);
-        s2sdk::TeleportEntity(chicken, &origin, &ZERO, &ZERO);
+        let angles = s2sdk::GetEntityAngRotation(bomb);
+        s2sdk::TeleportEntity(chicken, &origin, &angles, &ZERO);
         s2sdk::SetEntityParent(bomb, chicken);
         s2sdk::SetEntityLocalOrigin(
             bomb,

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/untrustedmodders/plugify-plugin-s2sdk/refs/tags/v3.0.0/assets/gamedata.schema.json",
+  "csgo": {
+    "Signatures": {
+      "CBaseEntity_TakeDamageOld": {
+        "library": "server",
+        "win64": "40 55 53 56 57 41 54 48 8D 6C 24 ? 48 81 EC ? ? ? ? 4D 8B E0",
+        "linuxsteamrt64": "55 66 0F EF C0 48 89 E5 41 57 41 56 41 55 49 89 FD 31 FF"
+      },
+      "CTakeDamageInfo::Constructor": {
+        "library": "server",
+        "win64": "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 48 89 7C 24 ? 41 56 48 83 EC 60 45 33 F6",
+        "linuxsteamrt64": "49 BB 00 00 00 00 00 00 80 3F 55"
+      },
+      "CCSPlayer_ItemServices::CanAcquire": {
+        "library": "server",
+        "win64": "44 89 44 24 ? 48 89 54 24 ? 48 89 4C 24 ? 55 53 56 57 41 54 41 55 41 56 41 57 48 8B EC",
+        "linuxsteamrt64": "55 48 89 E5 41 57 41 56 49 89 F6 41 55 41 54 49 89 CC 53 48 89 FB 48 83 EC ? 4C 8B 6F 38"
+      }
+    },
+    "Offsets": {
+      "CBaseEntity::Touch": {
+        "win64": 151,
+        "linuxsteamrt64": 150
+      },
+      "CBaseEntity::IsWeapon": {
+        "win64": 179,
+        "linuxsteamrt64": 178
+      },
+      "CBaseEntity::CollisionRulesChanged": {
+        "win64": 188,
+        "linuxsteamrt64": 187
+      }
+    },
+    "VTables": {
+      "CNavPhysicsInterface": {
+        "library": "server",
+        "table": "CNavPhysicsInterface"
+      }
+    }
+  }
+}

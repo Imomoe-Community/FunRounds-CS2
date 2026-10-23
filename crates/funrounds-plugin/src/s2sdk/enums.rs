@@ -3,63 +3,6 @@
 #[allow(unused_imports)]
 use plugify::vector_enum_traits;
 
-/// Enum representing various damage types.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(non_camel_case_types)]
-pub enum DamageTypes {
-    /// Generic damage.
-    DMG_GENERIC = 0,
-    /// Crush damage.
-    DMG_CRUSH = 1,
-    /// Bullet damage.
-    DMG_BULLET = 2,
-    /// Slash damage.
-    DMG_SLASH = 4,
-    /// Burn damage.
-    DMG_BURN = 8,
-    /// Vehicle damage.
-    DMG_VEHICLE = 16,
-    /// Fall damage.
-    DMG_FALL = 32,
-    /// Blast damage.
-    DMG_BLAST = 64,
-    /// Club damage.
-    DMG_CLUB = 128,
-    /// Shock damage.
-    DMG_SHOCK = 256,
-    /// Sonic damage.
-    DMG_SONIC = 512,
-    /// Energy beam damage.
-    DMG_ENERGYBEAM = 1024,
-    /// Drowning damage.
-    DMG_DROWN = 16384,
-    /// Poison damage.
-    DMG_POISON = 32768,
-    /// Radiation damage.
-    DMG_RADIATION = 65536,
-    /// Recovering from drowning damage.
-    DMG_DROWNRECOVER = 131072,
-    /// Acid damage.
-    DMG_ACID = 262144,
-    /// Physgun damage.
-    DMG_PHYSGUN = 1048576,
-    /// Dissolve damage.
-    DMG_DISSOLVE = 2097152,
-    /// Surface blast damage.
-    DMG_BLAST_SURFACE = 4194304,
-    /// Buckshot damage.
-    DMG_BUCKSHOT = 16777216,
-    /// Headshot damage.
-    DMG_HEADSHOT = 33554432,
-    /// Danger zone damage.
-    DMG_DANGERZONE = 67108864,
-}
-impl DamageTypes {
-    pub const DMG_LASTGENERICFLAG: Self = Self::DMG_BUCKSHOT;
-}
-vector_enum_traits!(DamageTypes, i32);
-
 /// Enum representing various flags for ConVars and ConCommands.
 #[repr(i64)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

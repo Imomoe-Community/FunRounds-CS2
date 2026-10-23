@@ -1,0 +1,141 @@
+name: CI and release
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Check version consistency and detect a version change
+        id: version
+        run: python scripts/ci.py version
+      - name: Test CI and release helpers
+        run: python -B -m unittest discover -s scripts/tests -v
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            platform: windows-x64
+          - os: ubuntu-24.04
+            platform: linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - name: Install the pinned Rust toolchain and binding generator
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolchain = (Get-Content rust-toolchain.toml | Select-String '^channel = "([^"]+)"').Matches.Groups[1].Value
+          rustup toolchain install $toolchain --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force .work/tools | Out-Null
+          $env:GOBIN = Join-Path $PWD '.work/tools'
+          go install github.com/untrustedmodders/plugify-gen/cmd/plugify-gen@v1.2.15
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $env:GOBIN
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check all Rust targets
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run Rust tests
+        run: cargo test --workspace --locked
+      - name: Build Windows plugins
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --release --workspace --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/build-native.py --work-dir .work/native --output-dir .work/native-output
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build Linux plugins against Steam Runtime
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --locked
+          docker build --tag funrounds-ci-steamrt scripts/ci
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp --env CARGO_HOME=/cargo --env RUSTUP_HOME=/rustup \
+            --env PATH=/workspace/.work/tools:/cargo/bin:/usr/bin:/bin \
+            --env CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=/usr/bin/gcc-10 \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "${CARGO_HOME:-$HOME/.cargo}:/cargo" \
+            --volume "${RUSTUP_HOME:-$HOME/.rustup}:/rustup" \
+            --workdir /workspace funrounds-ci-steamrt bash -euc '
+              cargo build --release --workspace --locked --offline
+              python3 scripts/build-native.py --work-dir .work/native --output-dir .work/native-output
+            '
+          python scripts/ci.py abi target/release/libfunrounds_plugin.so .work/native-output/bin/libfunrounds-native.so
+      - name: Package the plugins, gamedata, example and license notices
+        run: python scripts/ci.py package --platform ${{ matrix.platform }} --native-output .work/native-output
+      - uses: actions/upload-artifact@v7
+        with:
+          name: funrounds-${{ matrix.platform }}
+          path: dist/funrounds-${{ needs.version.outputs.version }}-${{ matrix.platform }}.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: [version, build]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      needs.version.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ needs.version.outputs.version }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: funrounds-*
+          path: dist
+          merge-multiple: true
+      - name: Publish the exact tested commit after both platform builds pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci.py release --artifacts dist

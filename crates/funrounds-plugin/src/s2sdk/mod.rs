@@ -11,11 +11,11 @@ pub mod engine;
 pub mod entities;
 pub mod enums;
 pub mod events;
+pub mod gameconfig;
 pub mod gamerules;
 pub mod models;
 pub mod protobuf;
 pub mod schema;
-pub mod weapons;
 
 #[allow(unused_imports)]
 pub use aliases::*;
@@ -38,6 +38,8 @@ pub use enums::*;
 #[allow(unused_imports)]
 pub use events::*;
 #[allow(unused_imports)]
+pub use gameconfig::*;
+#[allow(unused_imports)]
 pub use gamerules::*;
 #[allow(unused_imports)]
 pub use models::*;
@@ -45,5 +47,3 @@ pub use models::*;
 pub use protobuf::*;
 #[allow(unused_imports)]
 pub use schema::*;
-#[allow(unused_imports)]
-pub use weapons::*;

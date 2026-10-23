@@ -13,6 +13,7 @@ use plugify::{Str, Vec3};
 use std::collections::{HashMap, HashSet};
 
 const KNIFE_ENTITY: &str = "smokegrenade_projectile";
+const KNIFE_WEAPON_CLASS: &str = "weapon_knife_projectile";
 const CONTENTS_PLAYER: u64 = 1 << 18;
 const DECOY_PROJECTILE: &str = "decoy_projectile";
 const DECOY_THROWER_CLASS: &str = "CBaseGrenade";
@@ -135,17 +136,29 @@ impl Projectiles {
             __s2sdk_GetFirstActiveEntity, __s2sdk_GetNextActiveEntity, __s2sdk_GetEntityClassname,
             __s2sdk_IsValidEntHandle, __s2sdk_EntHandleToEntPointer, __s2sdk_GetEntSchemaEnt2,
             __s2sdk_GetEntityAbsOrigin, __s2sdk_GetEntityAbsVelocity, __s2sdk_GetClientHealth,
-            __s2sdk_TakeEntityDamage, __s2sdk_RemoveEntity,
+            __s2sdk_RemoveEntity,
+        );
+        decoys.require(
+            crate::damage::reflection_available(),
+            "import:funrounds_native:TakeEntityDamageWithWeapon",
         );
         decoys.schema(DECOY_THROWER_CLASS, "m_hThrower");
         let mut knives = decoys.clone();
         imports!(knives;
             __s2sdk_CreateEntityByName, __s2sdk_DispatchSpawn2, __s2sdk_SetEntityModel,
             __s2sdk_SetEntityOwner, __s2sdk_SetEntityGravity, __s2sdk_SetEntityMoveType,
-            __s2sdk_GetEntityMoveType, __s2sdk_SetEntityDefaultCollisionGroup, __s2sdk_SetEntityAngVelocity,
+            __s2sdk_GetEntityMoveType, __s2sdk_SetEntityAngVelocity,
             __s2sdk_TeleportEntity, __s2sdk_GetEntSchemaEnt2, __s2sdk_SetEntSchemaEnt2,
             __s2sdk_GetEntSchema2, __s2sdk_SetEntSchema2, __s2sdk_SetEntSchemaFloat2, __s2sdk_GetEntSchemaFloat2,
             __s2sdk_GetClientEyePosition, __s2sdk_GetClientEyeAngles, __s2sdk_GetClientAbsVelocity, __s2sdk_GetClientTeam,
+        );
+        knives.require(
+            unsafe {
+                std::ptr::addr_of!(crate::funrounds_native::__funrounds_native_SetEntityDefaultCollisionGroup)
+                    .read()
+                    .is_some()
+            },
+            "import:funrounds_native:SetEntityDefaultCollisionGroup",
         );
         for (class, field) in [
             (ELASTICITY_CLASS, ELASTICITY_FIELD),
@@ -569,6 +582,14 @@ impl Projectiles {
         self.active_impact.filter(|impact| impact_matches_damage(*impact, damage))
     }
 
+    pub fn attribute_synthetic_impact(&self, damage: &mut Damage) -> Option<Impact> {
+        let impact = self.synthetic_impact(damage)?;
+        if impact.kind == Kind::Knife {
+            damage.weapon_class = Some(KNIFE_WEAPON_CLASS.to_owned());
+        }
+        Some(impact)
+    }
+
     pub fn active_knife_death(&self, victim: i32, attacker: i32) -> bool {
         self.active_impact.is_some_and(|impact| {
             impact.kind == Kind::Knife
@@ -726,8 +747,11 @@ fn spawn_knife(task: PlayerTask, player: LivePlayer, created: &mut Option<i32>, 
     if task.player.slot != player.slot || task.player.pawn_handle != player.pawn_handle as u32 || LivePlayer::resolve(player.slot) != Some(player) {
         return Err(Fault::cancelled("player identity changed before knife spawn"));
     }
-    if unsafe { s2sdk::__s2sdk_TakeEntityDamage }.is_none() {
-        return Err(Fault::mechanism(Mechanism::ProjectileDamage, "TakeEntityDamage unavailable"));
+    if !crate::damage::reflection_available() {
+        return Err(Fault::mechanism(
+            Mechanism::ProjectileDamage,
+            "funrounds_native TakeEntityDamageWithWeapon unavailable",
+        ));
     }
     if !Projectiles::capabilities(true).1.available() {
         return Err(Fault::mechanism(
@@ -813,7 +837,7 @@ fn spawn_knife(task: PlayerTask, player: LivePlayer, created: &mut Option<i32>, 
     }
     s2sdk::SetEntityGravity(handle, funrounds_core::THROWING_KNIFE_GRAVITY);
     include_player_interaction(handle).map_err(|error| Fault::mechanism(Mechanism::ThrowingKnives, error))?;
-    s2sdk::SetEntityDefaultCollisionGroup(handle);
+    crate::funrounds_native::SetEntityDefaultCollisionGroup(handle);
     set_elasticity(handle, funrounds_core::THROWING_KNIFE_ELASTICITY).map_err(|error| Fault::mechanism(Mechanism::ThrowingKnives, error))?;
     s2sdk::SetEntSchema2(pointer, &Str::from_str("CBaseEntity"), &Str::from_str("m_nNextThinkTick"), -1, false, 0);
     if s2sdk::GetEntSchema2(pointer, &Str::from_str("CBaseEntity"), &Str::from_str("m_nNextThinkTick"), 0) != -1 {
@@ -850,21 +874,26 @@ fn spawn_knife(task: PlayerTask, player: LivePlayer, created: &mut Option<i32>, 
 }
 
 pub fn apply_impact(impact: Impact) -> Result<i32, Fault> {
-    if unsafe { s2sdk::__s2sdk_TakeEntityDamage }.is_none() {
-        return Err(Fault::mechanism(Mechanism::ProjectileDamage, "TakeEntityDamage unavailable"));
+    if !crate::damage::reflection_available() {
+        return Err(Fault::mechanism(
+            Mechanism::ProjectileDamage,
+            "funrounds_native TakeEntityDamageWithWeapon unavailable",
+        ));
     }
     let damage_type = match impact.kind {
-        Kind::Dodgeball => s2sdk::DamageTypes::DMG_BLAST,
-        Kind::Knife => s2sdk::DamageTypes::DMG_SLASH,
+        Kind::Dodgeball => crate::damage::DMG_BLAST,
+        Kind::Knife => crate::damage::DMG_SLASH,
     };
-    Ok(s2sdk::TakeEntityDamage(
+    Ok(crate::funrounds_native::TakeEntityDamageWithWeapon(
         impact.victim.pawn_handle,
         impact.projectile,
         impact.task.player.pawn_handle as i32,
         &impact.force,
         &impact.hit_position,
         impact.amount,
-        damage_type,
+        damage_type as i32,
+        -1,
+        false,
     ))
 }
 
@@ -1249,7 +1278,7 @@ mod tests {
     }
 
     #[test]
-    fn eye_distance_uses_inclusive_legacy_headshot_boundary() {
+    fn eye_distance_uses_the_inclusive_headshot_boundary() {
         let eye = Vec3 {
             x: 100.0,
             y: 200.0,
@@ -1271,7 +1300,7 @@ mod tests {
     }
 
     #[test]
-    fn knife_touch_damage_uses_exact_legacy_eye_distance_and_damage_values() {
+    fn knife_touch_damage_uses_exact_eye_distance_and_damage_values() {
         let (mut players, _, _, task) = sample_task();
         let victim = LivePlayer {
             slot: 2,
@@ -1377,7 +1406,10 @@ mod tests {
             hit_group: 0,
             traced_head: false,
             amount: impact.amount,
-            damage_type: None,
+            damage_type: 0,
+            weapon: -1,
+            weapon_class: None,
+            skip_plugin_rules: false,
         };
         assert_eq!(projectiles.synthetic_impact(&damage), Some(impact));
 

@@ -8,12 +8,16 @@ mod damage;
 mod disconnect;
 mod effects;
 mod fault;
+#[allow(dead_code)]
+mod funrounds_native;
 mod game;
 mod parameters;
+mod preferences;
 mod projectiles;
 mod runtime;
 #[allow(dead_code)]
 mod s2sdk;
+mod suicide;
 mod touch;
 
 use plugify::{Arr, Str, register_plugin};
@@ -50,6 +54,7 @@ static PENDING: AtomicBool = AtomicBool::new(false);
 static HOOKS: AtomicU32 = AtomicU32::new(0);
 static COMMANDS: AtomicU32 = AtomicU32::new(0);
 static CHAT_HOOKED: AtomicBool = AtomicBool::new(false);
+static CAN_ACQUIRE_HOOKED: AtomicBool = AtomicBool::new(false);
 static TOUCH_HOOKED: AtomicBool = AtomicBool::new(false);
 static KNIFE_DEATH_PRE_HOOKED: AtomicBool = AtomicBool::new(false);
 static RUNTIME: Mutex<Option<runtime::Runtime>> = Mutex::new(None);
@@ -58,6 +63,41 @@ static DAMAGE_BRIDGE: Mutex<Option<damage::Bridge>> = Mutex::new(None);
 
 fn callbacks_active() -> bool {
     ACTIVE.load(Ordering::Acquire) && !PANIC_PENDING.load(Ordering::Acquire)
+}
+
+fn missing_native_abi() -> Option<String> {
+    let mut missing = Vec::new();
+    macro_rules! require_import {
+        ($name:ident) => {
+            if unsafe { std::ptr::addr_of!(funrounds_native::$name).read() }.is_none() {
+                missing.push(stringify!($name).trim_start_matches("__funrounds_native_"));
+            }
+        };
+    }
+    require_import!(__funrounds_native_HasPlayerTakeDamagePre);
+    require_import!(__funrounds_native_HookPlayerTakeDamagePre);
+    require_import!(__funrounds_native_UnhookPlayerTakeDamagePre);
+    require_import!(__funrounds_native_GetCurrentDamageFrameToken);
+    require_import!(__funrounds_native_TakeEntityDamageWithWeapon);
+    require_import!(__funrounds_native_IsEntityTouchPreHookAvailable);
+    require_import!(__funrounds_native_HookEntityTouchPre);
+    require_import!(__funrounds_native_UnhookEntityTouchPre);
+    require_import!(__funrounds_native_SetEntityDefaultCollisionGroup);
+    if unsafe { std::ptr::addr_of!(effects::__s2sdk_GetWeaponItemDefinition).read() }.is_none() {
+        missing.push("GetWeaponItemDefinition");
+    }
+    if unsafe { std::ptr::addr_of!(disconnect::__s2sdk_OnClientDisconnect_Register).read() }.is_none() {
+        missing.push("OnClientDisconnect_Register");
+    }
+    if unsafe { std::ptr::addr_of!(disconnect::__s2sdk_OnClientDisconnect_Unregister).read() }.is_none() {
+        missing.push("OnClientDisconnect_Unregister");
+    }
+    (!missing.is_empty()).then(|| {
+        format!(
+            "FunRounds requires funrounds_native 0.2.0-alpha.test ABI; missing imports: {}",
+            missing.join(", ")
+        )
+    })
 }
 
 fn contain_failure(context: &str) {
@@ -107,6 +147,9 @@ fn start() -> Result<(), Box<dyn Error>> {
         {
             return Err("FunRounds: previous callbacks or owned-state cleanup remain".into());
         }
+        if let Some(error) = missing_native_abi() {
+            return Err(error.into());
+        }
         PANIC_PENDING.store(false, Ordering::Release);
         PENDING.store(true, Ordering::Release);
         s2sdk::PrintToServer(&Str::from_str("[FunRounds] waiting for first game simulation before subscribing"));
@@ -131,16 +174,81 @@ fn update(_dt: f32) -> Result<(), Box<dyn Error>> {
                 drop(guard);
                 for action in actions {
                     match action {
+                        action @ runtime::EngineAction::Rollback(..) => process_rollback_action(action),
+                        action @ (runtime::EngineAction::Loadout(..) | runtime::EngineAction::Upgrade(..)) => process_loadout_action(action),
+                        runtime::EngineAction::GrantC4(task, player) => {
+                            let action = runtime::EngineAction::GrantC4(task, player);
+                            let result = suicide::grant_c4(player, || engine_action_current(&action));
+                            if let Err(error) = result
+                                && engine_action_current(&action)
+                            {
+                                equipment_fault(error);
+                            }
+                        }
+                        runtime::EngineAction::RemoveC4(task, player, handles) => {
+                            execute_valid_action(runtime::EngineAction::RemoveC4(task, player, handles.clone()), || {
+                                runtime::remove_native_c4(player, &handles)
+                            })?;
+                        }
+                        runtime::EngineAction::Suicide(action) => process_suicide_action(action),
                         runtime::EngineAction::Bomb(bomb) => process_bomb_action(bomb),
                         runtime::EngineAction::Equipment(action) => process_equipment_action(action),
                         runtime::EngineAction::Projectile(action) => process_projectile_action(action),
-                        action => {
-                            let guard = RUNTIME.try_lock().map_err(|_| "FunRounds: runtime busy or poisoned")?;
-                            let valid = callbacks_active() && guard.as_ref().is_some_and(|runtime| runtime.action_valid(&action));
-                            drop(guard);
-                            if valid {
-                                action.execute();
-                            }
+                        runtime::EngineAction::DelayedDamage(hit) => process_delayed_damage(hit),
+                        runtime::EngineAction::Reflection(hit) => process_reflection(hit),
+                        runtime::EngineAction::ProjectileImpact(impact) => {
+                            execute_valid_action(runtime::EngineAction::ProjectileImpact(impact), || {
+                                apply_projectile_impact(impact);
+                                Ok(())
+                            })?
+                        }
+                        runtime::EngineAction::Respawn(task, player, team) => {
+                            execute_valid_action(runtime::EngineAction::Respawn(task, player, team), || {
+                                s2sdk::RespawnClient(task.player.slot);
+                                Ok(())
+                            })?
+                        }
+                        runtime::EngineAction::LowHealthFinish(task, player, numeric) => {
+                            execute_valid_action(runtime::EngineAction::LowHealthFinish(task, player, numeric), || {
+                                let slot = task.player.slot;
+                                let handle = player.pawn_handle;
+                                let zero = plugify::Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+                                let applied = if numeric {
+                                    damage::finish_self_damage(handle)?
+                                } else {
+                                    funrounds_native::TakeEntityDamageWithWeapon(
+                                        handle,
+                                        handle,
+                                        handle,
+                                        &zero,
+                                        &zero,
+                                        1.0,
+                                        damage::DMG_HEADSHOT as i32,
+                                        -1,
+                                        false,
+                                    )
+                                };
+                                s2sdk::PrintToServer(&Str::from_str(&format!(
+                                    "[FunRounds] low-health finish slot={slot} pawn={handle} damage={applied}"
+                                )));
+                                Ok(())
+                            })?
+                        }
+                        runtime::EngineAction::CenterDisplay { generation, text } => execute_valid_action(
+                            runtime::EngineAction::CenterDisplay {
+                                generation,
+                                text: text.clone(),
+                            },
+                            || {
+                                s2sdk::PrintCentreHtmlAll(&Str::from_str(&text), 5);
+                                Ok(())
+                            },
+                        )?,
+                        runtime::EngineAction::EndRound(round, reason) => {
+                            execute_valid_action(runtime::EngineAction::EndRound(round, reason), || {
+                                finish_team_round(reason);
+                                Ok(())
+                            })?
                         }
                     }
                 }
@@ -148,6 +256,285 @@ fn update(_dt: f32) -> Result<(), Box<dyn Error>> {
         }
         Ok(())
     })
+}
+
+fn execute_valid_action(action: runtime::EngineAction, execute: impl FnOnce() -> Result<(), fault::Fault>) -> Result<(), Box<dyn Error>> {
+    let guard = RUNTIME.try_lock().map_err(|_| "FunRounds: runtime busy or poisoned")?;
+    let valid = callbacks_active() && guard.as_ref().is_some_and(|runtime| runtime.action_valid(&action));
+    drop(guard);
+    if valid && let Err(error) = execute() {
+        let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(runtime) = guard.as_mut() {
+            runtime.handle_fault(error);
+        }
+    }
+    Ok(())
+}
+
+fn engine_action_current(action: &runtime::EngineAction) -> bool {
+    let guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    (callbacks_active() || matches!(action, runtime::EngineAction::Rollback(..)))
+        && guard
+            .as_ref()
+            .is_some_and(|runtime| runtime.on_game_thread() && runtime.action_valid(action))
+}
+
+fn process_rollback_action(action: runtime::EngineAction) {
+    let effect = {
+        let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(runtime) = guard.as_mut().filter(|runtime| runtime.on_game_thread()) else {
+            return;
+        };
+        runtime.take_rollback_effect(&action)
+    };
+    let Some(mut effect) = effect else { return };
+    let result = catch_unwind(AssertUnwindSafe(|| effect.restore_previous(|| engine_action_current(&action))))
+        .unwrap_or_else(|_| Err(fault::Fault::global("equipment rollback panic contained")));
+    let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(runtime) = guard.as_mut() {
+        runtime.finish_equipment_effect(&action, effect, result);
+    }
+}
+
+fn equipment_fault(error: String) {
+    let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(runtime) = guard.as_mut() {
+        runtime.handle_fault(fault::Fault::mechanism(fault::Mechanism::C4Assignment, error));
+    }
+}
+
+fn process_loadout_action(action: runtime::EngineAction) {
+    let prepared = {
+        let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(runtime) = guard.as_mut().filter(|runtime| runtime.on_game_thread() && callbacks_active()) else {
+            return;
+        };
+        match runtime.take_equipment_effect(&action) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                runtime.handle_fault(error);
+                return;
+            }
+        }
+    };
+    let Some((mut effect, mode)) = prepared else { return };
+    let result = catch_unwind(AssertUnwindSafe(|| match &action {
+        runtime::EngineAction::Loadout(_, _, equipment) => effect.apply(&mode, equipment, || engine_action_current(&action)),
+        runtime::EngineAction::Upgrade(_, player, target, weapon) => {
+            let target = effect
+                .upgraded_weapon()
+                .filter(|(handle, class)| {
+                    s2sdk::IsValidEntHandle(*handle)
+                        && s2sdk::GetEntityOwner(*handle) == player.pawn_handle
+                        && s2sdk::GetClientWeapons(player.slot).iter().any(|owned| owned == handle)
+                        && s2sdk::GetEntityClassname(*handle).as_str() == class
+                })
+                .map_or(*target, |(handle, _)| handle);
+            effect
+                .replace_upgrade_weapon(target, std::slice::from_ref(weapon), &mode, || engine_action_current(&action))
+                .map(|_| ())
+        }
+        _ => unreachable!("equipment action"),
+    }))
+    .unwrap_or_else(|_| Err(fault::Fault::global("equipment transaction panic contained")));
+    let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(runtime) = guard.as_mut() {
+        runtime.finish_equipment_effect(&action, effect, result);
+    }
+}
+
+unsafe extern "C" fn on_can_acquire(pawn: i32, controller: i32) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if !callbacks_active() {
+            return 0;
+        }
+        let Ok(guard) = RUNTIME.try_lock() else { return 0 };
+        guard
+            .as_ref()
+            .filter(|runtime| runtime.on_game_thread())
+            .is_some_and(|runtime| runtime.blocks_suicide_pickup(pawn, controller)) as i32
+    }))
+    .unwrap_or_else(|_| {
+        contain_failure("suicide pickup callback panic contained");
+        1
+    })
+}
+
+fn suicide_action_current(action: suicide::Action) -> bool {
+    let guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    callbacks_active()
+        && guard
+            .as_ref()
+            .is_some_and(|runtime| runtime.on_game_thread() && runtime.action_valid(&runtime::EngineAction::Suicide(action)))
+}
+
+fn process_suicide_action(action: suicide::Action) {
+    {
+        let guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !callbacks_active()
+            || !guard
+                .as_ref()
+                .is_some_and(|runtime| runtime.on_game_thread() && runtime.action_valid(&runtime::EngineAction::Suicide(action)))
+        {
+            return;
+        }
+    }
+    match action {
+        suicide::Action::Purchase { player, .. } => {
+            let existing = {
+                let guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.as_ref().and_then(|runtime| runtime.existing_suicide_c4(player))
+            };
+            let result = existing.map(Ok).unwrap_or_else(|| {
+                suicide::purchase(
+                    player,
+                    || suicide_action_current(action),
+                    || {
+                        let guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                        guard.as_ref().is_some_and(|runtime| runtime.suicide_buyer_current(action))
+                    },
+                )
+            });
+            let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(runtime) = guard.as_mut() {
+                runtime.finish_suicide_purchase(action, result);
+            }
+        }
+        suicide::Action::Start { owned, .. } => {
+            if let Err(error) = owned.start(|| suicide_action_current(action)) {
+                if suicide_action_current(action) {
+                    suicide_fault(error);
+                }
+            } else {
+                let message = if s2sdk::GetClientTeam(owned.player.slot) as i32 == 2 {
+                    "[FunRounds] 自爆已启动，五秒后爆炸！"
+                } else {
+                    "[FunRounds] CT正在销毁C4！"
+                };
+                s2sdk::PrintToChatAll(&Str::from_str(message));
+            }
+        }
+        suicide::Action::Blast { .. } => {
+            let targets = {
+                let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let Some(runtime) = guard.as_mut() else { return };
+                match runtime.prepare_suicide_blast(action) {
+                    Ok(targets) => targets,
+                    Err(error) => {
+                        runtime.handle_fault(error);
+                        return;
+                    }
+                }
+            };
+            if let Err(error) = suicide::feedback(action.player()) {
+                suicide_fault(error);
+            }
+            for (task, player, amount) in targets {
+                let valid = {
+                    let guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.as_ref().is_some_and(|runtime| {
+                        runtime.suicide_target_valid(task, player) && runtime.action_valid(&runtime::EngineAction::Suicide(action))
+                    })
+                };
+                if valid && let Err(error) = suicide::hit(action.player(), player, amount) {
+                    suicide_fault(error);
+                    break;
+                }
+            }
+            let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(runtime) = guard.as_mut() {
+                runtime.finish_suicide_blast();
+            }
+        }
+        suicide::Action::Finish { player, amount, .. } => {
+            if let Err(error) = suicide::hit(player, player, amount) {
+                suicide_fault(error);
+            }
+        }
+    }
+}
+
+fn suicide_fault(error: String) {
+    let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(runtime) = guard.as_mut() {
+        runtime.handle_fault(fault::Fault::mechanism(fault::Mechanism::Suicide, error));
+    }
+}
+
+fn process_delayed_damage(hit: damage::DelayedDamage) {
+    let Some((inflictor, weapon)) = hit.native_handles(s2sdk::IsValidEntHandle) else {
+        return;
+    };
+    let context = damage::Damage {
+        victim: hit.target_live.pawn_handle,
+        attacker: hit.source_live.pawn_handle,
+        inflictor,
+        weapon_kind: 0,
+        hit_group: 0,
+        traced_head: false,
+        amount: hit.amount,
+        damage_type: hit.damage_type,
+        weapon,
+        weapon_class: hit.weapon_class.clone(),
+        skip_plugin_rules: false,
+    };
+    let players = game::DamagePlayers {
+        victim: Some(hit.target_live),
+        attacker: Some(hit.source_live),
+    };
+    let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(runtime) = guard.as_mut() else { return };
+    if !callbacks_active() || !runtime.action_valid(&runtime::EngineAction::DelayedDamage(hit.clone())) {
+        return;
+    }
+    let blocked = runtime.combat_damage(&context, &players, 1.0, true);
+    drop(guard);
+    if blocked {
+        return;
+    }
+    if let Err(error) = hit.execute(s2sdk::IsValidEntHandle) {
+        let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(runtime) = guard.as_mut() {
+            runtime.handle_fault(error);
+        }
+    }
+}
+
+fn process_reflection(hit: damage::Reflection) {
+    let Some((inflictor, weapon)) = hit.native_handles(s2sdk::IsValidEntHandle) else {
+        return;
+    };
+    let context = damage::Damage {
+        victim: hit.target_live.pawn_handle,
+        attacker: hit.source_live.pawn_handle,
+        inflictor,
+        weapon_kind: 0,
+        hit_group: 0,
+        traced_head: false,
+        amount: hit.amount,
+        damage_type: hit.damage_type,
+        weapon,
+        weapon_class: hit.weapon_class.clone(),
+        skip_plugin_rules: false,
+    };
+    let players = game::DamagePlayers {
+        victim: Some(hit.target_live),
+        attacker: Some(hit.source_live),
+    };
+    let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(runtime) = guard.as_mut() else { return };
+    let action = runtime::EngineAction::Reflection(hit.clone());
+    if !callbacks_active() || !runtime.action_valid(&action) {
+        return;
+    }
+    let blocked = runtime.combat_damage(&context, &players, 1.0, false);
+    drop(guard);
+    if !blocked && let Err(error) = hit.execute(s2sdk::IsValidEntHandle) {
+        let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(runtime) = guard.as_mut() {
+            runtime.handle_fault(error);
+        }
+    }
 }
 
 fn process_bomb_action(action: bombs::Action) {
@@ -263,36 +650,40 @@ fn subscribe() -> Result<(), Box<dyn Error>> {
                 "[FunRounds] SetEventString unavailable; throwing-knife kill icon remains unchanged",
             ));
         }
-        let disconnect = disconnect::Bridge::subscribe(on_client_disconnect);
-        let disconnect_ready = disconnect.is_some();
-        *DISCONNECT_BRIDGE.lock().map_err(|_| "FunRounds: disconnect bridge poisoned")? = disconnect;
+        *DISCONNECT_BRIDGE.lock().map_err(|_| "FunRounds: disconnect bridge poisoned")? = Some(disconnect::Bridge::subscribe(on_client_disconnect));
         let hooks = HOOKS.load(Ordering::Acquire);
-        let bridge = damage::Bridge::subscribe(on_damage, on_damage_v2);
+        let bridge = damage::Bridge::subscribe(on_damage);
         let damage_ready = bridge.is_some();
-        let damage_v2_ready = bridge.as_ref().is_some_and(damage::Bridge::has_damage_type);
         *DAMAGE_BRIDGE.lock().map_err(|_| "FunRounds: damage bridge poisoned")? = bridge;
-        s2sdk::PrintToServer(&Str::from_str(&format!(
-            "[FunRounds] damage bridge ready={damage_ready} v2={damage_v2_ready}"
-        )));
-        let chat_ready = if unsafe { s2sdk::__s2sdk_AddCommandListener }.is_some() {
+        s2sdk::PrintToServer(&Str::from_str(&format!("[FunRounds] damage hook ready={damage_ready}")));
+        if unsafe { s2sdk::__s2sdk_AddCommandListener }.is_some() {
             let hooked = s2sdk::AddCommandListener(&Str::from_str(""), on_chat, HookMode::Pre);
             CHAT_HOOKED.store(hooked, Ordering::Release);
-            hooked
-        } else {
-            false
+        }
+        let (support, inspect, hook, unhook) = unsafe {
+            (
+                funrounds_native::__funrounds_native_HasSuicideSupport,
+                funrounds_native::__funrounds_native_GetLookAtWeaponButtonState,
+                funrounds_native::__funrounds_native_HookPlayerCanAcquire,
+                funrounds_native::__funrounds_native_UnhookPlayerCanAcquire,
+            )
         };
-        let mut classic = subscribed_events(hooks, &["player_connect_full"]);
-        classic.require(damage_v2_ready, "hook:entity_damage_v2");
-        classic.require(chat_ready, "hook:chat");
+        let suicide_ready = support.is_some()
+            && inspect.is_some()
+            && hook.is_some()
+            && unhook.is_some()
+            && funrounds_native::HasSuicideSupport()
+            && funrounds_native::HookPlayerCanAcquire(on_can_acquire);
+        CAN_ACQUIRE_HOOKED.store(suicide_ready, Ordering::Release);
         let mut moving_blast = subscribed_events(hooks, &["bomb_exploded"]);
-        moving_blast.require(damage_v2_ready, "hook:entity_damage_v2");
+        moving_blast.require(damage_ready, "hook:entity_damage");
         *RUNTIME.lock().map_err(|_| "FunRounds: runtime poisoned")? = Some(runtime::Runtime::new(runtime::EventCapabilities {
             grenade_thrown: hooks & (1 << 6) != 0,
             weapon_fire: hooks & (1 << 7) != 0,
             player_hurt: hooks & (1 << 8) != 0,
             damage: damage_ready,
+            combat_events: subscribed_events(hooks, &["player_spawn", "player_death"]).available(),
             round_prestart: subscribed_events(hooks, &["round_prestart"]).available(),
-            classic,
             bombs: subscribed_events(
                 hooks,
                 &[
@@ -304,7 +695,6 @@ fn subscribe() -> Result<(), Box<dyn Error>> {
                 ],
             ),
             moving_blast,
-            carry_disconnect: disconnect_ready,
         })?);
         register_commands()?;
         ACTIVE.store(true, Ordering::Release);
@@ -338,8 +728,15 @@ fn subscribed_events(hooks: u32, events: &[&str]) -> capability::Probe {
 fn cleanup() -> Result<(), Box<dyn Error>> {
     ACTIVE.store(false, Ordering::Release);
     let mut failed = Vec::new();
+    if CAN_ACQUIRE_HOOKED.load(Ordering::Acquire) {
+        if funrounds_native::UnhookPlayerCanAcquire(on_can_acquire) {
+            CAN_ACQUIRE_HOOKED.store(false, Ordering::Release);
+        } else {
+            failed.push("suicide pickup unsubscription failed".into());
+        }
+    }
     if TOUCH_HOOKED.load(Ordering::Acquire) {
-        if touch::unhook(on_touch) {
+        if funrounds_native::UnhookEntityTouchPre(on_touch) {
             TOUCH_HOOKED.store(false, Ordering::Release);
             touch::clear();
         } else {
@@ -376,7 +773,7 @@ fn cleanup() -> Result<(), Box<dyn Error>> {
     let mut shutdown_error = None;
     let mut shutdown_settled = false;
     for _ in 0..4 {
-        let (actions, equipment, projectiles, error) = {
+        let (actions, equipment, projectiles, rollbacks, error) = {
             let mut guard = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let Some(runtime) = guard.as_mut() else { break };
             let error = runtime.shutdown().err();
@@ -384,11 +781,12 @@ fn cleanup() -> Result<(), Box<dyn Error>> {
                 runtime.take_bomb_actions(),
                 runtime.take_equipment_cleanup(),
                 runtime.take_projectile_cleanup(),
+                runtime.take_rollbacks(),
                 error,
             )
         };
         shutdown_error = error;
-        if actions.is_empty() && equipment.is_empty() && projectiles.is_empty() {
+        if actions.is_empty() && equipment.is_empty() && projectiles.is_empty() && rollbacks.is_empty() {
             shutdown_settled = true;
             break;
         }
@@ -400,6 +798,9 @@ fn cleanup() -> Result<(), Box<dyn Error>> {
         }
         for action in projectiles {
             process_projectile_action(action);
+        }
+        for action in rollbacks {
+            process_rollback_action(action);
         }
     }
     if !shutdown_settled {
@@ -457,7 +858,7 @@ fn end() -> Result<(), Box<dyn Error>> {
 }
 
 fn hook_knife_touch(handle: i32) -> bool {
-    let hooked = touch::hook(handle, on_touch);
+    let hooked = funrounds_native::HookEntityTouchPre(handle, on_touch);
     if hooked {
         TOUCH_HOOKED.store(true, Ordering::Release);
     }
@@ -625,13 +1026,16 @@ unsafe extern "C" fn on_player_death_pre(_name: &Str, event: usize, _dont_broadc
         }
         let victim = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
         let attacker = s2sdk::GetEventPlayerSlot(event, &Str::from_str("attacker"));
+        let replay_weapon = damage::internal_damage_death_weapon(victim, attacker);
         let matches_knife_impact = {
             let guard = RUNTIME.try_lock().expect("FunRounds runtime busy or poisoned in death pre hook");
             let Some(runtime) = guard.as_ref() else { return };
             assert!(runtime.on_game_thread(), "FunRounds death pre hook is not on the game thread");
             runtime.active_knife_death(victim, attacker)
         };
-        if matches_knife_impact {
+        if let Some(weapon) = replay_weapon {
+            s2sdk::SetEventString(event, &Str::from_str("weapon"), &Str::from_str(&weapon));
+        } else if matches_knife_impact {
             s2sdk::SetEventString(event, &Str::from_str("weapon"), &Str::from_str("knife"));
         }
     }));
@@ -651,8 +1055,11 @@ unsafe extern "C" fn on_damage(
     hit_group: i32,
     traced_head: bool,
     damage: f32,
+    damage_type: u32,
     multiplier: &mut f32,
     mark_headshot: &mut bool,
+    weapon: i32,
+    skip_plugin_rules: bool,
 ) -> i32 {
     damage_decision(
         damage::Damage {
@@ -663,30 +1070,38 @@ unsafe extern "C" fn on_damage(
             hit_group,
             traced_head,
             amount: damage,
-            damage_type: None,
+            damage_type,
+            weapon,
+            weapon_class: None,
+            skip_plugin_rules,
         },
         multiplier,
         mark_headshot,
     )
 }
 
-fn damage_decision(context: damage::Damage, multiplier: &mut f32, mark_headshot: &mut bool) -> i32 {
+fn damage_decision(mut context: damage::Damage, multiplier: &mut f32, mark_headshot: &mut bool) -> i32 {
     *multiplier = 1.0;
     *mark_headshot = false;
     catch_unwind(AssertUnwindSafe(|| {
         if !callbacks_active() {
             return 0;
         }
+        if damage::apply_internal_damage(&context, mark_headshot) {
+            return 0;
+        }
         let mut guard = RUNTIME.try_lock().expect("FunRounds damage runtime busy or poisoned");
         let Some(runtime) = guard.as_mut() else { return 0 };
         assert!(runtime.on_game_thread(), "FunRounds damage callback is not on game thread");
+        context.weapon_class = damage::capture_weapon_class(context.weapon, context.inflictor, context.weapon_kind);
         if runtime.blocks_native_bomb_damage(context.inflictor) {
             return 1;
         }
-        let Some((projectile_scale, projectile_head)) = runtime.projectile_damage(&context) else {
+        let Some((projectile_scale, projectile_head)) = runtime.projectile_damage(&mut context) else {
             return 1;
         };
-        if !runtime.special_headshots() && !runtime.no_headshots() && !runtime.classic_round() {
+        let headshots = runtime.headshots();
+        if headshots == funrounds_core::Headshots::Normal && !runtime.classic_round() {
             *mark_headshot = projectile_head;
             return 0;
         }
@@ -694,11 +1109,14 @@ fn damage_decision(context: damage::Damage, multiplier: &mut f32, mark_headshot:
             return 1;
         }
         let players = game::DamagePlayers::resolve(context.victim, context.attacker);
-        let attributed = players.attacker.is_some();
-        if runtime.no_headshots() && context.is_head_hit(attributed) {
+        if runtime.combat_protected(&players) {
             return 1;
         }
-        let (action, scale, headshot) = if runtime.special_headshots() {
+        let attributed = players.attacker.is_some();
+        if headshots == funrounds_core::Headshots::Disabled && context.is_head_hit(attributed) {
+            return 1;
+        }
+        let (action, scale, headshot) = if headshots == funrounds_core::Headshots::Only {
             context.headshot_rule(attributed, runtime.classic_round())
         } else {
             (0, 1.0, false)
@@ -709,7 +1127,37 @@ fn damage_decision(context: damage::Damage, multiplier: &mut f32, mark_headshot:
         let Some(common) = runtime.classic_damage_scale(&context, &players) else {
             return 1;
         };
-        *multiplier = scale * common * projectile_scale;
+        let combined_scale = scale * common * projectile_scale;
+        let mut effective_damage = context.amount * combined_scale;
+        let mut damage_scale = combined_scale;
+        let mut random_heal = 0;
+        if let Some(result) = runtime.random_damage_roll(&context, &players, effective_damage) {
+            effective_damage = result.amount;
+            random_heal = result.attacker_heal;
+            damage_scale = effective_damage / context.amount;
+        }
+        if !effective_damage.is_finite() || effective_damage == 0.0 {
+            return 1;
+        }
+        if runtime.delay_damage_with_heal(
+            &context,
+            &players,
+            effective_damage,
+            delayed_headshot_marker(&context, attributed, headshot, projectile_head),
+            random_heal,
+        ) {
+            return 1;
+        }
+        if runtime.combat_damage(&context, &players, damage_scale, true) {
+            return 1;
+        }
+        if random_heal > 0
+            && let Err(error) = runtime.queue_random_heal(&players, random_heal)
+        {
+            runtime.handle_fault(error);
+            return 1;
+        }
+        *multiplier = damage_scale;
         *mark_headshot = headshot || projectile_head;
         action
     }))
@@ -719,32 +1167,8 @@ fn damage_decision(context: damage::Damage, multiplier: &mut f32, mark_headshot:
     })
 }
 
-unsafe extern "C" fn on_damage_v2(
-    victim: i32,
-    attacker: i32,
-    inflictor: i32,
-    weapon_kind: i32,
-    hit_group: i32,
-    traced_head: bool,
-    damage: f32,
-    damage_type: u32,
-    multiplier: &mut f32,
-    mark_headshot: &mut bool,
-) -> i32 {
-    damage_decision(
-        damage::Damage {
-            victim,
-            attacker,
-            inflictor,
-            weapon_kind,
-            hit_group,
-            traced_head,
-            amount: damage,
-            damage_type: Some(damage_type),
-        },
-        multiplier,
-        mark_headshot,
-    )
+fn delayed_headshot_marker(context: &damage::Damage, attributed: bool, rule_headshot: bool, projectile_head: bool) -> bool {
+    context.is_head_hit(attributed) || rule_headshot || projectile_head
 }
 
 unsafe extern "C" fn on_chat(slot: i32, context: ConCommandContext, args: &Arr<Str>) -> ResultType {
@@ -885,7 +1309,10 @@ mod tests {
                     hit_group: 0,
                     traced_head: false,
                     amount: 1.0,
-                    damage_type: None,
+                    damage_type: 0,
+                    weapon: -1,
+                    weapon_class: None,
+                    skip_plugin_rules: false,
                 },
                 &mut multiplier,
                 &mut headshot

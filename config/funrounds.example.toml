@@ -1,93 +1,163 @@
-# 通用配置示例
-# 保留一个基础模式；可选开关默认关闭，按字段注释调整。
-# 布尔值取 true / false；下列模式功能开关省略时默认为 false。
-# 小数必须是有限数值。标注“省略不覆盖”的字段不主动改写对应设置。
+# 通用示例：只启用一个基础模式，不预设额外玩法。
+# 未填写的字段使用 [defaults] 或内置默认值；服务器设置型字段标注为“省略时不覆盖”。
+# TOML 会拒绝未知字段；配置至少需要一个启用的模式。
 
-# 全局
-# diagnostics：诊断日志开关，true / false，默认 false。
+# diagnostics：是否记录诊断日志，布尔值，默认 false。
 diagnostics = false
-# modes：模式数组，实际配置使用 [[modes]] 定义每个模式。
+
+# [defaults] 可为所有模式设置逐字段默认值，模式自身的字段优先；仅接受玩法字段。
+# id、enabled、name、description 不能放入 [defaults]。
+# 对 color、self_damage、taser_charge、friction、recoil_view、reflect_damage、view_punch_decay、
+# fov、hide_crosshair_after、c4_count、bomb、respawn 等可选继承项，false 可清除继承值。
+# self_damage、weapon_damage、bomb、respawn 子项可逐字段继承；bomb 更换 kind 时使用该类型的默认时间。
+# 示例（保持注释即不生效）：
+# [defaults]
+# gravity = 1.0
+
 [[modes]]
 
-# 模式标识与装备（必填）
-# id：唯一标识，例如 "example"；仅允许英文字母、数字、下划线与连字符。
+# id：必填、非空且唯一；仅 ASCII 字母、数字、下划线和连字符。
 id = "example"
-# enabled：是否加入模式池，true / false；实际配置至少启用一个模式。
+# enabled：必填布尔值；true 时该模式进入可选池。
 enabled = true
-# name：显示名称，例如 "示例名称"；非空且不含换行。
+# name、description：必填非空单行文本，分别用于模式名称和说明。
 name = "通用示例"
-# description：显示说明，例如 "功能效果说明"；非空且不含换行。
-description = "演示装备与基础属性，可按需调整功能"
-# weapons：非空武器候选数组；例如单个候选 "weapon_famas"，须属于支持的 CS2 武器白名单。
+description = "演示基础配装与玩家属性"
+
+# weapons：受支持的 CS2 装备候选数组，按主武器、副武器和额外装备分类抽取；不接受 weapon_knife，刀具用 give_knife 设置。
 weapons = ["weapon_famas", "weapon_p250"]
-# 普通配装按主武器、副武器、刀、额外装备分类，各类从候选中抽取一件；未列出的类别不发放。
-
-# 基础属性（必填）
-# health：初始生命，整数 1～10000，例如 120。
+# health：初始生命，整数 1～10000，默认 100。
 health = 120
-# armor：初始护甲，整数 0～255，例如 50。
+# armor：初始护甲，整数 0～255，默认 0。
 armor = 50
-# gravity：重力倍率，小数，范围 (0, 10]；1.0 为正常重力，小于 1.0 降低重力。
+# gravity：重力倍率，有限数值且 0 < value <= 10，默认 1.0（正常重力）。
 gravity = 1.0
+# clear_weapons：发放候选前清理武器的队伍；none / all / terrorists / counter_terrorists，默认 none。
+clear_weapons = "all"
+# give_weapons：发放 weapons 候选的队伍；取值同 clear_weapons，默认 none。
+give_weapons = "all"
 
-# 移动与射击（可选）
-# bunnyhop：自动连跳及相关移动参数开关，true / false。
-bunnyhop = false
-# friction：地面摩擦，小数 >= 0，例如 2.0；省略不覆盖。
-# friction = 2.0
-# no_spread_recoil：抑制枪械散布与后坐力，true / false。
-no_spread_recoil = false
-# recoil_view：开枪时的镜头震动强度，小数 >= 0，例如 2.0；省略不追加震动。
-# recoil_view = 2.0
-# view_punch_decay：镜头冲击衰减参数，小数 >= 0；省略不覆盖，实际表现由引擎决定。
-# view_punch_decay = 5.0
-# blue：蓝色外观开关，true / false。
-blue = false
+# 以下可选玩法默认关闭，除单独说明外布尔值使用 true / false。
+# speed：玩家移动速度倍率，有限数值且 0 < value <= 10，默认 1.0。
+# speed = 1.0
+# helmet：是否发放头盔；未设置时 armor > 0 则默认 true。
+# helmet = true
+# give_knife：发放刀具的队伍；none / all / terrorists / counter_terrorists，默认 none。
+# give_knife = "all"
+# color：玩家渲染颜色，三个 0～255 的 RGB 整数组成的数组；false 清除继承值。
+# color = [255, 255, 255]
 
-# 弹药与配装（可选）
-# unlimited_reserve：无限备用弹药，仍需换弹，true / false。
-unlimited_reserve = false
-# unlimited_clip：无限弹匣，true / false；候选必须含 weapon_taser，优先于 unlimited_reserve。
-unlimited_clip = false
-# taser_charge：电击枪充能间隔，单位秒，小数 >= 0；候选必须含 weapon_taser，省略不覆盖。
+# headshots：爆头规则；normal 使用普通规则，only 仅爆头造成伤害，disabled 禁止爆头伤害；默认 normal。
+# headshots = "normal"
+# ammo：弹药规则；inherit 保留服务端行为，reserve 无限备弹，clip 无限弹匣，single_shot 每个弹匣只装一发；默认 inherit。
+# clip 需要 weapons 包含 weapon_taser。
+# ammo = "inherit"
+# self_damage：false 关闭/清除；miss_penalty 对未命中应用自伤规则；native 使用游戏自伤设置。
+# native 需要有限非负 amount；miss_penalty 不接受 amount。可写为：
+# self_damage = { kind = "miss_penalty" }
+# self_damage = { kind = "native", amount = 0.1 }
+# weapon_damage：电击枪与刀的伤害倍率，字段可分别设置，均为有限非负数，默认均为 1.0。
+# weapon_damage = { taser = 1.0, knife = 1.0 }
+# taser_charge：电击枪充能间隔秒数，有限非负数；需要 weapon_taser 候选，false 清除继承值。
 # taser_charge = 12.0
-# replenish_he：投掷后补充高爆手雷，true / false；额外装备候选必须只有 weapon_hegrenade。
-replenish_he = false
-# replenish_decoy：投掷后补充诱饵弹，true / false；额外装备候选必须只有 weapon_decoy。
-replenish_decoy = false
-# random_loadout：个人随机配装，true / false；从候选独立抽取两次并附带刀，候选不能含刀。
-random_loadout = false
-# kill_loadout：击杀后随机换武器，true / false；初始配装为 Glock 与刀，候选须含 weapon_glock 且不能含刀。
-kill_loadout = false
+
+# bunnyhop：启用自动连跳及相关移动设置；省略时不覆盖服务端设置。
+# bunnyhop = true
+# friction：地面摩擦参数，有限非负数；省略时不覆盖服务端设置，false 清除继承值。
+# friction = 2.0
+# no_spread：是否关闭武器散布；省略时不覆盖服务端设置。
+# no_spread = true
+# no_recoil：是否抑制枪械后坐力，默认 false。
+# no_recoil = true
+# recoil_view：开火时添加的镜头冲击强度，有限非负数；省略时不覆盖，false 清除继承值。
+# recoil_view = 1.0
+# fast_switch：是否启用快速切换武器，默认 false。
+# fast_switch = true
+# replenish：投掷后补充的手雷类型数组；可选 he / flash / smoke / decoy / molotov / incendiary，默认空数组。
+# 每项都要求 weapons 中包含对应的手雷候选。
+# replenish = ["he"]
+
+# random_loadout：是否从 weapons 候选抽取随机配装，默认 false；候选需非空。
+# random_loadout = true
+# suicide：是否启用玩家自爆玩法，默认 false；购买 C4 另由 c4_buy 控制。
+# suicide = true
+# random_damage：是否随机调整战斗伤害，默认 false。
+# random_damage = true
+# kill_loadout：击杀后是否更换为随机候选武器，默认 false；候选需非空且包含 weapon_glock。
 # random_loadout 与 kill_loadout 不能同时启用。
+# kill_loadout = true
+# lifesteal：是否按造成的伤害恢复生命和护甲，默认 false。
+# lifesteal = true
+# reflect_damage：反射给攻击者的伤害倍率，有限非负数；false 清除继承值。
+# reflect_damage = 0.1
+# energy_shield：是否将护甲用作可吸收攻击并逐步恢复的能量护盾，默认 false。
+# energy_shield = true
+# combat_protection：出生时及真人玩家击杀后是否获得各 0.5 秒的伤害保护，默认 false。
+# combat_protection = true
+# translucent：是否启用半透明外观，默认 false。
+# translucent = true
+# delayed_damage：是否延后结算玩家受到的伤害，默认 false。
+# delayed_damage = true
+# win_condition：回合胜负规则；native 使用游戏默认规则，team_deathmatch 按团队击杀计分；默认 native。
+# team_deathmatch 不能与 teammates_as_enemies = true 同时使用。
+# win_condition = "native"
 
-# 战斗规则（可选）
-# lifesteal：造成伤害后恢复自身生命与护甲，true / false。
-lifesteal = false
-# headshots_only：仅爆头造成有效伤害，true / false。
-headshots_only = false
-# no_headshots：禁止爆头伤害，true / false；不能与 headshots_only 同时启用。
-no_headshots = false
-# miss_damage：未命中时自身扣血及对应特殊伤害规则，true / false。
-miss_damage = false
-# team_deathmatch：团队击杀计分与重生规则，true / false。
-team_deathmatch = false
-# dodgeball：诱饵弹命中触发躲避球伤害，true / false；候选须含 weapon_decoy。
-dodgeball = false
-# throwing_knives：飞刀投射与命中伤害，true / false；候选须含 weapon_knife。
-throwing_knives = false
+# bomb：特殊炸弹设置子表；省略或 false 时不启用。kind 可选 native（原生 C4）、chicken（鸡携带）或 carry（可拾取携带），默认 native。
+# 各时间是有限非负秒数，默认安放 3、爆炸 45、有拆弹器拆除 5、无拆弹器拆除 10；bounce 默认 false。
+# 可用内联表设置，避免后续模式字段进入子表：
+# bomb = { kind = "native", plant_time = 3.0, explode_time = 45.0, defuse_kit_time = 5.0, defuse_time = 10.0, bounce = false }
 
-# 炸弹子表（可选，实际配置使用 [modes.bomb]；省略子表不启用特殊炸弹设置）
-# [modes.bomb]
-# kind：子表必填，取 "native"（原生）、"chicken"（鸡形）或 "carry"（可携带）。
-# kind = "native"
-# plant_time：安放耗时，单位秒，小数 >= 0，默认 3.0。
-# plant_time = 3.0
-# explode_time：引爆倒计时，单位秒，小数 >= 0，默认 45.0；0.0 表示立即引爆。
-# explode_time = 45.0
-# defuse_kit_time：有拆弹器时的拆除耗时，单位秒，小数 >= 0，默认 5.0。
-# defuse_kit_time = 5.0
-# defuse_time：无拆弹器时的拆除耗时，单位秒，小数 >= 0，默认 10.0。
-# defuse_time = 10.0
-# bounce：炸弹弹跳开关，true / false，默认 false。
-# bounce = false
+# dodgeball：诱饵弹命中时启用躲避球效果，默认 false；需要 weapon_decoy 候选。
+# dodgeball = true
+# throwing_knives：是否启用投掷刀具玩法，默认 false；give_knife 必须指定接收队伍。
+# throwing_knives = true
+# view_punch_decay：镜头冲击衰减值，有限非负数；省略时不覆盖服务端设置，false 清除继承值。
+# view_punch_decay = 5.0
+# no_scope：是否限制瞄准镜使用，默认 false。
+# no_scope = true
+# fov：视野角度，整数 1～179；false 清除继承值。
+# fov = 90
+# hide_crosshair_after：隐藏准星的延迟秒数，有限非负数；false 清除继承值。
+# hide_crosshair_after = 1.0
+
+# health_damage：是否根据攻击者当前生命调整造成的伤害，默认 false。
+# health_damage = true
+# health_speed：是否根据玩家当前生命调整移动速度，默认 false。
+# health_speed = true
+# health_decay：是否逐步衰减高于模式初始生命的部分，默认 false。
+# health_decay = true
+# self_push：开火时是否产生自身反冲推力，默认 false。
+# self_push = true
+# periodic_speed：是否定期改变移动速度，默认 false。
+# periodic_speed = true
+# periodic_gravity：是否定期改变重力，默认 false。
+# periodic_gravity = true
+
+# c4_count：T 队普通 C4 数量上限，整数 0～255；至多给可用的 T 队玩家每人分配 1 个。
+# 设为 0 会移除普通 C4 且不再分配；false 清除继承值。
+# c4_count = 1
+# c4_buy：是否允许玩家使用 fr_c4 / !c4 购买 C4，默认 false。
+# c4_buy = true
+# round_respawn：是否在新回合开始时复活玩家，默认 false。
+# round_respawn = true
+# respawn：按队伍延迟复活的子表；team 必填，可取 all / terrorists / counter_terrorists（不能为 none）。
+# delay_seconds 为有限非负秒数，默认 3.0。false 可清除继承子表。
+# 使用内联表后，后续字段仍属于当前模式：
+# respawn = { team = "all", delay_seconds = 3.0 }
+
+# buy_time：购买时长，有限非负秒数；省略时不覆盖服务端设置。
+# buy_time = 30.0
+# buy_limit：玩家现金上限，整数 0～4294967295；省略时不覆盖服务端设置。
+# buy_limit = 16000
+# friendly_fire_scale：队友伤害倍率，有限数值 0～1；0 关闭队友伤害，省略时不覆盖服务端设置。
+# friendly_fire_scale = 0.0
+# teammates_as_enemies：是否将队友视为敌人；省略时不覆盖服务端设置。
+# teammates_as_enemies = false
+# random_spawn：启用随机出生点的队伍；none / all / terrorists / counter_terrorists，省略时不覆盖服务端设置。
+# random_spawn = "all"
+# drop_weapons：玩家死亡时是否掉落武器；省略时不覆盖服务端设置。
+# drop_weapons = true
+# drop_grenades：玩家死亡时是否掉落手雷；省略时不覆盖服务端设置。
+# drop_grenades = true
+# fall_damage_scale：坠落伤害倍率，有限非负数；省略时不覆盖服务端设置。
+# fall_damage_scale = 1.0
