@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Mai Ooizumi
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::preferences::Knock;
+use crate::{bombs::WireColor, preferences::Knock};
 use funrounds_core::NextMode;
 
 pub const NAMES: &[&str] = &[
@@ -15,8 +15,11 @@ pub const NAMES: &[&str] = &[
     "fr_knock",
     "fr_c4",
     "fr_suicide",
+    "fr_nvg",
+    "fr_wire",
+    "fr_chicken",
+    "fr_healthshot",
 ];
-pub const HELP: &str = "fr_info / !frinfo — 查看当前模式\nfr_help / !frhelp — 查看帮助\nfr_knock [0|1|2] / !knock [0|1|2] — 自推：0关闭／1地面及空中／2仅空中（默认）；无参数依次切换\nfr_c4 / !c4 — 允许普通购买时，用10000现金购买C4\nfr_suicide / !suicide — 允许自爆时，使用已有C4或购买后自爆";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
@@ -29,6 +32,10 @@ pub enum Command {
     Help,
     C4,
     Suicide,
+    Chicken,
+    Healthshot,
+    NightVision,
+    Wire(WireColor),
     Knock(Option<Knock>),
 }
 
@@ -37,6 +44,10 @@ impl Command {
         match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
             ["fr_c4"] => Ok(Self::C4),
             ["fr_suicide"] => Ok(Self::Suicide),
+            ["fr_chicken"] => Ok(Self::Chicken),
+            ["fr_healthshot"] => Ok(Self::Healthshot),
+            ["fr_nvg"] => Ok(Self::NightVision),
+            ["fr_wire", color] => WireColor::parse(color).map(Self::Wire).ok_or("command.wire_usage"),
             ["fr_status"] => Ok(Self::Status),
             ["fr_list"] => Ok(Self::List),
             ["fr_info"] => Ok(Self::Info),
@@ -50,17 +61,31 @@ impl Command {
             ["fr_enable", "1"] => Ok(Self::Enable(true)),
             ["fr_next", "random"] => Ok(Self::Next(NextMode::Random)),
             ["fr_next", id] if !id.is_empty() => Ok(Self::Next(NextMode::Id((*id).into()))),
-            _ => Err("usage: fr_status | fr_list | fr_next <id|random> | fr_reload | fr_enable <0|1> | fr_info | fr_help | fr_knock [0|1|2]"),
+            _ => Err("command.usage"),
         }
     }
 
     pub fn permits_player(&self) -> bool {
-        matches!(self, Self::Info | Self::Help | Self::Knock(_) | Self::C4 | Self::Suicide)
+        matches!(
+            self,
+            Self::Info
+                | Self::Help
+                | Self::Knock(_)
+                | Self::C4
+                | Self::Suicide
+                | Self::Chicken
+                | Self::Healthshot
+                | Self::NightVision
+                | Self::Wire(_)
+        )
     }
 }
 
 pub fn client_executable(name: &str) -> bool {
-    matches!(name, "fr_info" | "fr_help" | "fr_knock" | "fr_c4" | "fr_suicide")
+    matches!(
+        name,
+        "fr_info" | "fr_help" | "fr_knock" | "fr_c4" | "fr_suicide" | "fr_chicken" | "fr_healthshot" | "fr_nvg" | "fr_wire"
+    )
 }
 
 pub fn status_reply_parts(message: &str) -> impl Iterator<Item = &str> {
@@ -94,10 +119,14 @@ pub fn parse_chat(args: &[String], chat_context: bool) -> Option<Result<Command,
     let mut words = text.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
     let first = words.first()?;
     let name = match (chat_context, first.as_str()) {
-        (true, "frinfo") | (false, "!frinfo") => "fr_info",
-        (true, "frhelp") | (false, "!frhelp") => "fr_help",
+        (true, "info" | "frinfo") | (false, "!info" | "!frinfo") => "fr_info",
+        (true, "help" | "frhelp") | (false, "!help" | "!frhelp") => "fr_help",
         (true, "c4") | (false, "!c4") => "fr_c4",
         (true, "suicide") | (false, "!suicide") => "fr_suicide",
+        (true, "chicken") | (false, "!chicken") => "fr_chicken",
+        (true, "healthshot") | (false, "!healthshot") => "fr_healthshot",
+        (true, "nvg") | (false, "!nvg") => "fr_nvg",
+        (true, "wire") | (false, "!wire") => "fr_wire",
         (true, "knock") | (false, "!knock") => "fr_knock",
         _ => return None,
     };
@@ -127,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_aliases_accept_only_the_three_player_commands_and_never_console_text() {
+    fn chat_aliases_accept_player_commands_and_reject_console_text() {
         let args = |words: &[&str]| words.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
         assert_eq!(parse_chat(&args(&["frinfo"]), true), Some(Ok(Command::Info)));
         assert_eq!(parse_chat(&args(&["say", "!frhelp"]), false), Some(Ok(Command::Help)));
@@ -154,17 +183,30 @@ mod tests {
     }
 
     #[test]
-    fn help_shows_each_player_command_on_its_own_line() {
-        assert_eq!(
-            HELP.lines().collect::<Vec<_>>(),
-            [
-                "fr_info / !frinfo — 查看当前模式",
-                "fr_help / !frhelp — 查看帮助",
-                "fr_knock [0|1|2] / !knock [0|1|2] — 自推：0关闭／1地面及空中／2仅空中（默认）；无参数依次切换",
-                "fr_c4 / !c4 — 允许普通购买时，用10000现金购买C4",
-                "fr_suicide / !suicide — 允许自爆时，使用已有C4或购买后自爆",
-            ]
-        );
+    fn localized_help_lists_each_player_command_on_its_own_line() {
+        for language in ["zh-CN", "en"] {
+            let texts = funrounds_core::TextBundle::embedded(language).unwrap();
+            let help = texts.render(language, "help.body", &[]).unwrap();
+            let lines = help.lines().collect::<Vec<_>>();
+            for command in [
+                "fr_info",
+                "fr_help",
+                "fr_knock",
+                "fr_c4",
+                "fr_suicide",
+                "fr_chicken",
+                "fr_healthshot",
+                "fr_nvg",
+                "fr_wire",
+            ] {
+                assert_eq!(
+                    lines.iter().filter(|line| line.starts_with(&format!("{command} "))).count(),
+                    1,
+                    "{language}: {command}"
+                );
+            }
+            assert_eq!(lines.len(), 9);
+        }
     }
 
     fn parse(args: &[&str]) -> Result<Command, &'static str> {
@@ -190,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn players_can_only_read_information() {
+    fn players_cannot_execute_round_management_commands() {
         assert!(parse(&["fr_info"]).unwrap().permits_player());
         assert!(client_executable("fr_info"));
         for args in [

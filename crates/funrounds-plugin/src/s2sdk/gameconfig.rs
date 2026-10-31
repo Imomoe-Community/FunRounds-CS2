@@ -1,4 +1,5 @@
 // Generated from s2sdk.pplugin (group: gameconfig)
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 #[allow(unused_imports)]
 use super::aliases::*;
@@ -17,7 +18,7 @@ use std::sync::RwLock;
 /// * `paths` - (string[]): The paths to the game configuration file to be loaded.
 ///
 /// # Returns - (uint32):
-/// A id to the loaded game configuration object, or -1 if loading fails.
+/// A id to the loaded game configuration object, or 0 if loading fails.
 #[track_caller]
 #[allow(dead_code, non_snake_case)]
 pub fn LoadGameConfigFile(paths: &Arr<Str>) -> ConfigId {

@@ -18,6 +18,32 @@ const BUNNYHOP: &[(&str, f32)] = &[
     ("sv_staminalandcost", 0.0),
 ];
 const ACCURATE: &[(&str, f32)] = &[("weapon_accuracy_nospread", 1.0)];
+const PURCHASE_PARAMETERS: &[&str] = &["mp_buytime", "mp_maxmoney", "sv_buy_status_override", "mp_buy_anywhere"];
+
+fn is_purchase_parameter(name: &str) -> bool {
+    PURCHASE_PARAMETERS.contains(&name)
+}
+
+fn should_restore_prestart_purchase(name: &str, retained: &[&str]) -> bool {
+    is_purchase_parameter(name) && !retained.contains(&name)
+}
+
+fn prestart_purchase_settings(mode: Option<&Mode>) -> Vec<(&'static str, String)> {
+    mode.map(settings)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(name, _)| is_purchase_parameter(name))
+        .collect()
+}
+
+fn round_settings(settings: Vec<(&'static str, String)>, purchase_prepared: bool) -> (Vec<&'static str>, Vec<(&'static str, String)>) {
+    let retained = settings.iter().map(|(name, _)| *name).collect();
+    let writes = settings
+        .into_iter()
+        .filter(|(name, _)| !purchase_prepared || !is_purchase_parameter(name))
+        .collect();
+    (retained, writes)
+}
 
 pub fn settings(mode: &Mode) -> Vec<(&'static str, String)> {
     let mut settings = Vec::new();
@@ -26,6 +52,12 @@ pub fn settings(mode: &Mode) -> Vec<(&'static str, String)> {
     }
     if let Some(buy_limit) = mode.buy_limit {
         settings.push(("mp_maxmoney", buy_limit.to_string()));
+    }
+    if let Some(access) = mode.buy_access {
+        settings.push(("sv_buy_status_override", buy_access_value(access).to_string()));
+    }
+    if let Some(teams) = mode.buy_anywhere {
+        settings.push(("mp_buy_anywhere", buy_anywhere_value(teams).to_string()));
     }
     if let Some(scale) = mode.friendly_fire_scale {
         let enabled = if scale > 0.0 { "1" } else { "0" };
@@ -51,11 +83,23 @@ pub fn settings(mode: &Mode) -> Vec<(&'static str, String)> {
             .to_owned(),
         ));
     }
+    if let Some(hide) = mode.hide_radar {
+        settings.push(("sv_disable_radar", if hide { "1" } else { "0" }.into()));
+    }
+    if let Some(hide) = mode.hide_player_identification {
+        settings.extend([
+            ("mp_playerid", if hide { "2" } else { "0" }.into()),
+            ("sv_teamid_overhead", if hide { "0" } else { "1" }.into()),
+        ]);
+    }
     if let Some(drop) = mode.drop_weapons {
         settings.push(("mp_death_drop_gun", if drop { "3" } else { "0" }.to_owned()));
     }
     if let Some(drop) = mode.drop_grenades {
         settings.push(("mp_death_drop_grenade", if drop { "2" } else { "0" }.to_owned()));
+    }
+    if let Some(shoot) = mode.shoot_dropped_grenades {
+        settings.push(("mp_shoot_dropped_grenades", if shoot { "1" } else { "0" }.to_owned()));
     }
     if let Some(scale) = mode.fall_damage_scale {
         settings.push(("sv_falldamage_scale", scale.to_string()));
@@ -93,6 +137,12 @@ pub fn settings(mode: &Mode) -> Vec<(&'static str, String)> {
     if let Some(friction) = mode.friction {
         settings.push(("sv_friction", friction.to_string()));
     }
+    if let Some(scale) = mode.time_scale {
+        settings.push(("host_timescale", scale.to_string()));
+    }
+    if let Some(acceleration) = mode.ground_reverse.map(|_| 0.0).or(mode.ground_acceleration) {
+        settings.push(("sv_accelerate", acceleration.to_string()));
+    }
     if let Some(enabled) = mode.no_spread {
         settings.extend(
             ACCURATE
@@ -106,11 +156,31 @@ pub fn settings(mode: &Mode) -> Vec<(&'static str, String)> {
     settings
 }
 
+fn buy_access_value(teams: TeamFilter) -> u8 {
+    match teams {
+        TeamFilter::All => 0,
+        TeamFilter::CounterTerrorists => 1,
+        TeamFilter::Terrorists => 2,
+        TeamFilter::None => 3,
+    }
+}
+
+fn buy_anywhere_value(teams: TeamFilter) -> u8 {
+    match teams {
+        TeamFilter::None => 0,
+        TeamFilter::All => 1,
+        TeamFilter::Terrorists => 2,
+        TeamFilter::CounterTerrorists => 3,
+    }
+}
+
 fn parameter_fault(name: &str, message: String) -> Fault {
     let mechanism = match name {
         "sv_infinite_ammo" => Mechanism::Ammo,
         "mp_taser_recharge_time" => Mechanism::TaserCharge,
         "sv_friction" => Mechanism::Friction,
+        "host_timescale" => Mechanism::TimeScale,
+        "sv_accelerate" => Mechanism::GroundAcceleration,
         "weapon_accuracy_nospread" => Mechanism::NoSpread,
         "mp_weapon_self_inflict_amount" => Mechanism::SelfDamage,
         "mp_give_player_c4" => Mechanism::C4Assignment,
@@ -119,14 +189,20 @@ fn parameter_fault(name: &str, message: String) -> Fault {
         "view_punch_decay" => Mechanism::ViewPunchDecay,
         "mp_buytime" => Mechanism::BuyTime,
         "mp_maxmoney" => Mechanism::BuyLimit,
+        "sv_buy_status_override" => Mechanism::BuyAccess,
+        "mp_buy_anywhere" => Mechanism::BuyAnywhere,
         "mp_friendlyfire" | "ff_damage_reduction_bullets" | "ff_damage_reduction_grenade" | "ff_damage_reduction_other" => {
             Mechanism::FriendlyFireScale
         }
         "mp_teammates_are_enemies" => Mechanism::TeammatesAsEnemies,
         "mp_randomspawn" => Mechanism::RandomSpawn,
+        "sv_disable_radar" => Mechanism::HideRadar,
+        "mp_playerid" | "sv_teamid_overhead" => Mechanism::HidePlayerIdentification,
         "mp_death_drop_gun" => Mechanism::DropWeapons,
         "mp_death_drop_grenade" => Mechanism::DropGrenades,
+        "mp_shoot_dropped_grenades" => Mechanism::ShootDroppedGrenades,
         "sv_falldamage_scale" => Mechanism::FallDamageScale,
+        "healthshot_health" | "healthshot_allow_use_at_full" => Mechanism::Healthshot,
         name if BUNNYHOP.iter().any(|(setting, _)| *setting == name) => Mechanism::Bunnyhop,
         _ => return Fault::global(message),
     };
@@ -134,7 +210,21 @@ fn parameter_fault(name: &str, message: String) -> Fault {
 }
 
 fn replicates_clients(name: &str) -> bool {
-    matches!(name, "weapon_accuracy_nospread" | "sv_falldamage_scale" | "view_punch_decay")
+    matches!(
+        name,
+        "weapon_accuracy_nospread"
+            | "host_timescale"
+            | "sv_accelerate"
+            | "sv_falldamage_scale"
+            | "view_punch_decay"
+            | "sv_disable_radar"
+            | "mp_playerid"
+            | "sv_teamid_overhead"
+            | "sv_buy_status_override"
+            | "mp_buy_anywhere"
+            | "mp_buytime"
+            | "mp_maxmoney"
+    )
 }
 
 fn convar_probe(names: impl IntoIterator<Item = &'static str>) -> Probe {
@@ -177,12 +267,15 @@ fn matches_value(actual: &str, expected: f32) -> bool {
 pub fn capabilities(weapon_fire: bool, round_prestart: bool, reasons: &mut Vec<String>) -> Capabilities {
     let mut live_player = Probe::default();
     crate::capability::imports!(live_player;
-        __s2sdk_GetMaxClients, __s2sdk_IsClientInGame, __s2sdk_IsClientAlive, __s2sdk_GetClientPawn,
+        __s2sdk_GetMaxClients, __s2sdk_IsClientInGame, __s2sdk_IsClientAlive, __s2sdk_GetClientHealth, __s2sdk_GetClientPawn,
+        __s2sdk_GetEntityClassname,
         __s2sdk_PlayerSlotToEntHandle, __s2sdk_EntPointerToEntHandle, __s2sdk_IsValidEntHandle, __s2sdk_EntHandleToEntPointer,
+        __s2sdk_GetSchemaOffset, __s2sdk_GetEntSchema2, __s2sdk_GetEntSchemaEnt2,
     );
+    live_player.schema("CBasePlayerPawn", "m_hController");
     let mut equipment = live_player.clone();
     crate::capability::imports!(equipment;
-        __s2sdk_GetClientTeam, __s2sdk_GetClientWeapons, __s2sdk_GetClientActiveWeapon, __s2sdk_GetEntityClassname,
+        __s2sdk_GetClientTeam, __s2sdk_GetClientWeapons, __s2sdk_GetClientActiveWeapon, __s2sdk_GetEntityClassname, __s2sdk_GetEntityOwner,
         __s2sdk_GiveNamedItem, __s2sdk_RemoveWeapon, __s2sdk_RemoveEntity, __s2sdk_SelectWeapon, __s2sdk_GetEntSchema2,
     );
     let clear_weapons = equipment.clone();
@@ -214,6 +307,13 @@ pub fn capabilities(weapon_fire: bool, round_prestart: bool, reasons: &mut Vec<S
     let mut c4_assignment = convar_probe(["mp_give_player_c4"]);
     c4_assignment.require(round_prestart, "event:round_prestart");
     c4_assignment.include(crate::effects::c4_removal_probe());
+    let mut shoot_dropped_grenades = Probe::default();
+    crate::capability::imports!(shoot_dropped_grenades;
+        __s2sdk_FindConVar, __s2sdk_GetConVarValue, __s2sdk_SetConVarValue,
+    );
+    if shoot_dropped_grenades.available() {
+        shoot_dropped_grenades.include(convar_probe(["mp_shoot_dropped_grenades"]));
+    }
     Capabilities {
         clear_weapons: clear_weapons.record("clear_weapons", reasons),
         give_weapons: give_weapons.clone().record("give_weapons", reasons),
@@ -230,6 +330,13 @@ pub fn capabilities(weapon_fire: bool, round_prestart: bool, reasons: &mut Vec<S
         taser_charge: convar_probe(["mp_taser_recharge_time"]).record("taser_charge", reasons),
         bunnyhop: convar_probe(BUNNYHOP.iter().map(|(name, _)| *name)).record("bunnyhop", reasons),
         friction: convar_probe(["sv_friction"]).record("friction", reasons),
+        time_scale: convar_probe(["host_timescale"]).record("time_scale", reasons),
+        ground_acceleration: convar_probe(["sv_accelerate"]).record("ground_acceleration", reasons),
+        ground_reverse: {
+            let mut probe = convar_probe(["sv_accelerate"]);
+            probe.require(crate::ground_reverse::available(), "native:ground_reverse");
+            probe.record("ground_reverse", reasons)
+        },
         no_spread: no_spread.record("no_spread", reasons),
         no_recoil: no_recoil.record("no_recoil", reasons),
         recoil_view: view.record("recoil_view", reasons),
@@ -250,9 +357,29 @@ pub fn capabilities(weapon_fire: bool, round_prestart: bool, reasons: &mut Vec<S
         view_punch_decay: convar_probe(["view_punch_decay"]).record("view_punch_decay", reasons),
         no_scope: crate::effects::no_scope_probe().record("no_scope", reasons),
         fov: crate::effects::fov_probe().record("fov", reasons),
+        third_person: crate::effects::third_person_probe().record("third_person", reasons),
         hide_crosshair: crate::effects::crosshair_probe().record("hide_crosshair", reasons),
-        buy_time: convar_probe(["mp_buytime"]).record("buy_time", reasons),
-        buy_limit: convar_probe(["mp_maxmoney"]).record("buy_limit", reasons),
+        buy_time: {
+            let mut probe = convar_probe(["mp_buytime"]);
+            probe.require(round_prestart, "event:round_prestart");
+            probe.record("buy_time", reasons)
+        },
+        buy_limit: {
+            let mut probe = convar_probe(["mp_maxmoney"]);
+            probe.require(round_prestart, "event:round_prestart");
+            probe.record("buy_limit", reasons)
+        },
+        money: crate::cash::reward_probe().record("money", reasons),
+        buy_access: {
+            let mut probe = convar_probe(["sv_buy_status_override"]);
+            probe.require(round_prestart, "event:round_prestart");
+            probe.record("buy_access", reasons)
+        },
+        buy_anywhere: {
+            let mut probe = convar_probe(["mp_buy_anywhere"]);
+            probe.require(round_prestart, "event:round_prestart");
+            probe.record("buy_anywhere", reasons)
+        },
         friendly_fire_scale: convar_probe([
             "mp_friendlyfire",
             "ff_damage_reduction_bullets",
@@ -261,10 +388,19 @@ pub fn capabilities(weapon_fire: bool, round_prestart: bool, reasons: &mut Vec<S
         ])
         .record("friendly_fire_scale", reasons),
         teammates_as_enemies: convar_probe(["mp_teammates_are_enemies"]).record("teammates_as_enemies", reasons),
-        random_spawn: convar_probe(["mp_randomspawn"]).record("random_spawn", reasons),
+        random_spawn: {
+            let mut probe = convar_probe(["mp_randomspawn"]);
+            probe.include(crate::random_spawn::capability_probe());
+            probe.record("random_spawn", reasons)
+        },
+        hide_radar: convar_probe(["sv_disable_radar"]).record("hide_radar", reasons),
+        hide_player_identification: convar_probe(["mp_playerid", "sv_teamid_overhead"]).record("hide_player_identification", reasons),
         drop_weapons: convar_probe(["mp_death_drop_gun"]).record("drop_weapons", reasons),
         drop_grenades: convar_probe(["mp_death_drop_grenade"]).record("drop_grenades", reasons),
+        shoot_dropped_grenades: shoot_dropped_grenades.record("shoot_dropped_grenades", reasons),
         fall_damage_scale: convar_probe(["sv_falldamage_scale"]).record("fall_damage_scale", reasons),
+        // Runtime replaces this with its native damage/ignition/schema capability probe.
+        afterburn: false,
         ..Capabilities::default()
     }
 }
@@ -283,12 +419,36 @@ impl Parameters {
     pub fn is_restored(&self) -> bool {
         self.0.is_empty()
     }
+
     pub fn apply(&mut self, mode: &Mode) -> Result<(), Fault> {
-        let settings = settings(mode);
+        self.apply_settings(mode, false)
+    }
+
+    pub fn apply_after_prestart(&mut self, mode: &Mode) -> Result<(), Fault> {
+        self.apply_settings(mode, true)
+    }
+
+    pub fn apply_prestart_purchase(&mut self, mode: Option<&Mode>) -> Result<(), Fault> {
+        let settings = prestart_purchase_settings(mode);
         validate_settings(&settings)?;
         let retained = settings.iter().map(|(name, _)| *name).collect::<Vec<_>>();
-        self.restore_omitted(&retained).map_err(Fault::global)?;
+        self.restore_if(|name| should_restore_prestart_purchase(name, &retained), restore_parameter)
+            .map_err(Fault::global)?;
         for (name, value) in settings {
+            let actual = self.write(name, &value).map_err(|error| parameter_fault(name, error))?;
+            if !same_value(&actual, &value) {
+                return Err(parameter_fault(name, format!("{name} write verification failed")));
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_settings(&mut self, mode: &Mode, purchase_prepared: bool) -> Result<(), Fault> {
+        let settings = settings(mode);
+        validate_settings(&settings)?;
+        let (retained, writes) = round_settings(settings, purchase_prepared);
+        self.restore_omitted(&retained).map_err(Fault::global)?;
+        for (name, value) in writes {
             let actual = self.write(name, &value).map_err(|error| parameter_fault(name, error))?;
             if !same_value(&actual, &value) {
                 return Err(parameter_fault(name, format!("{name} write verification failed")));
@@ -309,6 +469,30 @@ impl Parameters {
     pub fn set_string(&mut self, name: &'static str, value: &str) -> Result<(), Fault> {
         if self.write(name, value).map_err(|error| parameter_fault(name, error))? != value {
             return Err(parameter_fault(name, format!("{name} string write verification failed")));
+        }
+        Ok(())
+    }
+
+    /// Owns the native healing controls only while the explicit custom healthshot feature is active.
+    /// Keeping these in their own Parameters value lets ordinary mode transitions leave them alone.
+    pub fn set_healthshot_override(&mut self, active: bool) -> Result<(), Fault> {
+        const SETTINGS: [(&str, f32); 2] = [("healthshot_health", 0.0), ("healthshot_allow_use_at_full", 1.0)];
+        if !active {
+            return self
+                .restore_if(|name| SETTINGS.iter().any(|(setting, _)| *setting == name), restore_parameter)
+                .map_err(|error| Fault::mechanism(Mechanism::Healthshot, error));
+        }
+
+        for (name, value) in SETTINGS {
+            if let Err(fault) = self.set_number(name, value) {
+                let cleanup = self
+                    .restore_if(|owned| SETTINGS.iter().any(|(setting, _)| *setting == owned), restore_parameter)
+                    .err();
+                return Err(Fault::mechanism(
+                    Mechanism::Healthshot,
+                    cleanup.map_or_else(|| fault.to_string(), |cleanup| format!("{fault}; rollback failed: {cleanup}")),
+                ));
+            }
         }
         Ok(())
     }

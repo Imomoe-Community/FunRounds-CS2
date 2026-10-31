@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mai Ooizumi
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 #pragma once
 
 #include <cstdint>
@@ -17,9 +20,28 @@ using DamagePreCallback = std::int32_t (*)(std::int32_t victimHandle,
                                            std::int32_t weaponHandle,
                                            bool skipPluginRules);
 
+using EntityDamagePreCallback = std::int32_t (*)(std::int32_t victimHandle,
+                                                 std::int32_t attackerHandle,
+                                                 std::int32_t inflictorHandle,
+                                                 std::int32_t abilityHandle,
+                                                 float damage,
+                                                 std::uint32_t damageType,
+                                                 bool skipPluginRules);
+
 bool EnsureDamageAvailable();
+bool EnsureEntityDamageAvailable();
+#if defined(FUNROUNDS_NATIVE_LIFECYCLE_PROBE)
+bool ProbeNativeDamagePaths(std::int32_t pawnHandle,
+                            std::int32_t victimHandle,
+                            std::int32_t weaponHandle,
+                            std::int32_t nonWeaponHandle) noexcept;
+bool ProbeDamageRegistrationRollback() noexcept;
+bool ProbeDamageDetachFailureRetry() noexcept;
+#endif
 bool HookDamage(DamagePreCallback callback);
 bool UnhookDamage(DamagePreCallback callback);
+bool HookEntityDamage(EntityDamagePreCallback callback);
+bool UnhookEntityDamage(EntityDamagePreCallback callback);
 bool ShutdownDamage() noexcept;
 std::uint64_t CurrentDamageFrameToken() noexcept;
 std::int32_t ApplyDamage(std::int32_t victimHandle,

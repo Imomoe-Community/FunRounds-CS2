@@ -1,4 +1,5 @@
 // Generated from s2sdk.pplugin
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 #[allow(unused_imports)]
 use plugify::vector_enum_traits;

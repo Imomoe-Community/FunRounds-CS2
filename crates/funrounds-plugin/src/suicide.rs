@@ -11,25 +11,37 @@ use plugify::{Str, Vec3};
 use std::collections::HashMap;
 
 const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
-const PRICE: i64 = 10000;
+pub(crate) const EXPLOSION_PARTICLE: &str = "particles/explosions_fx/explosion_c4_short.vpcf";
+const EXPLOSION_SOUND: &str = "BaseGrenade.Explode";
+// Use the built-in detonation warning, not the quiet C4 pickup Foley.
+const START_SOUND: &str = "C4.ExplodeWarning";
+pub(crate) const FEEDBACK_LIFETIME: f32 = 2.0;
 
 pub fn c4_probe(purchase: bool) -> Probe {
     let mut probe = Probe::default();
     imports!(probe;
-        __s2sdk_GetClientWeapons, __s2sdk_GetClientActiveWeapon, __s2sdk_GetEntityOwner,
+        __s2sdk_GetClientWeapons, __s2sdk_GetClientActiveWeapon, __s2sdk_GetEntityOwner, __s2sdk_IsValidEntHandle,
         __s2sdk_GetEntityClassname, __s2sdk_IsValidEntHandle, __s2sdk_GiveNamedItem,
         __s2sdk_RemoveWeapon, __s2sdk_RemoveEntity, __s2sdk_SelectWeapon,
     );
     if purchase {
-        imports!(probe; __s2sdk_GetEntSchema2, __s2sdk_SetEntSchema2);
-        probe.schema("CCSPlayerController", "m_pInGameMoneyServices");
-        probe.schema("CCSPlayerController_InGameMoneyServices", "m_iAccount");
+        probe.include(crate::cash::probe());
     }
+    probe
+}
+
+pub(crate) fn resource_probe() -> Probe {
+    let mut probe = Probe::default();
+    imports!(probe;
+        __s2sdk_Precache, __s2sdk_OnBuildGameSessionManifest_Register,
+        __s2sdk_OnBuildGameSessionManifest_Unregister,
+    );
     probe
 }
 
 pub fn probe(hook_ready: bool) -> Probe {
     let mut probe = Probe::default();
+    probe.include(resource_probe());
     probe.require(hook_ready, "hook:CanAcquire");
     imports!(probe;
         __s2sdk_GetClientWeapons, __s2sdk_GetClientActiveWeapon, __s2sdk_GetEntityOwner,
@@ -38,11 +50,11 @@ pub fn probe(hook_ready: bool) -> Probe {
         __s2sdk_GetEntSchema2, __s2sdk_SetEntSchema2, __s2sdk_GetEntSchemaFloat2,
         __s2sdk_SetEntSchemaFloat2, __s2sdk_GetEntityAbsOrigin,
     );
-    imports!(probe; __s2sdk_CreateEntityByName, __s2sdk_DispatchSpawn, __s2sdk_AcceptEntityInput, __s2sdk_TeleportEntity);
+    imports!(probe;
+        __s2sdk_CreateEntityByName, __s2sdk_DispatchSpawn2, __s2sdk_AcceptEntityInput, __s2sdk_TeleportEntity,
+        __s2sdk_EmitSoundToClient, __s2sdk_GetMaxClients, __s2sdk_IsClientInGame, __s2sdk_GetClientTeam,
+    );
     for (class, field) in [
-        ("CEnvExplosion", "m_iMagnitude"),
-        ("CEnvExplosion", "m_flPlayerDamage"),
-        ("CBaseEntity", "m_spawnflags"),
         ("CCSPlayerController", "m_pInGameMoneyServices"),
         ("CCSPlayerController_InGameMoneyServices", "m_iAccount"),
         ("CBasePlayerPawn", "m_pWeaponServices"),
@@ -101,7 +113,7 @@ pub fn real_c4(player: LivePlayer, weapon: i32) -> bool {
 
 pub fn grant_c4(player: LivePlayer, current: impl Fn() -> bool) -> Result<i32, String> {
     if !current() {
-        return Err("C4发放已取消".into());
+        return Err("C4 delivery cancelled".into());
     }
     let inventory_before = s2sdk::GetClientWeapons(player.slot).iter().copied().collect::<Vec<_>>();
     let handle = s2sdk::GiveNamedItem(player.slot, &Str::from_str("weapon_c4"));
@@ -123,64 +135,25 @@ pub fn grant_c4(player: LivePlayer, current: impl Fn() -> bool) -> Result<i32, S
             s2sdk::RemoveEntity(handle);
         }
     }
-    Err("C4发放失败".into())
-}
-
-fn money(player: LivePlayer) -> Result<usize, String> {
-    if !s2sdk::IsClientInGame(player.slot) || s2sdk::PlayerSlotToEntHandle(player.slot) != player.controller_handle {
-        return Err("购买者连接已改变".into());
-    }
-    let pointer = integer(
-        s2sdk::EntHandleToEntPointer(player.controller_handle),
-        "CCSPlayerController",
-        "m_pInGameMoneyServices",
-    ) as usize;
-    (pointer != 0).then_some(pointer).ok_or_else(|| "现金服务不可用".into())
-}
-
-fn balance(pointer: usize) -> i64 {
-    integer(pointer, "CCSPlayerController_InGameMoneyServices", "m_iAccount")
-}
-
-fn write_balance(pointer: usize, value: i64) -> bool {
-    s2sdk::SetEntSchema2(
-        pointer,
-        &Str::from_str("CCSPlayerController_InGameMoneyServices"),
-        &Str::from_str("m_iAccount"),
-        value,
-        true,
-        0,
-    );
-    balance(pointer) == value
+    Err("C4 delivery failed".into())
 }
 
 // Engine grant/equip can synchronously dispatch events: execute without the runtime lock.
-pub fn purchase(player: LivePlayer, current: impl Fn() -> bool, same_buyer: impl Fn() -> bool) -> Result<i32, String> {
+pub(crate) fn purchase(
+    player: LivePlayer,
+    price: u32,
+    current: impl Fn() -> bool,
+    same_buyer: impl Fn() -> bool,
+) -> Result<i32, crate::cash::PurchaseError> {
     if !current() {
-        return Err("C4事务已取消".into());
+        return Err(crate::cash::PurchaseError::Rejected("purchase.cancelled"));
     }
     if s2sdk::GetClientTeam(player.slot) as i32 != 2 {
-        return Err("只有T可以购买C4".into());
+        return Err(crate::cash::PurchaseError::Rejected("purchase.c4_t_only"));
     }
-    let pointer = money(player)?;
-    let before = balance(pointer);
-    if before < PRICE {
-        return Err("购买C4需要10000现金".into());
-    }
-    let after = before - PRICE;
-    if !write_balance(pointer, after) {
-        return Err("现金扣款读回失败".into());
-    }
-    if let Ok(handle) = grant_c4(player, current) {
-        return Ok(handle);
-    }
-    let refunded =
-        same_buyer() && money(player).is_ok_and(|current| current == pointer && balance(current) == after && write_balance(current, before));
-    if refunded {
-        Err("C4发放失败，已退还现金".into())
-    } else {
-        Err("C4发放失败，现金所有权已改变，退款未完成".into())
-    }
+    crate::cash::purchase(player, price, crate::cash::PurchaseItem::C4, same_buyer, || {
+        grant_c4(player, current).map_err(|_| "C4 delivery failed".to_owned())
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -280,6 +253,7 @@ pub enum Action {
         task: PlayerTask,
         player: LivePlayer,
         start: bool,
+        price: u32,
     },
     Start {
         task: PlayerTask,
@@ -294,6 +268,7 @@ pub enum Action {
         player: LivePlayer,
         amount: f32,
         tick: i32,
+        after_round_end: bool,
     },
 }
 
@@ -347,6 +322,148 @@ impl Suicides {
             .is_some_and(|entry| entry.player == player && entry.sequence.is_some())
     }
 
+    pub(crate) fn takeover(&mut self, source_slots: &[i32], player: LivePlayer, task: PlayerTask) -> Result<Option<i32>, String> {
+        let mut sources = source_slots.to_vec();
+        sources.sort_unstable();
+        sources.dedup();
+        let mut slots = sources.clone();
+        slots.push(player.slot);
+        slots.sort_unstable();
+        slots.dedup();
+        let matches_pawn = |entry: &Entry| {
+            entry.task.round == task.round
+                && entry.task.player.pawn_handle == task.player.pawn_handle
+                && entry.player.pawn_handle == player.pawn_handle
+        };
+        let pending_round_end_finish = |slot: i32| {
+            self.pending.iter().any(|action| {
+                matches!(
+                    action,
+                    Action::Finish {
+                        task: queued,
+                        player: queued_player,
+                        after_round_end: true,
+                        ..
+                    } if queued.player.slot == slot
+                        && queued.player.pawn_handle == task.player.pawn_handle
+                        && queued_player.pawn_handle == player.pawn_handle
+                )
+            })
+        };
+        let matching_sources = sources
+            .iter()
+            .copied()
+            .filter(|slot| self.entries.get(slot).is_some_and(matches_pawn) || pending_round_end_finish(*slot))
+            .collect::<Vec<_>>();
+        let source_slot = matching_sources
+            .iter()
+            .copied()
+            .find(|slot| {
+                *slot == player.slot
+                    && (self
+                        .entries
+                        .get(slot)
+                        .is_some_and(|entry| entry.sequence.is_some() || entry.owned.is_some())
+                        || pending_round_end_finish(*slot))
+            })
+            .or_else(|| {
+                matching_sources.iter().copied().find(|slot| {
+                    self.entries
+                        .get(slot)
+                        .is_some_and(|entry| entry.sequence.is_some() || entry.owned.is_some())
+                        || pending_round_end_finish(*slot)
+                })
+            })
+            .or_else(|| matching_sources.iter().copied().find(|slot| *slot == player.slot))
+            .or_else(|| matching_sources.first().copied());
+        self.buying.retain(|slot, _| !slots.contains(slot));
+        self.pending.retain_mut(|action| {
+            let queued = action.task();
+            if !slots.contains(&queued.player.slot) {
+                return true;
+            }
+            if matches!(action, Action::Purchase { .. }) || source_slot != Some(queued.player.slot) {
+                return false;
+            }
+            match action {
+                Action::Start { task: queued, owned } if queued.round == task.round && queued.player.pawn_handle == task.player.pawn_handle => {
+                    *queued = task;
+                    owned.player = player;
+                    true
+                }
+                Action::Blast {
+                    task: queued,
+                    player: queued_player,
+                } if queued.round == task.round && queued.player.pawn_handle == task.player.pawn_handle => {
+                    *queued = task;
+                    *queued_player = player;
+                    true
+                }
+                Action::Finish {
+                    task: queued,
+                    player: queued_player,
+                    after_round_end,
+                    ..
+                } if (queued.round == task.round || *after_round_end) && queued.player.pawn_handle == task.player.pawn_handle => {
+                    *queued = task;
+                    *queued_player = player;
+                    true
+                }
+                _ => false,
+            }
+        });
+
+        let Some(source_slot) = source_slot else {
+            if self.entries.contains_key(&player.slot) {
+                self.forget(player.slot)?;
+            }
+            return Ok(None);
+        };
+        if source_slot != player.slot && self.entries.contains_key(&player.slot) && !sources.contains(&player.slot) {
+            // A target-slot entry that is not backed by a current same-pawn tracker
+            // identity is stale, even when its old handle happens to match. Avoid
+            // restoring a duplicate snapshot onto the pawn retained by its live owner.
+            if self
+                .entries
+                .get(&player.slot)
+                .is_some_and(|entry| entry.player.pawn_handle == player.pawn_handle)
+            {
+                self.entries.remove(&player.slot);
+            } else {
+                self.forget(player.slot)?;
+            }
+        }
+        let Some(mut entry) = self.entries.remove(&source_slot) else {
+            return Ok(Some(source_slot));
+        };
+        if entry.task.round != task.round
+            || entry.task.player.pawn_handle != task.player.pawn_handle
+            || entry.player.pawn_handle != player.pawn_handle
+        {
+            self.entries.insert(source_slot, entry);
+            return Err("suicide owner changed during bot takeover".into());
+        }
+
+        if let Some(sequence) = &mut entry.sequence
+            && !sequence.retarget(task)
+        {
+            self.entries.insert(source_slot, entry);
+            return Err("active suicide sequence changed during bot takeover".into());
+        }
+        entry.task = task;
+        entry.player = player;
+        if let Some(owned) = &mut entry.owned {
+            owned.player = player;
+        }
+        for slot in slots {
+            if slot != source_slot && slot != player.slot {
+                self.entries.remove(&slot);
+            }
+        }
+        self.entries.insert(player.slot, entry);
+        Ok(Some(source_slot))
+    }
+
     pub fn begin(&mut self, slot: i32, tick: i32, now: f32) -> Result<(), String> {
         let entry = self.entries.get_mut(&slot).ok_or("没有有效C4自爆资格")?;
         if entry.sequence.is_some() {
@@ -377,6 +494,27 @@ impl Suicides {
 
     pub fn cleanup(&mut self) -> Result<(), String> {
         self.pending.clear();
+        self.cleanup_entries()
+    }
+
+    pub fn cleanup_after_round_end(&mut self) -> Result<(), String> {
+        self.pending.retain_mut(|action| match action {
+            Action::Finish { after_round_end, .. } => {
+                *after_round_end = true;
+                true
+            }
+            _ => false,
+        });
+        self.cleanup_entries()
+    }
+
+    pub fn cancel_round_end_finishes(&mut self) {
+        self.pending
+            .retain(|action| !matches!(action, Action::Finish { after_round_end: true, .. }));
+    }
+
+    fn cleanup_entries(&mut self) -> Result<(), String> {
+        let pending = std::mem::take(&mut self.pending);
         self.buying.clear();
         let mut failures = Vec::new();
         for slot in self.entries.keys().copied().collect::<Vec<_>>() {
@@ -387,11 +525,12 @@ impl Suicides {
         if let Err(error) = self.ff.restore() {
             failures.push(error);
         }
+        self.pending = pending;
         if failures.is_empty() { Ok(()) } else { Err(failures.join("; ")) }
     }
 }
 
-pub fn hit(source: LivePlayer, target: LivePlayer, amount: f32) -> Result<(), String> {
+pub fn hit(source: LivePlayer, target: LivePlayer, amount: f32, force: bool) -> Result<(), String> {
     let result = crate::damage::with_internal_damage_context(
         crate::damage::InternalDamageContext {
             victim: target.pawn_handle,
@@ -401,57 +540,155 @@ pub fn hit(source: LivePlayer, target: LivePlayer, amount: f32) -> Result<(), St
             victim_slot: target.slot,
             attacker_slot: source.slot,
             headshot: false,
+            check_protection: !force,
             suppress_lifesteal: false,
             random_heal: None,
             death_weapon: Some("c4".into()),
         },
         || {
-            crate::funrounds_native::TakeEntityDamageWithWeapon(
-                target.pawn_handle,
-                source.pawn_handle,
-                source.pawn_handle,
-                &ZERO,
-                &ZERO,
-                amount,
-                crate::damage::DMG_BLAST as i32,
-                -1,
-                true,
+            crate::damage::apply_native_damage(
+                crate::damage::NativeDamageCall {
+                    victim: target.pawn_handle,
+                    inflictor: source.pawn_handle,
+                    attacker: source.pawn_handle,
+                    force: &ZERO,
+                    position: &ZERO,
+                    amount,
+                    damage_type: crate::damage::DMG_BLAST,
+                    weapon: -1,
+                    skip_plugin_rules: true,
+                },
+                crate::fault::Mechanism::Suicide,
+                "原生自爆伤害被拒绝",
             )
         },
     );
-    if result < 0 { Err("原生自爆伤害被拒绝".into()) } else { Ok(()) }
+    result.map(|_| ()).map_err(|error| error.to_string())
 }
 
-pub fn feedback(player: LivePlayer) -> Result<(), String> {
-    let effect = s2sdk::CreateEntityByName(&Str::from_str("env_explosion"));
-    if !s2sdk::IsValidEntHandle(effect) {
-        return Err("原生爆炸反馈创建失败".into());
+pub fn spawn_feedback(player: LivePlayer) -> Result<i32, String> {
+    if !s2sdk::IsValidEntHandle(player.pawn_handle) {
+        return Err("自爆反馈玩家实体失效".into());
     }
-    let pointer = s2sdk::EntHandleToEntPointer(effect);
-    // SF_ENVEXPLOSION_NODAMAGE: the dedicated native hits own all gameplay damage.
-    s2sdk::SetEntSchema2(pointer, &Str::from_str("CBaseEntity"), &Str::from_str("m_spawnflags"), 1, false, 0);
-    s2sdk::SetEntSchema2(pointer, &Str::from_str("CEnvExplosion"), &Str::from_str("m_iMagnitude"), 100, false, 0);
-    s2sdk::SetEntSchemaFloat2(
-        pointer,
-        &Str::from_str("CEnvExplosion"),
-        &Str::from_str("m_flPlayerDamage"),
-        0.0,
-        false,
-        0,
-    );
-    s2sdk::DispatchSpawn(effect);
-    s2sdk::TeleportEntity(effect, &s2sdk::GetEntityAbsOrigin(player.pawn_handle), &ZERO, &ZERO);
-    s2sdk::AcceptEntityInput(
-        effect,
-        &Str::from_str("Explode"),
-        player.pawn_handle,
-        player.pawn_handle,
-        &plugify::Var::default(),
-        s2sdk::FieldType::Auto,
-        0,
-    );
-    if s2sdk::IsValidEntHandle(effect) {
+    let effect = s2sdk::CreateEntityByName(&Str::from_str("info_particle_system"));
+    if !s2sdk::IsValidEntHandle(effect) {
+        return Err("自爆粒子反馈创建失败".into());
+    }
+    let origin = s2sdk::GetEntityAbsOrigin(player.pawn_handle);
+    let result = (|| {
+        let keys = plugify::Arr::from(vec!["effect_name".to_owned()]);
+        let values = plugify::Arr::from(vec![plugify::Any::from(EXPLOSION_PARTICLE)]);
+        s2sdk::DispatchSpawn2(effect, &keys, &values);
+        if !s2sdk::IsValidEntHandle(effect) {
+            return Err("自爆粒子实体在生成时消失".into());
+        }
+        s2sdk::TeleportEntity(effect, &origin, &ZERO, &ZERO);
+        if !s2sdk::IsValidEntHandle(effect) || !same_position(s2sdk::GetEntityAbsOrigin(effect), origin) {
+            return Err("自爆粒子爆点定位失败".into());
+        }
+        s2sdk::AcceptEntityInput(
+            effect,
+            &Str::from_str("Start"),
+            player.pawn_handle,
+            player.pawn_handle,
+            &plugify::Var::default(),
+            s2sdk::FieldType::Auto,
+            0,
+        );
+        if !s2sdk::IsValidEntHandle(effect) {
+            return Err("自爆粒子实体在启动时消失".into());
+        }
+        Ok(effect)
+    })();
+    if result.is_err() && s2sdk::IsValidEntHandle(effect) {
         s2sdk::RemoveEntity(effect);
     }
+    result
+}
+
+pub fn precache_feedback_resource() {
+    s2sdk::Precache(&Str::from_str(EXPLOSION_PARTICLE));
+}
+
+pub fn play_start_sound(player: LivePlayer) -> Result<(), String> {
+    play_sound(player.pawn_handle, START_SOUND)
+}
+
+pub fn play_explosion_sound(source: i32) -> Result<(), String> {
+    play_sound(source, EXPLOSION_SOUND)
+}
+
+pub fn remove_feedback(handle: i32) {
+    if s2sdk::IsValidEntHandle(handle) {
+        s2sdk::RemoveEntity(handle);
+    }
+}
+
+fn play_sound(source: i32, sound: &str) -> Result<(), String> {
+    if !s2sdk::IsValidEntHandle(source) {
+        return Err("自爆声音来源实体失效".into());
+    }
+    let recipients = (0..s2sdk::GetMaxClients())
+        .filter(|slot| s2sdk::IsClientInGame(*slot) && matches!(s2sdk::GetClientTeam(*slot) as i32, 1..=3))
+        .collect::<Vec<_>>();
+    if !recipients.is_empty() {
+        s2sdk::EmitSoundToClient(source, &plugify::Arr::from(recipients), &Str::from_str(sound), 1.0, 100.0);
+    }
     Ok(())
+}
+
+fn same_position(left: Vec3, right: Vec3) -> bool {
+    left.x.is_finite()
+        && left.y.is_finite()
+        && left.z.is_finite()
+        && (left.x - right.x).abs() < 0.1
+        && (left.y - right.y).abs() < 0.1
+        && (left.z - right.z).abs() < 0.1
+}
+
+#[derive(Default)]
+pub struct FeedbackEntities {
+    active: HashMap<i32, f32>,
+}
+
+impl FeedbackEntities {
+    pub fn track(&mut self, handle: i32, expires_at: f32) -> bool {
+        if handle == -1 || !expires_at.is_finite() {
+            return false;
+        }
+        self.active.insert(handle, expires_at);
+        true
+    }
+
+    pub fn take_expired(&mut self, now: f32) -> Vec<i32> {
+        if !now.is_finite() {
+            return Vec::new();
+        }
+        let mut expired = Vec::new();
+        self.active.retain(|handle, expires_at| {
+            if *expires_at <= now {
+                expired.push(*handle);
+                false
+            } else {
+                true
+            }
+        });
+        expired
+    }
+
+    pub fn take_all(&mut self) -> Vec<i32> {
+        self.active.drain().map(|(handle, _)| handle).collect()
+    }
+
+    pub fn discard_map_state(&mut self) {
+        self.active.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.active.is_empty()
+    }
+
+    pub fn has_only_unexpired(&self, now: f32) -> bool {
+        now.is_finite() && self.active.values().all(|expires_at| *expires_at > now)
+    }
 }

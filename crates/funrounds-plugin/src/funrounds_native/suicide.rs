@@ -1,4 +1,5 @@
 // Generated from funrounds_native.pplugin (group: suicide)
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 #[allow(unused_imports)]
 use super::aliases::*;

@@ -1,4 +1,5 @@
 // Generated from s2sdk.pplugin (group: cvars)
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 #[allow(unused_imports)]
 use super::aliases::*;
@@ -44,6 +45,22 @@ pub type _GetConVarValue = unsafe extern "C" fn(u64) -> Str;
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_GetConVarValue: Option<_GetConVarValue> = None;
+
+/// Replicates a console variable value to a specific client. This does not change the actual console variable value.
+///
+/// # Arguments
+/// * `playerSlot` - (int32): The index of the client to replicate the value to.
+/// * `conVarHandle` - (uint64): The handle to the console variable data.
+/// * `value` - (string): The value to send to the client.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn SendConVarValue(playerSlot: i32, conVarHandle: u64, value: &Str) {
+    unsafe { __s2sdk_SendConVarValue.expect("SendConVarValue function was not found")(playerSlot, conVarHandle, value) }
+}
+pub type _SendConVarValue = unsafe extern "C" fn(i32, u64, &Str);
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_SendConVarValue: Option<_SendConVarValue> = None;
 
 /// Sets the value of a console variable.
 ///

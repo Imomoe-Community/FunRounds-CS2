@@ -93,6 +93,8 @@ def package(platform, native_output, output_dir, root=ROOT):
         "addons/plugify/configs/funrounds.example.toml": root / "config/funrounds.example.toml",
         "LICENSE": root / "LICENSE",
     }
+    for language in ("zh-CN", "en"):
+        entries[f"addons/plugify/configs/funrounds/i18n/{language}.toml"] = root / "config/i18n" / f"{language}.toml"
     sdk = native_output / "s2sdk"
     sdk_name = "plugify-plugin-s2sdk.dll" if platform == "windows-x64" else "libplugify-plugin-s2sdk.so"
     entries[f"{envs}/s2sdk/bin/{sdk_name}"] = sdk / "bin" / sdk_name

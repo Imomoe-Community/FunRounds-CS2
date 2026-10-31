@@ -26,18 +26,25 @@ pub fn weapon_damage_scale(mode: &Mode, weapon: Option<&str>, player_attack: boo
 
 #[derive(Debug)]
 pub struct CombatLife {
+    attributes: crate::LifeAttributes,
     shield: Option<u64>,
     protected_until: Option<f32>,
     next_recharge: f32,
 }
 
 impl CombatLife {
-    pub fn new(mode: &Mode, now: f32) -> Self {
+    pub fn new(mode: &Mode, now: f32, rng: &mut impl rand::Rng) -> Self {
+        let attributes = mode.sample_attributes(rng);
         Self {
-            shield: mode.energy_shield.then_some(u64::from(mode.armor)),
-            protected_until: mode.combat_protection.then_some(now + 0.5),
+            attributes,
+            shield: mode.energy_shield.then_some(u64::from(attributes.armor)),
+            protected_until: mode.spawn_protection.then_some(now + 0.5),
             next_recharge: now + 0.5,
         }
+    }
+
+    pub fn attributes(&self) -> crate::LifeAttributes {
+        self.attributes
     }
 
     pub fn protect(&mut self, now: f32) {
@@ -73,7 +80,8 @@ impl CombatLife {
         true
     }
 
-    pub fn recharge(&mut self, now: f32, health: i32, base: u16) -> Option<i32> {
+    pub fn recharge(&mut self, now: f32, health: i32) -> Option<i32> {
+        let base = self.attributes.health;
         let shield = self.shield.as_mut().filter(|shield| **shield > 0)?;
         if now < self.next_recharge {
             return None;

@@ -2,6 +2,20 @@
   "$schema": "https://raw.githubusercontent.com/untrustedmodders/plugify-plugin-s2sdk/refs/tags/v3.0.0/assets/gamedata.schema.json",
   "csgo": {
     "Signatures": {
+      // Internal spawn validator, independently inspected on both 2000938 binaries.
+      // This bypasses only the caller's Deathmatch-mode gate, not point validation.
+      "FunRounds::SelectSpawnSpot": {
+        "library": "server",
+        "win64": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 54 41 56 41 57 48 83 EC 30 49 8B 18 4C 8B E2 48 8B F1 0F 29 74 24 20 49 8B CC",
+        "linuxsteamrt64": "55 48 89 E5 41 57 41 56 49 89 D6 41 55 41 54 49 89 FC 48 89 F7 53 48 83 EC 28 48 89 75 C8"
+      },
+      // Unique exact prefixes in the Windows/Linux server inputs inspected in IDA
+      // on 2026-10-28. Native also checks the schema displacement and TEST/JZ site.
+      "FunRounds::ThirdPersonEyeCameraBranch": {
+        "library": "server",
+        "win64": "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 48 8B DA 48 8B 89 48 0B 00 00 48 85 C9 74 2C",
+        "linuxsteamrt64": "55 48 89 E5 53 48 89 FB 48 83 EC 38 48 8B BF 28 0E 00 00 48 85 FF 0F 84 84 00 00 00"
+      },
       "CBaseEntity_TakeDamageOld": {
         "library": "server",
         "win64": "40 55 53 56 57 41 54 48 8D 6C 24 ? 48 81 EC ? ? ? ? 4D 8B E0",
@@ -16,6 +30,51 @@
         "library": "server",
         "win64": "44 89 44 24 ? 48 89 54 24 ? 48 89 4C 24 ? 55 53 56 57 41 54 41 55 41 56 41 57 48 8B EC",
         "linuxsteamrt64": "55 48 89 E5 41 57 41 56 49 89 F6 41 55 41 54 49 89 CC 53 48 89 FB 48 83 EC ? 4C 8B 6F 38"
+      },
+      "FunRounds::GroundReverseAccelerationCallsite": {
+        "library": "server",
+        "win64": "F3 0F 11 44 24 20 E8 ? ? ? ? 44 89 6F 40 4C 8D 67 38",
+        "linuxsteamrt64": "F3 0F 10 8D B8 FD FF FF 49 8B 06 F3 0F 10 40 34 E8 ? ? ? ? E9 ? ? ? ? 0F 1F 44 00 00"
+      },
+      "CCSBot::IsVisiblePlayer": {
+        "library": "server",
+        "win64": "48 89 5C 24 ? 44 88 44 24 ? 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 ? 48 81 EC ? ? ? ? 48 8D 05",
+        "linuxsteamrt64": "55 48 8D 05 ? ? ? ? 48 89 E5 41 57 4C 8D 7D ? 41 56 41 89 D6"
+      },
+      // Per-BOT updater handles multiple IGameEvent sources. Suppress only when
+      // its event pointer matches the current OnPlayerFootstep forwarding scope,
+      // so nested fire/damage and other noise events retain native behavior.
+      "FunRounds::CCSBotPassiveNoiseDispatch": {
+        "library": "server",
+        "win64": "4D 85 C0 0F 84 ? ? ? ? 55 53 56 57 48 8D 6C 24 E8 48 81 EC 18 01 00 00 49 8B 00 48 8B F9 44 0F 29 94 24 C0 00 00 00 49 8B C8 44 0F 28 D3 49 8B F0 48 8B DA FF 90 58 05 00 00",
+        "linuxsteamrt64": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 81 EC ? ? ? ? F3 0F 11 85 ? ? ? ? 48 85 D2 74 ? 48 8B 02 49 89 FD 49 89 F4 48 89 D3 41 89 CE 48 89 D7 FF 90 50 05 00 00"
+      },
+      // Selector return + CPlayer_UseServices::m_hUseEntity were observed to
+      // match for real chicken and door E interactions on CS2 1.41.9.2,
+      // ServerVersion 2000935, SourceRevision 11162119.
+      "OuterUseTargetSelector": {
+        "library": "server",
+        "win64": "40 55 56 48 8D AC 24 E8 FE FF FF 48 81 EC 18 02 00 00 48 83 79 38 00",
+        "linuxsteamrt64": "55 48 89 E5 41 57 41 56 41 55 66 41 0F 7E C5 41 54 53 48 89 FB 48 81 EC"
+      },
+      "HealthshotCanUse": {
+        "library": "server",
+        "win64": "40 57 48 83 EC 40 48 8B FA 48 85 D2",
+        "linuxsteamrt64": "48 85 F6 74 53 48 8B 05 ?? ?? ?? ?? 80 78 58 00"
+      },
+      "HealthshotSuccessEffect": {
+        "library": "server",
+        "win64": "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 40 48 8B CA 48 8B F2",
+        "linuxsteamrt64": "55 48 89 F7 48 89 E5 41 54 53 48 89 F3 48 83 EC 50"
+      },
+      // CChicken's m_pfnUse callback. Windows resolves this wrapper to virtual
+      // slot 0x9e0; Linux resolves the method body stored at virtual slot 0xAC8
+      // in the current paired server binary. Both consume `(this,
+      // const EntityUseInput_t*) -> void`; do not use Linux's function-id stub.
+      "CChickenChickenUse": {
+        "library": "server",
+        "win64": "48 8B 01 FF A0 E0 09 00 00",
+        "linuxsteamrt64": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1E 48 85 DB 0F 84 ?? ?? ?? ?? 48 8B 03 49 89 FC 49 89 F5 48 89 DF FF 90 50 05 00 00"
       }
     },
     "Offsets": {
@@ -30,9 +89,23 @@
       "CBaseEntity::CollisionRulesChanged": {
         "win64": 188,
         "linuxsteamrt64": 187
+      },
+      // CPlayer_UseServices committed full target handle, same observed build.
+      "UseServicesLastTargetHandle": {
+        "win64": 72,
+        "linuxsteamrt64": 72
       }
     },
     "VTables": {
+      // Shared CServerSideClientBase::SendNetMessage hook; the binary vtable is in engine2.
+      "CServerSideClient": {
+        "library": "engine2",
+        "table": "CServerSideClient"
+      },
+      "CCSBotManager": {
+        "library": "server",
+        "table": "CCSBotManager"
+      },
       "CNavPhysicsInterface": {
         "library": "server",
         "table": "CNavPhysicsInterface"

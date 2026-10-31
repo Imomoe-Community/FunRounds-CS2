@@ -1,163 +1,227 @@
-# 通用示例：只启用一个基础模式，不预设额外玩法。
-# 未填写的字段使用 [defaults] 或内置默认值；服务器设置型字段标注为“省略时不覆盖”。
-# TOML 会拒绝未知字段；配置至少需要一个启用的模式。
+# 通用示例配置：仅启用一个基础演示模式，其余拓展玩法默认注释或关闭。
+# 未填写的字段继承自 [defaults] 或内置默认值；标注“省略时不覆盖”的字段不修改服务端原生设置。
+# 配置采用严格模式解析（拒绝未知字段）；必须至少保留一个启用的模式。
 
-# diagnostics：是否记录诊断日志，布尔值，默认 false。
+# diagnostics：是否记录诊断日志（默认 false）
 diagnostics = false
 
-# [defaults] 可为所有模式设置逐字段默认值，模式自身的字段优先；仅接受玩法字段。
-# id、enabled、name、description 不能放入 [defaults]。
-# 对 color、self_damage、taser_charge、friction、recoil_view、reflect_damage、view_punch_decay、
-# fov、hide_crosshair_after、c4_count、bomb、respawn 等可选继承项，false 可清除继承值。
-# self_damage、weapon_damage、bomb、respawn 子项可逐字段继承；bomb 更换 kind 时使用该类型的默认时间。
-# 示例（保持注释即不生效）：
+# hostage_rescue_compat：人质救援触发区兼容开关（默认 false）
+# hostage_rescue_compat = true
+
+# prices：指令购买价格设置（现金 0～4294967295；默认 C4=10000、医疗针=4000、小鸡=1）
+# [prices]
+# c4_cash = 10000
+# healthshot_cash = 4000
+# chicken_cash = 1
+
+# warmup：可选热身设置（未配置时不开启插件热身；支持模式的大多数玩法字段，ID 与名称自动固定）
+# [warmup]
+# enabled = false
+# health = 100
+
+# healthshot：接管医疗针治疗机制（省略时保留游戏原生回血逻辑）
+# heal_base_fraction：基于基础生命的回血比例；cap_base_multiple：回血上限倍数（正整数）
+# [healthshot]
+# heal_base_fraction = 0.5
+# cap_base_multiple = 3
+
+# chicken：普通小鸡生态设置（不影响特殊炸弹中的鸡）
+# spawn：每位玩家目标鸡数量（目标数 = max(玩家数 * per_player, minimum)）
+# [chicken.spawn]
+# per_player = 1
+# minimum = 0
+# eating：吃鸡机制；digestion_seconds：消化时间(秒)；risk_offset/risk_per_undigested：未消化时的爆炸风险
+# [chicken.eating]
+# enabled = false
+# digestion_seconds = 10.0
+# risk_offset = 0
+# risk_per_undigested = 1
+# eating.heal：吃鸡回血设置（basis: "base" 基础生命 / "current" 当前生命；percent: 回血比例区间；minimum_health: 保底回血）
+# [chicken.eating.heal]
+# basis = "base"
+# percent = { min = 0.1, max = 0.2 }
+# minimum_health = 1
+# eating.damage：吃鸡伤害设置（kind: "fixed" 固定数值 / "percent" 百分比）
+# [chicken.eating.damage]
+# kind = "fixed"
+# amount = 1
+# kill_blast / risk_blast：击杀及吃鸡风险爆炸（damage: 伤害，radius: 范围半径）
+# [chicken.kill_blast]
+# damage = 0.0
+# radius = 0.0
+# [chicken.risk_blast]
+# damage = 0.0
+# radius = 0.0
+# damage_chain：允许连锁触发伤害的类型（火焰 / 普通爆炸 / 鸡爆炸，默认均 false）
+# [chicken.damage_chain]
+# allow_fire = false
+# allow_explosion = false
+# allow_chicken_explosion = false
+
+# i18n：多语言本地化配置（语言文件位于 i18n/*.toml）
+# default_language：服务端缺省语言（"zh-CN" 或 "en"），优先匹配客户端语言
+[i18n]
+default_language = "zh-CN"
+
+# [defaults]：全局默认模板（仅接受玩法字段；模式内单独设置优先）
+# 可用 false 显式重置可选继承项（如 color, bomb, respawn 等）
+# 示例：
 # [defaults]
 # gravity = 1.0
 
 [[modes]]
 
-# id：必填、非空且唯一；仅 ASCII 字母、数字、下划线和连字符。
+# id：模式唯一标识（必填，仅限 ASCII 字母、数字、下划线及连字符）
 id = "example"
-# enabled：必填布尔值；true 时该模式进入可选池。
+# enabled：是否加入随机池（必填）
 enabled = true
-# name、description：必填非空单行文本，分别用于模式名称和说明。
-name = "通用示例"
-description = "演示基础配装与玩家属性"
+# name_key / description_key：引用 i18n/*.toml 中的多语言文本键
+# （亦可直接使用 name = "通用示例" 和 description = "演示基础配装与玩家属性" 单行文本）
+name_key = "mode.example.name"
+description_key = "mode.example.description"
 
-# weapons：受支持的 CS2 装备候选数组，按主武器、副武器和额外装备分类抽取；不接受 weapon_knife，刀具用 give_knife 设置。
+# weapons：受支持的 CS2 装备候选列表（按主武器、副武器和额外装备抽取；不含刀具，刀具由 give_knife 配置）
 weapons = ["weapon_famas", "weapon_p250"]
-# health：初始生命，整数 1～10000，默认 100。
+# health：初始生命（整数 1～10000，或随机范围 { min = 100, max = 150 }，默认 100）
 health = 120
-# armor：初始护甲，整数 0～255，默认 0。
+# armor：初始护甲（整数 0～255，或随机范围 { min = 0, max = 100 }，默认 0）
 armor = 50
-# gravity：重力倍率，有限数值且 0 < value <= 10，默认 1.0（正常重力）。
+# gravity：重力倍率（(0, 10]，1.0 为正常重力，<1.0 降低重力）
 gravity = 1.0
-# clear_weapons：发放候选前清理武器的队伍；none / all / terrorists / counter_terrorists，默认 none。
+# clear_weapons：发放候选前清理武器的队伍（none / all / terrorists / counter_terrorists，默认 none）
 clear_weapons = "all"
-# give_weapons：发放 weapons 候选的队伍；取值同 clear_weapons，默认 none。
+# give_weapons：发放 weapons 候选的队伍（取值同 clear_weapons，默认 none）
 give_weapons = "all"
 
-# 以下可选玩法默认关闭，除单独说明外布尔值使用 true / false。
-# speed：玩家移动速度倍率，有限数值且 0 < value <= 10，默认 1.0。
+# speed：玩家移动速度倍率（(0, 10]，默认 1.0）
 # speed = 1.0
-# helmet：是否发放头盔；未设置时 armor > 0 则默认 true。
+# helmet：是否配备头盔（true / false / "random"，省略时根据最终护甲自动决定）
 # helmet = true
-# give_knife：发放刀具的队伍；none / all / terrorists / counter_terrorists，默认 none。
+# give_knife：配发刀具的队伍（none / all / terrorists / counter_terrorists，默认 none）
 # give_knife = "all"
-# color：玩家渲染颜色，三个 0～255 的 RGB 整数组成的数组；false 清除继承值。
+# color：玩家模型 RGB 着色（[R, G, B]，各 0～255；false 可清除继承值）
 # color = [255, 255, 255]
 
-# headshots：爆头规则；normal 使用普通规则，only 仅爆头造成伤害，disabled 禁止爆头伤害；默认 normal。
+# headshots：爆头规则（"normal" 正常 / "only" 仅爆头有效 / "disabled" 禁用爆头）
 # headshots = "normal"
-# ammo：弹药规则；inherit 保留服务端行为，reserve 无限备弹，clip 无限弹匣，single_shot 每个弹匣只装一发；默认 inherit。
-# clip 需要 weapons 包含 weapon_taser。
+# ammo：弹药规则（"inherit" 原生 / "reserve" 无限备弹 / "clip" 无限弹匣 / "single_shot" 单发装填）
 # ammo = "inherit"
-# self_damage：false 关闭/清除；miss_penalty 对未命中应用自伤规则；native 使用游戏自伤设置。
-# native 需要有限非负 amount；miss_penalty 不接受 amount。可写为：
+# self_damage：开火自伤设置（kind = "miss_penalty" 未命中扣血 / kind = "native", amount = 0.1 每次自扣伤害）
 # self_damage = { kind = "miss_penalty" }
-# self_damage = { kind = "native", amount = 0.1 }
-# weapon_damage：电击枪与刀的伤害倍率，字段可分别设置，均为有限非负数，默认均为 1.0。
+# weapon_damage：特定武器伤害倍率（电击枪与刀具可分别设置，默认 1.0）
 # weapon_damage = { taser = 1.0, knife = 1.0 }
-# taser_charge：电击枪充能间隔秒数，有限非负数；需要 weapon_taser 候选，false 清除继承值。
+# taser_charge：电击枪充能冷却时间（秒，需 weapons 包含 weapon_taser）
 # taser_charge = 12.0
 
-# bunnyhop：启用自动连跳及相关移动设置；省略时不覆盖服务端设置。
+# bunnyhop：开启自动连跳及移动参数优化（省略时不覆盖服务端设置）
 # bunnyhop = true
-# friction：地面摩擦参数，有限非负数；省略时不覆盖服务端设置，false 清除继承值。
+# friction：地面摩擦力参数（有限非负数，省略时不覆盖服务端设置）
 # friction = 2.0
-# no_spread：是否关闭武器散布；省略时不覆盖服务端设置。
+# no_spread：移除武器散布（省略时不覆盖服务端设置）
 # no_spread = true
-# no_recoil：是否抑制枪械后坐力，默认 false。
+# no_recoil：抑制枪械后坐力（默认 false）
 # no_recoil = true
-# recoil_view：开火时添加的镜头冲击强度，有限非负数；省略时不覆盖，false 清除继承值。
+# recoil_view：开枪镜头震动冲击强度（有限非负数，省略时不覆盖）
 # recoil_view = 1.0
-# fast_switch：是否启用快速切换武器，默认 false。
+# fast_switch：快速切枪开关（默认 false）
 # fast_switch = true
-# replenish：投掷后补充的手雷类型数组；可选 he / flash / smoke / decoy / molotov / incendiary，默认空数组。
-# 每项都要求 weapons 中包含对应的手雷候选。
+# replenish：投掷后自动补充的手雷类型列表（可选 he / flash / smoke / decoy / molotov / incendiary）
 # replenish = ["he"]
 
-# random_loadout：是否从 weapons 候选抽取随机配装，默认 false；候选需非空。
+# random_loadout：从候选池独立随机抽取配装（与 kill_loadout 互斥）
 # random_loadout = true
-# suicide：是否启用玩家自爆玩法，默认 false；购买 C4 另由 c4_buy 控制。
+# suicide：是否启用玩家自爆玩法（默认 false；购买 C4 另由 c4_buy 控制）
 # suicide = true
-# random_damage：是否随机调整战斗伤害，默认 false。
+# random_damage：是否开启浮动随机战斗伤害（默认 false）
 # random_damage = true
-# kill_loadout：击杀后是否更换为随机候选武器，默认 false；候选需非空且包含 weapon_glock。
-# random_loadout 与 kill_loadout 不能同时启用。
+# kill_loadout：击杀敌人后自动升级换枪（kill_loadout_start 可设 "glock" 或 "random"）
 # kill_loadout = true
-# lifesteal：是否按造成的伤害恢复生命和护甲，默认 false。
+# kill_loadout_start = "random"
+# lifesteal：击中敌人吸血恢复生命与护甲（默认 false）
 # lifesteal = true
-# reflect_damage：反射给攻击者的伤害倍率，有限非负数；false 清除继承值。
+# reflect_damage：反弹受到的伤害给攻击者（伤害倍率，有限非负数）
 # reflect_damage = 0.1
-# energy_shield：是否将护甲用作可吸收攻击并逐步恢复的能量护盾，默认 false。
+# energy_shield：将护甲转为随时间充能的吸收能量护盾（默认 false）
 # energy_shield = true
-# combat_protection：出生时及真人玩家击杀后是否获得各 0.5 秒的伤害保护，默认 false。
+# combat_protection：同时开启出生保护与击杀保护（持续 0.5 秒；可分设 spawn_protection / kill_protection）
 # combat_protection = true
-# translucent：是否启用半透明外观，默认 false。
+# translucent：是否启用半透明外观（默认 false）
 # translucent = true
-# delayed_damage：是否延后结算玩家受到的伤害，默认 false。
+# delayed_damage：是否延后结算玩家受到的伤害（默认 false）
 # delayed_damage = true
-# win_condition：回合胜负规则；native 使用游戏默认规则，team_deathmatch 按团队击杀计分；默认 native。
-# team_deathmatch 不能与 teammates_as_enemies = true 同时使用。
+# win_condition：回合胜负规则（"native" 游戏默认 / "team_deathmatch" 团队死斗按杀敌计分）
 # win_condition = "native"
 
-# bomb：特殊炸弹设置子表；省略或 false 时不启用。kind 可选 native（原生 C4）、chicken（鸡携带）或 carry（可拾取携带），默认 native。
-# 各时间是有限非负秒数，默认安放 3、爆炸 45、有拆弹器拆除 5、无拆弹器拆除 10；bounce 默认 false。
-# 可用内联表设置，避免后续模式字段进入子表：
+# bomb：特殊炸弹设置子表（kind: "native" 原生 / "chicken" 鸡背 / "carry" 便携携带；各时间单位为秒）
+# 可用内联表设置：
 # bomb = { kind = "native", plant_time = 3.0, explode_time = 45.0, defuse_kit_time = 5.0, defuse_time = 10.0, bounce = false }
 
-# dodgeball：诱饵弹命中时启用躲避球效果，默认 false；需要 weapon_decoy 候选。
+# dodgeball：诱饵弹命中触发躲避球直接伤害（需 weapons 包含 weapon_decoy）
 # dodgeball = true
-# throwing_knives：是否启用投掷刀具玩法，默认 false；give_knife 必须指定接收队伍。
+# throwing_knives：右键投掷飞刀及弹射判定（需配发刀具）
 # throwing_knives = true
-# view_punch_decay：镜头冲击衰减值，有限非负数；省略时不覆盖服务端设置，false 清除继承值。
+# view_punch_decay：开枪镜头震动衰减参数（有限非负数，省略时不覆盖服务端设置）
 # view_punch_decay = 5.0
-# no_scope：是否限制瞄准镜使用，默认 false。
+# no_scope：是否禁用枪械瞄准镜开镜（默认 false）
 # no_scope = true
-# fov：视野角度，整数 1～179；false 清除继承值。
+# fov：设定玩家视野角度（整数 1～179）
 # fov = 90
-# hide_crosshair_after：隐藏准星的延迟秒数，有限非负数；false 清除继承值。
+# hide_hud：隐藏指定 HUD 元素列表（可选 "radar", "crosshair"）
+# hide_hud = ["radar", "crosshair"]
+# hide_crosshair_after：延迟隐藏准星时间（秒，需搭配 hide_hud 中的 crosshair 使用）
 # hide_crosshair_after = 1.0
 
-# health_damage：是否根据攻击者当前生命调整造成的伤害，默认 false。
+# health_damage：输出伤害根据自身当前生命动态缩放（默认 false）
 # health_damage = true
-# health_speed：是否根据玩家当前生命调整移动速度，默认 false。
+# health_speed：移动速度根据当前生命动态缩放（默认 false）
 # health_speed = true
-# health_decay：是否逐步衰减高于模式初始生命的部分，默认 false。
+# health_decay：高于初始生命的部分随时间逐步衰减（默认 false）
 # health_decay = true
-# self_push：开火时是否产生自身反冲推力，默认 false。
+# self_push：开火产生自身反冲推力（可通过指令 fr_knock 切换模式）
 # self_push = true
-# periodic_speed：是否定期改变移动速度，默认 false。
+# periodic_speed：移速周期性波浪起伏变化（默认 false）
 # periodic_speed = true
-# periodic_gravity：是否定期改变重力，默认 false。
+# periodic_gravity：重力周期性高低起伏变化（默认 false）
 # periodic_gravity = true
 
-# c4_count：T 队普通 C4 数量上限，整数 0～255；至多给可用的 T 队玩家每人分配 1 个。
-# 设为 0 会移除普通 C4 且不再分配；false 清除继承值。
+# c4_count：进攻方(T)普通 C4 数量上限（整数 0～255；设为 0 完全禁用普通 C4）
 # c4_count = 1
-# c4_buy：是否允许玩家使用 fr_c4 / !c4 购买 C4，默认 false。
+# c4_buy：是否允许玩家使用指令 fr_c4 / !c4 购买 C4（默认 false）
 # c4_buy = true
-# round_respawn：是否在新回合开始时复活玩家，默认 false。
+# round_respawn：回合开局复活规则（false: 不干预 / true: 仅复活已阵亡者 / "all": 全体重新出生）
 # round_respawn = true
-# respawn：按队伍延迟复活的子表；team 必填，可取 all / terrorists / counter_terrorists（不能为 none）。
-# delay_seconds 为有限非负秒数，默认 3.0。false 可清除继承子表。
-# 使用内联表后，后续字段仍属于当前模式：
+# respawn：队伍延时复活设置（team: all / terrorists / counter_terrorists；delay_seconds: 延迟秒数）
 # respawn = { team = "all", delay_seconds = 3.0 }
 
-# buy_time：购买时长，有限非负秒数；省略时不覆盖服务端设置。
-# buy_time = 30.0
-# buy_limit：玩家现金上限，整数 0～4294967295；省略时不覆盖服务端设置。
-# buy_limit = 16000
-# friendly_fire_scale：队友伤害倍率，有限数值 0～1；0 关闭队友伤害，省略时不覆盖服务端设置。
-# friendly_fire_scale = 0.0
-# teammates_as_enemies：是否将队友视为敌人；省略时不覆盖服务端设置。
-# teammates_as_enemies = false
-# random_spawn：启用随机出生点的队伍；none / all / terrorists / counter_terrorists，省略时不覆盖服务端设置。
-# random_spawn = "all"
-# drop_weapons：玩家死亡时是否掉落武器；省略时不覆盖服务端设置。
-# drop_weapons = true
-# drop_grenades：玩家死亡时是否掉落手雷；省略时不覆盖服务端设置。
-# drop_grenades = true
-# fall_damage_scale：坠落伤害倍率，有限非负数；省略时不覆盖服务端设置。
-# fall_damage_scale = 1.0
+# 服务端环境与规则参数（省略时不覆盖服务端原生设置）：
+# buy_time = 30.0                  # 购买时间（秒）
+# buy_limit = 16000                # 现金上限
+# friendly_fire_scale = 0.0        # 队友伤害倍率（0.0 为关闭友伤）
+# teammates_as_enemies = false     # 队友判定为敌人
+# random_spawn = "all"             # 启用随机出生点的队伍（none / all / terrorists / counter_terrorists）
+# drop_weapons = true              # 阵亡时掉落武器
+# drop_grenades = true             # 阵亡时掉落手雷
+# fall_damage_scale = 1.0          # 坠落伤害倍率
+# time_scale = 1.0                 # 游戏全局时间流速倍率
+# ground_acceleration = 5.0        # 地面加速度
+# ground_reverse = 5.0             # 地面输入反向加速度（倒车行走）
+# round_money_floor = 1000         # 每回合保底现金
+# money_income = { interval = 10.0, amount = 100 } # 定期发放被动收入
+# buy_access = "all"               # 允许购买物品的队伍
+# buy_anywhere = "all"             # 允许在地图任意位置购买的队伍
+# shoot_dropped_grenades = true    # 允许射击引爆掉落的手雷
+# hide_player_identification = true# 隐藏玩家瞄准识别信息
+
+# third_person：第三人称越肩视角
+# third_person = { distance = 64.0, follow_eyes = true, clip_camera_offset = true, return_strength = 2.0 }
+# ghost：幽灵隐身机制（根据静步/蹲下/移动调整透明度；可设脚步声与心跳距离）
+# ghost = { team = "terrorists", crouch_alpha = 0, slow_walk_alpha = 20, normal_alpha = 120 }
+# afterburn：命中后使目标持续燃烧灼烧
+# afterburn = { duration_seconds = 2.0, damage_fraction = 0.01, minimum_damage = 1.0 }
+# ordinary_chickens：是否在本模式中生成普通小鸡生态（默认 true）
+# chicken_eating：是否允许在本模式中吃鸡（省略时沿用全局设置，false 显式禁用）
+# ordinary_chickens = true
+# chicken_eating = false
+
+# health_curve：自定义生命缩放曲线（覆盖内置 health_damage / health_speed 曲线）
+# health_decay_settings：自定义额外生命衰减速率与保底百分比

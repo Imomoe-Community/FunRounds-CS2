@@ -1,4 +1,5 @@
 // Generated from s2sdk.pplugin (group: models)
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 #[allow(unused_imports)]
 use super::aliases::*;
@@ -46,6 +47,38 @@ pub type _GetEntityAttachmentOrigin = unsafe extern "C" fn(i32, i32) -> Vec3;
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_GetEntityAttachmentOrigin: Option<_GetEntityAttachmentOrigin> = None;
+
+/// Retrieves the model scale of an entity.
+///
+/// # Arguments
+/// * `entityHandle` - (int32): The handle of the entity.
+///
+/// # Returns - (float):
+/// The model scale factor.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetEntityModelScale(entityHandle: i32) -> f32 {
+    unsafe { __s2sdk_GetEntityModelScale.expect("GetEntityModelScale function was not found")(entityHandle) }
+}
+pub type _GetEntityModelScale = unsafe extern "C" fn(i32) -> f32;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetEntityModelScale: Option<_GetEntityModelScale> = None;
+
+/// Sets the model scale of an entity.
+///
+/// # Arguments
+/// * `entityHandle` - (int32): The handle of the entity.
+/// * `scale` - (float): The new scale factor.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn SetEntityModelScale(entityHandle: i32, scale: f32) {
+    unsafe { __s2sdk_SetEntityModelScale.expect("SetEntityModelScale function was not found")(entityHandle, scale) }
+}
+pub type _SetEntityModelScale = unsafe extern "C" fn(i32, f32);
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_SetEntityModelScale: Option<_SetEntityModelScale> = None;
 
 /// Retrieves an attachment index by name.
 ///

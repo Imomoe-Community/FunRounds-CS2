@@ -45,6 +45,19 @@ struct AmmoState {
 }
 
 impl WeaponRules {
+    pub(super) fn takeover(&mut self, player: LivePlayer, mode: &Mode) {
+        if let Some(rollback) = &mut self.failed_switch
+            && rollback.player.pawn_handle == player.pawn_handle
+        {
+            rollback.player = player;
+        }
+        if mode.fast_switch || mode.ammo == Ammo::SingleShot {
+            let active = s2sdk::GetClientActiveWeapon(player.slot);
+            self.active = (s2sdk::IsValidEntHandle(active) && s2sdk::GetEntityOwner(active) == player.pawn_handle).then_some(active);
+        }
+        self.reload_pressed = mode.ammo == Ammo::SingleShot && s2sdk::GetClientButtons(player.slot, 0) & 8192 != 0;
+    }
+
     pub(super) fn release_unowned(&mut self, player: LivePlayer) -> Result<(), Fault> {
         if self.ammo.is_empty() {
             return Ok(());

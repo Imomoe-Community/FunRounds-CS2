@@ -1,4 +1,5 @@
 // Generated from funrounds_native.pplugin (group: entities)
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 #[allow(unused_imports)]
 use super::aliases::*;
@@ -37,7 +38,7 @@ pub type _HookEntityTouchPre = unsafe extern "C" fn(i32, EntityTouchPreCallback)
 #[unsafe(no_mangle)]
 pub static mut __funrounds_native_HookEntityTouchPre: Option<_HookEntityTouchPre> = None;
 
-/// Revokes the Touch callback and removes all Touch implementation detours it owns.
+/// Returns true for a non-null callback with no hooks or after all its hooks detach; false for null or incomplete own-hook detachment. Other callbacks' hooks are untouched.
 ///
 /// # Arguments
 /// * `callback` - (function)
