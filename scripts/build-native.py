@@ -17,10 +17,10 @@ from typing import Optional, Sequence, Tuple
 
 S2SDK_URL = "https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk.git"
 # funrounds branch; pin the patched provider used by both plugins and the bundle.
-S2SDK_COMMIT = "021b5d5a90abb6014df0ca128a4af4d3725888d0"
-S2SDK_VERSION = "3.0.2"
+S2SDK_COMMIT = "dfa3a3e8e88a70872b66d379490d3228a48f6d81"
+S2SDK_VERSION = "3.0.6"
 SOURCESDK_URL = "https://github.com/Wend4r/sourcesdk.git"
-SOURCESDK_COMMIT = "d0539abb26d950d12338ef24aa300aface789710"
+SOURCESDK_COMMIT = "f3de33c58595c628c12b4ffaba76dfcd49b8763f"
 
 
 class BuildError(RuntimeError):
@@ -219,13 +219,11 @@ def windows_generator() -> str:
     return generators[int(match.group(1))]
 
 
-def build_s2sdk(sdk: Path, work_dir: Path, output_dir: Path, cmake: str, options: Sequence[str]) -> None:
+def build_s2sdk(sdk: Path, work_dir: Path, output_dir: Path, cmake: str, options: Sequence[str]) -> Path:
     run(["git", "-C", str(sdk), "submodule", "update", "--init", "--recursive", "--depth", "1", "--",
          "external/parallel-hashmap", "external/zydis"])
     build = work_dir / "build-s2sdk"
-    # S2SDK does not use protobuf's gzip API; avoid linking MSVC against a discovered MinGW zlib.
-    protobuf_options = ["-Dprotobuf_WITH_ZLIB=OFF"] if platform.system() == "Windows" else []
-    run([cmake, "-S", str(sdk), "-B", str(build), *options, *protobuf_options,
+    run([cmake, "-S", str(sdk), "-B", str(build), *options, "-Dprotobuf_WITH_ZLIB=OFF",
          "-DCMAKE_SUPPRESS_REGENERATION=ON", "-DSOURCESDK_GAME_TARGET=cs2", "-DSOURCESDK_USE_ABI0=ON",
          f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={build / 'bin'}", f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY={build / 'bin'}"])
     run([cmake, "--build", str(build), "--config", "Release", "--target", "plugify-plugin-s2sdk", "--parallel", "4"])
@@ -250,6 +248,8 @@ def build_s2sdk(sdk: Path, work_dir: Path, output_dir: Path, cmake: str, options
         "repository": S2SDK_URL, "commit": S2SDK_COMMIT, "version": S2SDK_VERSION,
         "sourcesdk_commit": SOURCESDK_COMMIT,
     }, indent=2) + "\n", encoding="utf-8")
+    protobuf = build / "external/sourcesdk/thirdparty/protobuf"
+    return protobuf / "Release/libprotobuf.lib" if platform.system() == "Windows" else protobuf / "libprotobuf.a"
 
 
 def configure_and_build(repo_root: Path, work_dir: Path, output_dir: Path) -> Path:
@@ -299,7 +299,8 @@ def configure_and_build(repo_root: Path, work_dir: Path, output_dir: Path) -> Pa
             "-DCMAKE_INSTALL_RPATH=$ORIGIN",
             "-DSOURCESDK_LINK_ENABLE_RPATH=OFF",
         ]
-    build_s2sdk(sdk, work_dir, output_dir, cmake, options)
+    protobuf = build_s2sdk(sdk, work_dir, output_dir, cmake, options)
+    configure.append(f"-DFUNROUNDS_PROTOBUF_LIBRARY={protobuf}")
     configure.extend(options)
 
     run(configure)

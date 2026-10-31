@@ -1,5 +1,5 @@
 {
-  "version": "0.2.0-alpha.test",
+  "version": "0.3.0-alpha.test.2",
   "name": "funrounds",
   "description": "Configurable special rounds for Counter-Strike 2",
   "author": "Mai Ooizumi",
@@ -8,9 +8,14 @@
   "entry": "bin/funrounds_plugin",
   "language": "rust",
   "dependencies": [
-    { "name": "s2sdk", "constraints": "=3.0.2" },
-    { "name": "funrounds_native", "constraints": "=0.2.0-alpha.test" }
+    {
+      "name": "s2sdk",
+      "constraints": "=3.0.6"
+    },
+    {
+      "name": "funrounds_native",
+      "constraints": "=0.3.0-alpha.test.2"
+    }
   ],
   "methods": []
 }
-

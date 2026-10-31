@@ -24,6 +24,13 @@ struct RenderSnapshot {
 }
 
 #[derive(Clone, Copy)]
+struct OwnedRender {
+    snapshot: RenderSnapshot,
+    last_alpha: u8,
+    pending_alpha: Option<u8>,
+}
+
+#[derive(Clone, Copy)]
 struct RenderValues {
     mode: u8,
     color: u32,
@@ -33,8 +40,8 @@ pub(crate) struct Translucent {
     player: LivePlayer,
     identity: PlayerIdentity,
     round: RoundGeneration,
-    body: Option<RenderSnapshot>,
-    weapons: HashMap<i32, RenderSnapshot>,
+    body: Option<OwnedRender>,
+    weapons: HashMap<i32, OwnedRender>,
 }
 
 impl Translucent {
@@ -46,6 +53,15 @@ impl Translucent {
             body: None,
             weapons: HashMap::new(),
         }
+    }
+
+    pub(crate) fn takeover(&mut self, player: LivePlayer, identity: PlayerIdentity, round: RoundGeneration) -> Result<(), Fault> {
+        if self.round != round || self.identity.pawn_handle != identity.pawn_handle || player.pawn_handle as u32 != identity.pawn_handle {
+            return Err(Fault::cancelled("translucent pawn or round changed during bot takeover"));
+        }
+        self.player = player;
+        self.identity = identity;
+        Ok(())
     }
 
     pub(crate) fn release_unowned_weapons(&mut self, round: RoundGeneration) -> Result<(), Fault> {
@@ -61,8 +77,8 @@ impl Translucent {
         let stale = self.weapons.keys().copied().filter(|handle| !owned.contains(handle)).collect::<Vec<_>>();
         let mut errors = Vec::new();
         for handle in stale {
-            let snapshot = self.weapons[&handle];
-            match restore_entity(handle, snapshot) {
+            let owned = self.weapons[&handle];
+            match restore_entity(handle, owned) {
                 Ok(()) => {
                     self.weapons.remove(&handle);
                 }
@@ -77,20 +93,38 @@ impl Translucent {
     }
 
     pub(crate) fn update(&mut self, identity: PlayerIdentity, round: RoundGeneration) -> Result<(), Fault> {
+        self.update_alpha(identity, round, TRANSLUCENT_ALPHA)
+    }
+
+    pub(crate) fn update_alpha(&mut self, identity: PlayerIdentity, round: RoundGeneration, alpha: u8) -> Result<(), Fault> {
         if identity != self.identity || round != self.round || LivePlayer::resolve(self.player.slot) != Some(self.player) {
             return Err(Fault::cancelled("translucent effect identity or round changed"));
         }
 
         if self.body.is_none() {
-            self.body = Some(capture_entity(self.player.pawn_handle).map_err(translucent_fault)?);
+            let snapshot = capture_entity(self.player.pawn_handle).map_err(translucent_fault)?;
+            self.body = Some(OwnedRender {
+                snapshot,
+                last_alpha: snapshot.alpha,
+                pending_alpha: None,
+            });
         }
-        apply_entity(self.player.pawn_handle).map_err(translucent_fault)?;
+        if let Some(body) = &mut self.body {
+            apply_entity(self.player.pawn_handle, alpha, body).map_err(translucent_fault)?;
+        }
 
         for handle in carried_weapons(self.player) {
             if let std::collections::hash_map::Entry::Vacant(entry) = self.weapons.entry(handle) {
-                entry.insert(capture_entity(handle).map_err(translucent_fault)?);
+                let snapshot = capture_entity(handle).map_err(translucent_fault)?;
+                entry.insert(OwnedRender {
+                    snapshot,
+                    last_alpha: snapshot.alpha,
+                    pending_alpha: None,
+                });
             }
-            apply_entity(handle).map_err(translucent_fault)?;
+            if let Some(weapon) = self.weapons.get_mut(&handle) {
+                apply_entity(handle, alpha, weapon).map_err(translucent_fault)?;
+            }
         }
         Ok(())
     }
@@ -103,9 +137,9 @@ impl Translucent {
                 Err(error) => errors.push(error),
             }
         }
-        let weapons = self.weapons.iter().map(|(handle, snapshot)| (*handle, *snapshot)).collect::<Vec<_>>();
-        for (handle, snapshot) in weapons {
-            match restore_entity(handle, snapshot) {
+        let weapons = self.weapons.iter().map(|(handle, owned)| (*handle, *owned)).collect::<Vec<_>>();
+        for (handle, owned) in weapons {
+            match restore_entity(handle, owned) {
                 Ok(()) => {
                     self.weapons.remove(&handle);
                 }
@@ -128,12 +162,16 @@ pub(crate) fn probe() -> Probe {
     probe
 }
 
-fn carried_weapons(player: LivePlayer) -> HashSet<i32> {
+pub(crate) fn carried_weapons(player: LivePlayer) -> HashSet<i32> {
     let inventory = s2sdk::GetClientWeapons(player.slot).iter().copied().collect::<HashSet<_>>();
     inventory
         .iter()
         .copied()
-        .filter(|handle| s2sdk::IsValidEntHandle(*handle) && is_carried_by(*handle, s2sdk::GetEntityOwner(*handle), player.pawn_handle, &inventory))
+        .filter(|handle| {
+            s2sdk::IsValidEntHandle(*handle)
+                && entity_pointer(*handle).is_ok()
+                && is_carried_by(*handle, s2sdk::GetEntityOwner(*handle), player.pawn_handle, &inventory)
+        })
         .collect()
 }
 
@@ -145,26 +183,44 @@ fn capture_entity(handle: i32) -> Result<RenderSnapshot, String> {
     })
 }
 
-fn apply_entity(handle: i32) -> Result<(), String> {
+fn apply_entity(handle: i32, desired_alpha: u8, owned: &mut OwnedRender) -> Result<(), String> {
     let current = read_entity(handle)?;
-    if alpha(current.color) != TRANSLUCENT_ALPHA {
-        write_color(handle, set_alpha(current.color, TRANSLUCENT_ALPHA))?;
+    if let Some(pending_alpha) = owned.pending_alpha {
+        reconcile_alpha_write(owned, pending_alpha, alpha(current.color));
+    }
+    if alpha(current.color) != desired_alpha {
+        let value = set_alpha(current.color, desired_alpha);
+        let pointer = entity_pointer(handle)?;
+        owned.pending_alpha = Some(desired_alpha);
+        s2sdk::SetEntSchema2(
+            pointer,
+            &Str::from_str(MODEL_CLASS),
+            &Str::from_str(COLOR_FIELD),
+            i64::from(value as i32),
+            true,
+            0,
+        );
+        let actual = read_entity(handle)?;
+        reconcile_alpha_write(owned, desired_alpha, alpha(actual.color));
+        if actual.color != value {
+            return Err(format!("{MODEL_CLASS}.{COLOR_FIELD} write failed for handle {handle}"));
+        }
     }
     if current.mode != TRANSLUCENT_MODE {
         write_mode(handle, TRANSLUCENT_MODE)?;
     }
     let actual = read_entity(handle)?;
-    if actual.mode == TRANSLUCENT_MODE && alpha(actual.color) == TRANSLUCENT_ALPHA {
+    if actual.mode == TRANSLUCENT_MODE && alpha(actual.color) == desired_alpha {
         Ok(())
     } else {
         Err(format!("render write verification failed for handle {handle}"))
     }
 }
 
-fn restore_entity(handle: i32, snapshot: RenderSnapshot) -> Result<(), String> {
+fn restore_entity(handle: i32, owned: OwnedRender) -> Result<(), String> {
     let Some(_) = entity_pointer_for_restore(handle)? else { return Ok(()) };
     let current = read_entity(handle)?;
-    let (mode, color) = values_to_restore(snapshot, current);
+    let (mode, color) = values_to_restore(owned, current);
     if let Some(mode) = mode
         && mode != current.mode
     {
@@ -183,10 +239,20 @@ fn restore_entity(handle: i32, snapshot: RenderSnapshot) -> Result<(), String> {
     }
 }
 
-fn values_to_restore(snapshot: RenderSnapshot, current: RenderValues) -> (Option<u8>, Option<u32>) {
+fn values_to_restore(owned: OwnedRender, current: RenderValues) -> (Option<u8>, Option<u32>) {
+    let snapshot = owned.snapshot;
     let mode = (current.mode == TRANSLUCENT_MODE).then_some(snapshot.mode);
-    let color = (alpha(current.color) == TRANSLUCENT_ALPHA).then_some(set_alpha(current.color, snapshot.alpha));
+    let current_alpha = alpha(current.color);
+    let owns_alpha = current_alpha == owned.last_alpha || owned.pending_alpha == Some(current_alpha);
+    let color = owns_alpha.then_some(set_alpha(current.color, snapshot.alpha));
     (mode, color)
+}
+
+fn reconcile_alpha_write(owned: &mut OwnedRender, attempted_alpha: u8, observed_alpha: u8) {
+    if observed_alpha == attempted_alpha {
+        owned.last_alpha = attempted_alpha;
+    }
+    owned.pending_alpha = None;
 }
 
 fn decode_render_mode(value: i64) -> Result<u8, ()> {

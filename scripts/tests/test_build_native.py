@@ -63,12 +63,13 @@ class BuildNativeTests(unittest.TestCase):
                 patch.object(build_native, "require_tool", return_value="cmake"), \
                 patch.object(build_native, "check_linux_compilers", return_value=("/usr/bin/gcc-14", "/usr/bin/g++-14")), \
                 patch.object(build_native, "windows_generator", return_value="Visual Studio 18 2026"), \
-                patch.object(build_native, "build_s2sdk") as provider_build, \
+                patch.object(build_native, "build_s2sdk", return_value=work / "protobuf.lib") as provider_build, \
                 patch.object(build_native, "run", side_effect=fake_run):
             result = build_native.configure_and_build(ROOT, work, output)
 
         self.assertEqual(result, output)
         self.assertEqual(provider_build.call_args.args[:3], (work / "s2sdk", work, output))
+        self.assertIn(f"-DFUNROUNDS_PROTOBUF_LIBRARY={work / 'protobuf.lib'}", commands[0])
         self.assertEqual((output / "bin" / binary_name).read_bytes(), b"native fixture")
         manifest = ROOT / "native/funrounds-native/funrounds-native.pplugin"
         gamedata = ROOT / "native/funrounds-native/gamedata/funrounds-native.jsonc"
@@ -79,7 +80,7 @@ class BuildNativeTests(unittest.TestCase):
     def test_generates_pinned_s2sdk_import_manifest(self):
         sdk = self.root / "sdk"
         sdk.mkdir()
-        (sdk / "version.txt").write_text("3.0.2\n", encoding="utf-8")
+        (sdk / "version.txt").write_text("3.0.6\n", encoding="utf-8")
         (sdk / "plugify-plugin-s2sdk.pplugin.in").write_text(
             '{"version":"${S2SDK_VERSION}","name":"${S2SDK_PACKAGE}"}', encoding="utf-8"
         )
@@ -95,7 +96,7 @@ class BuildNativeTests(unittest.TestCase):
             build_native.generate_s2sdk_imports(sdk, generated_include)
 
         rendered = json.loads((self.root / "generated/plugify-plugin-s2sdk.pplugin").read_text("utf-8"))
-        self.assertEqual(rendered, {"version": "3.0.2", "name": "s2sdk"})
+        self.assertEqual(rendered, {"version": "3.0.6", "name": "s2sdk"})
         self.assertEqual(commands[0][1:7], ["-manifest", str(self.root / "generated/plugify-plugin-s2sdk.pplugin"), "-output", str(generated_include), "-lang", "cpp"])
         self.assertIn("-overwrite", commands[0])
         self.assertTrue((generated_include / "external/plugify/include/s2sdk/s2sdk.cpp").is_file())
@@ -161,16 +162,18 @@ class BuildNativeTests(unittest.TestCase):
                     (build / name).write_text("{}", "utf-8")
                 output = work / "output"
                 with patch.object(build_native.platform, "system", return_value=system), patch.object(build_native, "run") as run:
-                    build_native.build_s2sdk(sdk, work, output, "cmake", ["-DCMAKE_BUILD_TYPE=Release"])
+                    protobuf = build_native.build_s2sdk(sdk, work, output, "cmake", ["-DCMAKE_BUILD_TYPE=Release"])
+                expected_library = "Release/libprotobuf.lib" if system == "Windows" else "libprotobuf.a"
+                self.assertEqual(protobuf, build / "external/sourcesdk/thirdparty/protobuf" / expected_library)
                 commands = [call.args[0] for call in run.call_args_list]
                 self.assertIn("external/zydis", commands[0])
-                self.assertEqual("-Dprotobuf_WITH_ZLIB=OFF" in commands[1], system == "Windows")
+                self.assertIn("-Dprotobuf_WITH_ZLIB=OFF", commands[1])
                 self.assertIn("plugify-plugin-s2sdk", commands[2])
                 self.assertEqual((output / "s2sdk/bin" / binary).read_bytes(), b"patched provider")
                 self.assertEqual(len(list((output / "s2sdk/licenses").glob("*.txt"))), 5)
                 source = json.loads((output / "s2sdk/source.json").read_text("utf-8"))
                 self.assertEqual(source["repository"], "https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk.git")
-                self.assertEqual(source["commit"], "021b5d5a90abb6014df0ca128a4af4d3725888d0")
+                self.assertEqual(source["commit"], "dfa3a3e8e88a70872b66d379490d3228a48f6d81")
 
 
 if __name__ == "__main__":

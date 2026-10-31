@@ -10,15 +10,24 @@ pub enum Mechanism {
     TaserCharge,
     Bunnyhop,
     Friction,
+    TimeScale,
+    GroundAcceleration,
+    GroundReverse,
     NoSpread,
     NoRecoil,
     BuyTime,
     BuyLimit,
+    BuyAccess,
+    BuyAnywhere,
+    Money,
     FriendlyFireScale,
     TeammatesAsEnemies,
     RandomSpawn,
+    HideRadar,
+    HidePlayerIdentification,
     DropWeapons,
     DropGrenades,
+    ShootDroppedGrenades,
     FallDamageScale,
     RecoilView,
     Color,
@@ -30,6 +39,8 @@ pub enum Mechanism {
     NativeSelfDamage,
     EnergyShield,
     Translucent,
+    GhostVisibility,
+    GhostBreath,
     DelayedDamage,
     Reflection,
     ReflectionLifestealFrame,
@@ -39,10 +50,12 @@ pub enum Mechanism {
     CarryBomb,
     MovingBlast,
     ProjectileDamage,
+    Dodgeball,
     ThrowingKnives,
     ViewPunchDecay,
     NoScope,
     Fov,
+    ThirdPerson,
     Crosshair,
     PeriodicMovement,
     NoC4,
@@ -52,9 +65,14 @@ pub enum Mechanism {
     PeriodicSpeed,
     PeriodicGravity,
     WinCondition,
+    CtBombNoDefuse,
     C4Assignment,
     RandomDamage,
     Suicide,
+    Healthshot,
+    ChickenFollowBlocking,
+    ChickenEating,
+    Afterburn,
 }
 
 impl Mechanism {
@@ -67,15 +85,27 @@ impl Mechanism {
             Self::TaserCharge => capabilities.taser_charge = false,
             Self::Bunnyhop => capabilities.bunnyhop = false,
             Self::Friction => capabilities.friction = false,
+            Self::TimeScale => capabilities.time_scale = false,
+            Self::GroundAcceleration => {
+                capabilities.ground_acceleration = false;
+                capabilities.ground_reverse = false;
+            }
+            Self::GroundReverse => capabilities.ground_reverse = false,
             Self::NoSpread => capabilities.no_spread = false,
             Self::NoRecoil => capabilities.no_recoil = false,
             Self::BuyTime => capabilities.buy_time = false,
             Self::BuyLimit => capabilities.buy_limit = false,
+            Self::BuyAccess => capabilities.buy_access = false,
+            Self::BuyAnywhere => capabilities.buy_anywhere = false,
+            Self::Money => capabilities.money = false,
             Self::FriendlyFireScale => capabilities.friendly_fire_scale = false,
             Self::TeammatesAsEnemies => capabilities.teammates_as_enemies = false,
             Self::RandomSpawn => capabilities.random_spawn = false,
+            Self::HideRadar => capabilities.hide_radar = false,
+            Self::HidePlayerIdentification => capabilities.hide_player_identification = false,
             Self::DropWeapons => capabilities.drop_weapons = false,
             Self::DropGrenades => capabilities.drop_grenades = false,
+            Self::ShootDroppedGrenades => capabilities.shoot_dropped_grenades = false,
             Self::FallDamageScale => capabilities.fall_damage_scale = false,
             Self::RecoilView => capabilities.recoil_view = false,
             Self::Color => capabilities.color = false,
@@ -89,10 +119,13 @@ impl Mechanism {
             Self::NativeSelfDamage => capabilities.native_self_damage = false,
             Self::EnergyShield => capabilities.energy_shield = false,
             Self::Translucent => capabilities.translucent = false,
+            Self::GhostVisibility => capabilities.ghost_visibility = false,
+            Self::GhostBreath => capabilities.ghost_breath = false,
             Self::DelayedDamage => capabilities.delayed_damage = false,
             Self::Reflection => capabilities.reflect_damage = false,
             Self::ReflectionLifestealFrame => capabilities.reflection_lifesteal_frame = false,
             Self::TeamDeathmatch | Self::WinCondition => capabilities.win_condition = false,
+            Self::CtBombNoDefuse => capabilities.ct_bomb_no_defuse = false,
             Self::BombTiming => capabilities.bomb_timing = false,
             Self::ChickenBomb => capabilities.chicken_bomb = false,
             Self::CarryBomb => capabilities.carry_bomb = false,
@@ -104,10 +137,12 @@ impl Mechanism {
                 capabilities.dodgeball = false;
                 capabilities.throwing_knives = false;
             }
+            Self::Dodgeball => capabilities.dodgeball = false,
             Self::ThrowingKnives => capabilities.throwing_knives = false,
             Self::ViewPunchDecay => capabilities.view_punch_decay = false,
             Self::NoScope => capabilities.no_scope = false,
             Self::Fov => capabilities.fov = false,
+            Self::ThirdPerson => capabilities.third_person = false,
             Self::Crosshair => capabilities.hide_crosshair = false,
             Self::PeriodicMovement => {
                 capabilities.periodic_speed = false;
@@ -121,6 +156,10 @@ impl Mechanism {
             Self::HealthDecay => capabilities.health_decay = false,
             Self::RandomDamage => capabilities.random_damage = false,
             Self::Suicide => capabilities.suicide = false,
+            Self::Healthshot => capabilities.healthshot = false,
+            Self::ChickenFollowBlocking => capabilities.ordinary_chickens = false,
+            Self::ChickenEating => {}
+            Self::Afterburn => capabilities.afterburn = false,
         }
     }
 }
@@ -225,6 +264,17 @@ impl Faults {
         true
     }
 
+    /// Excludes one optional capability without putting unrelated gameplay into recovery.
+    pub fn exclude(&mut self, mechanism: Mechanism, message: impl Into<String>) -> bool {
+        mechanism.exclude(&mut self.available);
+        let reason = (Scope::Mechanism(mechanism), message.into());
+        if self.reasons.contains(&reason) {
+            return false;
+        }
+        self.reasons.push(reason);
+        true
+    }
+
     pub fn capabilities(&self) -> Capabilities {
         if self.recovery == Recovery::Stopped {
             Capabilities::default()
@@ -277,6 +327,7 @@ mod tests {
             dodgeball: true,
             throwing_knives: true,
             win_condition: true,
+            ct_bomb_no_defuse: true,
             ..Capabilities::default()
         }
     }
@@ -408,18 +459,19 @@ mod tests {
         assert!(!controller.start_round(blocked, false, &mut rng));
         assert!(!controller.is_new_round(first));
         assert_eq!(controller.phase(), Phase::Idle);
-        let base = source.replace("diagnostics = false", "");
+        let (header, body) = source.split_once("[[modes]]").unwrap();
+        let base = format!("[[modes]]{body}");
         let basic_source = base
             .replace("id = \"example\"", "id = \"basic\"")
-            .replace("name = \"通用示例\"", "name = \"Basic\"");
+            .replace("name_key = \"mode.example.name\"", "name = \"Basic\"");
         let feature_source = base
             .replace("id = \"example\"", "id = \"feature\"")
-            .replace("name = \"通用示例\"", "name = \"Feature\"")
+            .replace("name_key = \"mode.example.name\"", "name = \"Feature\"")
             .replace(
                 "weapons = [\"weapon_famas\", \"weapon_p250\"]",
                 "weapons = [\"weapon_famas\", \"weapon_p250\"]\ngive_knife = \"all\"\nthrowing_knives = true",
             );
-        let reloaded_source = format!("{basic_source}\n{feature_source}");
+        let reloaded_source = format!("{header}\n{basic_source}\n{feature_source}");
         controller.queue_reload(&reloaded_source).unwrap();
         controller.set_enabled(false);
         controller.set_enabled(true);

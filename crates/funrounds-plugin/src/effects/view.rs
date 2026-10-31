@@ -27,8 +27,9 @@ const SCOPED_WEAPONS: &[&str] = &[
     "weapon_sg556",
 ];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FovSnapshot {
+    controller_handle: i32,
     original: i32,
     applied: Option<i32>,
 }
@@ -52,6 +53,7 @@ pub(crate) struct ViewEffects {
     round: RoundGeneration,
     controller_handle: i32,
     fov: Option<FovSnapshot>,
+    retired_fov: Vec<FovSnapshot>,
     crosshair: Option<CrosshairSnapshot>,
     secondary: Option<SecondaryAttackSnapshot>,
 }
@@ -62,7 +64,11 @@ impl ViewEffects {
             .fov
             .map(|_| {
                 read_controller_value(player, FOV_CLASS, FOV_FIELD)
-                    .map(|original| FovSnapshot { original, applied: None })
+                    .map(|original| FovSnapshot {
+                        controller_handle: player.controller_handle,
+                        original,
+                        applied: None,
+                    })
                     .map_err(|error| Fault::mechanism(Mechanism::Fov, error))
             })
             .transpose()?;
@@ -83,6 +89,7 @@ impl ViewEffects {
             round,
             controller_handle: player.controller_handle,
             fov,
+            retired_fov: Vec::new(),
             crosshair,
             secondary: None,
         })
@@ -150,21 +157,51 @@ impl ViewEffects {
         Ok(())
     }
 
+    pub(crate) fn takeover(&mut self, player: LivePlayer, identity: PlayerIdentity, round: RoundGeneration, mode: &Mode) -> Result<(), Fault> {
+        if self.round != round || self.identity.pawn_handle != identity.pawn_handle || player.pawn_handle as u32 != identity.pawn_handle {
+            return Err(Fault::cancelled("view pawn or round changed during bot takeover"));
+        }
+
+        // FOV belongs to the controller, unlike crosshair and weapon state on the pawn.
+        // Restore the previous controller's owned value, then capture the new controller's
+        // baseline instead of carrying the old controller snapshot across the handoff.
+        let controller_changed = self.controller_handle != player.controller_handle;
+        self.identity = identity;
+        self.controller_handle = player.controller_handle;
+        if controller_changed {
+            let mut deferred_fov_error = None;
+            if let Some(previous) = self.fov.take()
+                && let Err(error) = restore_fov_snapshot(previous)
+            {
+                self.retired_fov.push(previous);
+                deferred_fov_error = Some(error);
+            }
+            self.fov = if let Some(desired) = mode.fov {
+                let original = read_controller_value(player, FOV_CLASS, FOV_FIELD).map_err(|error| Fault::mechanism(Mechanism::Fov, error))?;
+                Some(FovSnapshot {
+                    controller_handle: player.controller_handle,
+                    original,
+                    applied: Some(desired),
+                })
+            } else {
+                None
+            };
+            if self.fov.is_some()
+                && let Some(desired) = mode.fov
+            {
+                write_controller_value(player, FOV_CLASS, FOV_FIELD, desired).map_err(|error| Fault::mechanism(Mechanism::Fov, error))?;
+            }
+            if let Some(error) = deferred_fov_error {
+                return Err(Fault::mechanism(Mechanism::Fov, error));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn restore(&mut self) -> Result<(), String> {
         let mut errors = Vec::new();
-        if let Some(snapshot) = self.fov
-            && let Some(applied) = snapshot.applied
-            && let Some(player) = same_controller(self.identity.slot, self.controller_handle)
-        {
-            match read_controller_value(player, FOV_CLASS, FOV_FIELD) {
-                Ok(current) if owns_value(current, applied) => {
-                    if let Err(error) = write_controller_value(player, FOV_CLASS, FOV_FIELD, snapshot.original) {
-                        errors.push(error);
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => errors.push(error),
-            }
+        if let Err(error) = self.restore_controller_fov() {
+            errors.push(error);
         }
         if let Some(snapshot) = self.crosshair
             && snapshot.hidden_by_us
@@ -183,6 +220,24 @@ impl ViewEffects {
         }
         if let Err(error) = self.restore_secondary_attack() {
             errors.push(error);
+        }
+        if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+    }
+
+    fn restore_controller_fov(&mut self) -> Result<(), String> {
+        let mut errors = Vec::new();
+        if let Some(snapshot) = self.fov {
+            match restore_fov_snapshot(snapshot) {
+                Ok(()) => self.fov = None,
+                Err(error) => errors.push(error),
+            }
+        }
+        let retired = self.retired_fov.clone();
+        for snapshot in retired {
+            match restore_fov_snapshot(snapshot) {
+                Err(error) => errors.push(error),
+                Ok(()) => self.retired_fov.retain(|retained| *retained != snapshot),
+            }
         }
         if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
     }
@@ -248,12 +303,14 @@ impl ViewEffects {
 pub(crate) fn no_scope_probe() -> Probe {
     let mut probe = Probe::default();
     imports!(probe;
-        __s2sdk_GetMaxClients, __s2sdk_IsClientInGame, __s2sdk_IsClientAlive,
+        __s2sdk_GetMaxClients, __s2sdk_IsClientInGame, __s2sdk_IsClientAlive, __s2sdk_GetClientHealth,
         __s2sdk_PlayerSlotToEntHandle, __s2sdk_GetClientPawn,
         __s2sdk_GetClientActiveWeapon, __s2sdk_GetEntityOwner, __s2sdk_GetEntityClassname,
         __s2sdk_IsValidEntHandle, __s2sdk_EntHandleToEntPointer, __s2sdk_EntPointerToEntHandle,
-        __s2sdk_GetGameTickCount, __s2sdk_GetEntSchema2, __s2sdk_SetEntSchema2,
+        __s2sdk_GetGameTickCount, __s2sdk_GetSchemaOffset, __s2sdk_GetEntSchema2, __s2sdk_GetEntSchemaEnt2,
+        __s2sdk_SetEntSchema2,
     );
+    probe.schema("CBasePlayerPawn", "m_hController");
     probe.schema(SECONDARY_CLASS, SECONDARY_FIELD);
     probe
 }
@@ -274,9 +331,11 @@ fn player_schema_probe() -> Probe {
     let mut probe = Probe::default();
     imports!(probe;
         __s2sdk_GetMaxClients, __s2sdk_PlayerSlotToEntHandle, __s2sdk_GetClientPawn, __s2sdk_IsClientInGame,
+        __s2sdk_IsClientAlive, __s2sdk_GetClientHealth, __s2sdk_GetEntityClassname, __s2sdk_GetSchemaOffset,
         __s2sdk_IsValidEntHandle, __s2sdk_EntHandleToEntPointer, __s2sdk_EntPointerToEntHandle,
-        __s2sdk_GetEntSchema2, __s2sdk_SetEntSchema2,
+        __s2sdk_GetEntSchema2, __s2sdk_GetEntSchemaEnt2, __s2sdk_SetEntSchema2,
     );
+    probe.schema("CBasePlayerPawn", "m_hController");
     probe
 }
 
@@ -284,11 +343,51 @@ fn controller_pointer(player: LivePlayer) -> Result<Option<usize>, String> {
     let Some(current) = same_controller(player.slot, player.controller_handle) else {
         return Ok(None);
     };
-    let pointer = s2sdk::EntHandleToEntPointer(current.controller_handle);
-    if pointer == 0 || s2sdk::EntPointerToEntHandle(pointer) != current.controller_handle {
-        return Err("player controller handle changed before FOV access".into());
+    controller_pointer_for_handle(current.controller_handle)
+}
+
+fn controller_pointer_for_handle(handle: i32) -> Result<Option<usize>, String> {
+    if !s2sdk::IsValidEntHandle(handle) {
+        return Ok(None);
     }
-    Ok(Some(pointer))
+    let pointer = s2sdk::EntHandleToEntPointer(handle);
+    if pointer == 0 || s2sdk::EntPointerToEntHandle(pointer) != handle {
+        Err("player controller handle changed before FOV access".into())
+    } else {
+        Ok(Some(pointer))
+    }
+}
+
+fn read_controller_handle_value(handle: i32, class: &str, field: &str) -> Result<Option<i32>, String> {
+    let Some(pointer) = controller_pointer_for_handle(handle)? else {
+        return Ok(None);
+    };
+    let value = s2sdk::GetEntSchema2(pointer, &Str::from_str(class), &Str::from_str(field), 0);
+    i32::try_from(value)
+        .map(Some)
+        .map_err(|_| format!("invalid {class}.{field} value: {value}"))
+}
+
+fn restore_fov_snapshot(snapshot: FovSnapshot) -> Result<(), String> {
+    let Some(applied) = snapshot.applied else { return Ok(()) };
+    if let Some(current) = read_controller_handle_value(snapshot.controller_handle, FOV_CLASS, FOV_FIELD)?
+        && owns_value(current, applied)
+    {
+        write_controller_handle_value(snapshot.controller_handle, FOV_CLASS, FOV_FIELD, snapshot.original)?;
+    }
+    Ok(())
+}
+
+fn write_controller_handle_value(handle: i32, class: &str, field: &str, value: i32) -> Result<(), String> {
+    let Some(pointer) = controller_pointer_for_handle(handle)? else {
+        return Ok(());
+    };
+    s2sdk::SetEntSchema2(pointer, &Str::from_str(class), &Str::from_str(field), i64::from(value), true, 0);
+    if read_controller_handle_value(handle, class, field)? == Some(value) {
+        Ok(())
+    } else {
+        Err("controller value write failed".into())
+    }
 }
 
 fn pawn_pointer(player: LivePlayer) -> Result<Option<usize>, String> {

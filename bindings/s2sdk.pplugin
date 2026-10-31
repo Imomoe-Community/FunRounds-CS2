@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/untrustedmodders/plugify/refs/heads/main/schemas/plugin.schema.json",
-  "version": "3.0.2",
+  "version": "3.0.6",
   "name": "s2sdk",
   "description": "Provides functionality for other plugins from Source 2 engine",
   "author": "untrustedmodders",
@@ -11,11 +11,11 @@
   "language": "cpp",
   "dependencies": [
     {
-      "constraints": ">=2.5.2",
+      "constraints": ">=2.5.7",
       "name": "polyhook"
     },
     {
-      "constraints": ">=2.1.0",
+      "constraints": ">=2.1.2",
       "name": "configs"
     },
     {
@@ -393,6 +393,29 @@
       }
     },
     {
+      "name": "PrintToConsole",
+      "group": "Console",
+      "description": "Sends a message to a client's console.",
+      "funcName": "PrintToConsole",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot to whom the message will be sent."
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "ref": false,
+          "description": "The message to be sent to the client's console."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
       "name": "PrintToChatAll",
       "group": "Console",
       "description": "Prints a message to all clients in the chat area.",
@@ -459,6 +482,23 @@
       "retType": {
         "type": "int32",
         "description": "The maximum client count, or -1 if global variables are not initialized."
+      }
+    },
+    {
+      "name": "Precache",
+      "group": "Engine",
+      "description": "Precaches a given file.",
+      "funcName": "Precache",
+      "paramTypes": [
+        {
+          "name": "resource",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the resource to be precached."
+        }
+      ],
+      "retType": {
+        "type": "void"
       }
     },
     {
@@ -877,6 +917,35 @@
       "retType": {
         "type": "string",
         "description": "The output value in string format."
+      }
+    },
+    {
+      "name": "SendConVarValue",
+      "group": "Cvars",
+      "description": "Replicates a console variable value to a specific client. This does not change the actual console variable value.",
+      "funcName": "SendConVarValue",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the client to replicate the value to."
+        },
+        {
+          "name": "conVarHandle",
+          "type": "uint64",
+          "ref": false,
+          "description": "The handle to the console variable data."
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "ref": false,
+          "description": "The value to send to the client."
+        }
+      ],
+      "retType": {
+        "type": "void"
       }
     },
     {
@@ -1415,10 +1484,234 @@
       }
     },
     {
+      "name": "HookUserMessage",
+      "group": "Protobuf",
+      "description": "Hooks a user message with a callback.",
+      "funcName": "HookUserMessage",
+      "paramTypes": [
+        {
+          "name": "messageId",
+          "type": "int16",
+          "ref": false,
+          "description": "The ID of the message to hook."
+        },
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "The callback function to invoke when the message is received.",
+          "prototype": "UserMessageCallback"
+        },
+        {
+          "name": "mode",
+          "type": "uint8",
+          "ref": false,
+          "description": "Whether to hook the message in the post mode (after processing) or pre mode (before processing).",
+          "enum": "HookMode"
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True if the hook was successfully added, false otherwise."
+      }
+    },
+    {
+      "name": "UnhookUserMessage",
+      "group": "Protobuf",
+      "description": "Unhooks a previously hooked user message.",
+      "funcName": "UnhookUserMessage",
+      "paramTypes": [
+        {
+          "name": "messageId",
+          "type": "int16",
+          "ref": false,
+          "description": "The ID of the message to unhook."
+        },
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "The callback function to remove.",
+          "prototype": "UserMessageCallback"
+        },
+        {
+          "name": "mode",
+          "type": "uint8",
+          "ref": false,
+          "description": "Whether the hook was in post mode (after processing) or pre mode (before processing).",
+          "enum": "HookMode"
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True if the hook was successfully removed, false otherwise."
+      }
+    },
+    {
+      "name": "UserMessageCreateFromName",
+      "group": "Protobuf",
+      "description": "Creates a UserMessage from a message name.",
+      "funcName": "UserMessageCreateFromName",
+      "paramTypes": [
+        {
+          "name": "messageName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the message."
+        }
+      ],
+      "retType": {
+        "type": "ptr64",
+        "description": "A pointer to the newly created UserMessage."
+      }
+    },
+    {
+      "name": "UserMessageGetMessageName",
+      "group": "Protobuf",
+      "description": "Gets the name of the message.",
+      "funcName": "UserMessageGetMessageName",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The UserMessage instance."
+        }
+      ],
+      "retType": {
+        "type": "string",
+        "description": "The name of the message as a string."
+      }
+    },
+    {
+      "name": "UserMessageAddAllPlayers",
+      "group": "Protobuf",
+      "description": "Adds all connected players as recipients to the UserMessage.",
+      "funcName": "UserMessageAddAllPlayers",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The UserMessage instance."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "UserMessageGetRepeatedFieldCount",
+      "group": "Protobuf",
+      "description": "Gets the count of repeated fields in a field of the UserMessage.",
+      "funcName": "UserMessageGetRepeatedFieldCount",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The UserMessage instance."
+        },
+        {
+          "name": "fieldName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the field."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The count of repeated fields, or -1 if the field is not repeated or does not exist."
+      }
+    },
+    {
+      "name": "PbGetRepeatedString",
+      "group": "Protobuf",
+      "description": "Gets a repeated string value from a field in the UserMessage.",
+      "funcName": "PbGetRepeatedString",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The UserMessage instance."
+        },
+        {
+          "name": "fieldName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the field."
+        },
+        {
+          "name": "index",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the repeated field."
+        },
+        {
+          "name": "out",
+          "type": "string",
+          "ref": true,
+          "description": "The output string."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True if the field was successfully retrieved, false otherwise."
+      }
+    },
+    {
+      "name": "PbAddString",
+      "group": "Protobuf",
+      "description": "Adds a string value to a repeated field in the UserMessage.",
+      "funcName": "PbAddString",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The UserMessage instance."
+        },
+        {
+          "name": "fieldName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the field."
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "ref": false,
+          "description": "The value to add."
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True if the value was successfully added, false otherwise."
+      }
+    },
+    {
       "name": "RespawnClient",
       "group": "Clients",
       "description": "Respawns a player.",
       "funcName": "RespawnClient",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot to respawn."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "ForceRespawnClient",
+      "group": "Clients",
+      "description": "Forces a full engine respawn for a player, including when the current pawn is alive. Supported in CS2.",
+      "funcName": "ForceRespawnClient",
       "paramTypes": [
         {
           "name": "playerSlot",
@@ -1440,6 +1733,70 @@
       "retType": {
         "type": "float",
         "description": "The current game time."
+      }
+    },
+    {
+      "name": "EmitSoundToClient",
+      "group": "Engine",
+      "description": "Emits a sound to one or more clients.",
+      "funcName": "EmitSoundToClient",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity that emits the sound."
+        },
+        {
+          "name": "playersSlot",
+          "type": "int32[]",
+          "ref": false,
+          "description": "Player slot indices that will hear the sound."
+        },
+        {
+          "name": "sound",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the sound to emit."
+        },
+        {
+          "name": "volume",
+          "type": "float",
+          "ref": false,
+          "description": "The volume of the sound."
+        },
+        {
+          "name": "pitch",
+          "type": "float",
+          "ref": false,
+          "description": "The pitch of the sound."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "StopSound",
+      "group": "Engine",
+      "description": "Stops a sound from a specified entity.",
+      "funcName": "StopSound",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity that will stop the sound."
+        },
+        {
+          "name": "sound",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the sound to stop."
+        }
+      ],
+      "retType": {
+        "type": "void"
       }
     },
     {
@@ -1701,6 +2058,35 @@
           "type": "string",
           "ref": false,
           "description": "The message to be printed in the chat area."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "PrintCentreHtml",
+      "group": "Console",
+      "description": "Prints a html message to a specific client in the center of the screen.",
+      "funcName": "PrintCentreHtml",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot to whom the message will be sent."
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "ref": false,
+          "description": "The HTML-formatted message to be printed."
+        },
+        {
+          "name": "duration",
+          "type": "int32",
+          "ref": false,
+          "description": "The duration of the message in seconds."
         }
       ],
       "retType": {
@@ -2472,6 +2858,47 @@
       }
     },
     {
+      "name": "GetEntityModelScale",
+      "group": "Models",
+      "description": "Retrieves the model scale of an entity.",
+      "funcName": "GetEntityModelScale",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity."
+        }
+      ],
+      "retType": {
+        "type": "float",
+        "description": "The model scale factor."
+      }
+    },
+    {
+      "name": "SetEntityModelScale",
+      "group": "Models",
+      "description": "Sets the model scale of an entity.",
+      "funcName": "SetEntityModelScale",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity."
+        },
+        {
+          "name": "scale",
+          "type": "float",
+          "ref": false,
+          "description": "The new scale factor."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
       "name": "ScriptLookupAttachment",
       "group": "Models",
       "description": "Retrieves an attachment index by name.",
@@ -2616,6 +3043,42 @@
       }
     },
     {
+      "name": "OnBuildGameSessionManifest_Register",
+      "group": "Listeners",
+      "description": "Register callback to event.",
+      "funcName": "OnBuildGameSessionManifest_Register",
+      "paramTypes": [
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "Function callback.",
+          "prototype": "OnBuildGameSessionManifestCallback"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "OnBuildGameSessionManifest_Unregister",
+      "group": "Listeners",
+      "description": "Unregister callback to event.",
+      "funcName": "OnBuildGameSessionManifest_Unregister",
+      "paramTypes": [
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "Function callback.",
+          "prototype": "OnBuildGameSessionManifestCallback"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
       "name": "IsClientAuthorized",
       "group": "Clients",
       "description": "Checks if a certain player has been authenticated.",
@@ -2649,6 +3112,24 @@
       "retType": {
         "type": "uint64",
         "description": "uint64_t The client's SteamID64."
+      }
+    },
+    {
+      "name": "GetClientLanguageCode",
+      "group": "Clients",
+      "description": "Retrieves a client's language as an ISO code. Unlike GetClientLanguage, which returns the raw cl_language value (\"english\", \"schinese\"), this returns the code translation files are keyed by (\"en\", \"zh-CN\"). Empty until the client answers the cl_language query, and always empty for bots. Reliably available starting from OnClientAuthenticated and OnClientPutInServer.",
+      "funcName": "GetClientLanguageCode",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "string",
+        "description": "The client's ISO language code."
       }
     },
     {
@@ -2706,7 +3187,7 @@
       ],
       "retType": {
         "type": "uint32",
-        "description": "A id to the loaded game configuration object, or -1 if loading fails.",
+        "description": "A id to the loaded game configuration object, or 0 if loading fails.",
         "alias": {
           "name": "ConfigId"
         }
@@ -2884,6 +3365,135 @@
         "type": "vec3",
         "description": "Eye angles as a vector (pitch, yaw, roll)"
       }
+    },
+    {
+      "name": "GetHiddenTransmitEntities",
+      "group": "Transmit",
+      "description": "Gets all hidden entity handles for a player.",
+      "funcName": "GetHiddenTransmitEntities",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The player slot to query."
+        }
+      ],
+      "retType": {
+        "type": "int32[]",
+        "description": "Array of hidden entity handles."
+      }
+    },
+    {
+      "name": "HideTransmitEntity",
+      "group": "Transmit",
+      "description": "Hides a single entity from a player's transmit list.",
+      "funcName": "HideTransmitEntity",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The player slot to hide the entity from."
+        },
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "Entity handle to hide."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "ShowTransmitEntity",
+      "group": "Transmit",
+      "description": "Shows a previously hidden entity to a player.",
+      "funcName": "ShowTransmitEntity",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The player slot to show the entity to."
+        },
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "Entity handle to show."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "NetworkStateChanged",
+      "group": "Schema",
+      "description": "Updates the networked state of a schema field for a given entity handle.",
+      "funcName": "NetworkStateChanged",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity from which the value is to be retrieved."
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class that contains the member."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the member to be set."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "OnMapEnd_Register",
+      "group": "Listeners",
+      "description": "Register callback to event.",
+      "funcName": "OnMapEnd_Register",
+      "paramTypes": [
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "Function callback.",
+          "prototype": "OnMapEndCallback"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "OnMapEnd_Unregister",
+      "group": "Listeners",
+      "description": "Unregister callback to event.",
+      "funcName": "OnMapEnd_Unregister",
+      "paramTypes": [
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "Function callback.",
+          "prototype": "OnMapEndCallback"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
     }
   ],
   "classes": [],
@@ -2960,6 +3570,44 @@
           "enum": "NetworkDisconnectionReason"
         }
       ],
+      "retType": {
+        "type": "void",
+        "description": ""
+      }
+    },
+    {
+      "name": "OnBuildGameSessionManifestCallback",
+      "funcName": "OnBuildGameSessionManifestCallback",
+      "description": "Called before server activation to build game session manifest.",
+      "paramTypes": [],
+      "retType": {
+        "type": "void",
+        "description": ""
+      }
+    },
+    {
+      "name": "UserMessageCallback",
+      "funcName": "UserMessageCallback",
+      "description": "Callback function for user messages.",
+      "paramTypes": [
+        {
+          "name": "userMessage",
+          "type": "ptr64",
+          "ref": false,
+          "description": "The user message."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "Indicates the result of the action execution.",
+        "enum": "ResultType"
+      }
+    },
+    {
+      "name": "OnMapEndCallback",
+      "funcName": "OnMapEndCallback",
+      "description": "Called on every map end.",
+      "paramTypes": [],
       "retType": {
         "type": "void",
         "description": ""

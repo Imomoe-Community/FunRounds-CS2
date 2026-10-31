@@ -14,7 +14,6 @@ use std::collections::{HashMap, HashSet};
 
 const PLANTED: &str = "CPlantedC4";
 const C4: &str = "CC4";
-const MARKED_FOR_DELETE: i64 = 1 << 9;
 const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
 const CHICKEN_BOMB_OFFSET_Z: f32 = 10.0;
 const BLAST: &str = "CEnvExplosion";
@@ -32,6 +31,280 @@ pub enum CarryPose {
     World,
     Hand,
     Back,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlantingSide {
+    Terrorist,
+    CounterTerrorist,
+}
+
+impl PlantingSide {
+    fn from_team(team: i32) -> Option<Self> {
+        match team {
+            2 => Some(Self::Terrorist),
+            3 => Some(Self::CounterTerrorist),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefusePolicy {
+    /// Not the tracked installation; this is not evidence that the bomb is defusable.
+    Untracked,
+    /// Ownership cannot yet be resolved; callers must not treat this as defusable.
+    Unknown,
+    Allowed,
+    Forbidden,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WireColor {
+    Blue,
+    Yellow,
+    Red,
+    Green,
+}
+
+impl WireColor {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("blue") {
+            Some(Self::Blue)
+        } else if value.eq_ignore_ascii_case("yellow") {
+            Some(Self::Yellow)
+        } else if value.eq_ignore_ascii_case("red") {
+            Some(Self::Red)
+        } else if value.eq_ignore_ascii_case("green") {
+            Some(Self::Green)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Blue => "Blue",
+            Self::Yellow => "Yellow",
+            Self::Red => "Red",
+            Self::Green => "Green",
+        }
+    }
+
+    fn from_index(index: u8) -> Self {
+        match index {
+            0 => Self::Blue,
+            1 => Self::Yellow,
+            2 => Self::Red,
+            _ => Self::Green,
+        }
+    }
+
+    fn random(rng: &mut impl Rng) -> Self {
+        Self::from_index(rng.random_range(0..4))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QuickCutOutcome {
+    Defused,
+    Exploded,
+}
+
+pub(crate) enum WireCommandError {
+    Rejected(&'static str),
+    Fault(Fault),
+}
+
+pub(crate) struct QuickCutRequest {
+    round: RoundGeneration,
+    live: LivePlayer,
+    task: PlayerTask,
+    team: i32,
+    wire: WireColor,
+}
+
+impl QuickCutRequest {
+    pub(crate) fn new(round: RoundGeneration, live: LivePlayer, task: PlayerTask, team: i32, wire: WireColor) -> Self {
+        Self {
+            round,
+            live,
+            task,
+            team,
+            wire,
+        }
+    }
+}
+
+struct QuickCutAttempt {
+    round: RoundGeneration,
+    handle: i32,
+    task: PlayerTask,
+    live_pawn: u32,
+    allowed: bool,
+    defuser_matches: bool,
+    wire: WireColor,
+}
+
+#[derive(Clone, Copy)]
+struct QuickBomb {
+    round: RoundGeneration,
+    handle: i32,
+    wire: WireColor,
+    cut_consumed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct QuickDefuser {
+    round: RoundGeneration,
+    handle: i32,
+    task: PlayerTask,
+    kit: bool,
+}
+
+#[derive(Default)]
+struct QuickDefuse {
+    planter: Option<PlayerTask>,
+    selected_wire: Option<WireColor>,
+    bomb: Option<QuickBomb>,
+    defuser: Option<QuickDefuser>,
+}
+
+impl QuickDefuse {
+    fn begin_plant(&mut self, planter: Option<PlayerTask>) {
+        self.planter = planter;
+        self.selected_wire = None;
+        self.defuser = None;
+    }
+
+    fn select_plant_wire(&mut self, task: PlayerTask, wire: WireColor) -> Result<(), &'static str> {
+        if self.planter != Some(task) {
+            return Err("only the current planter can select a QuickDefuse wire");
+        }
+        if self.selected_wire.is_some() {
+            return Err("the planter has already selected a QuickDefuse wire");
+        }
+        self.selected_wire = Some(wire);
+        Ok(())
+    }
+
+    fn take_plant_wire(&mut self, planter: Option<PlayerTask>) -> Option<WireColor> {
+        let wire = if self.planter == planter { self.selected_wire } else { None };
+        self.planter = None;
+        self.selected_wire = None;
+        wire
+    }
+
+    fn planted(&mut self, round: RoundGeneration, kind: BombKind, handle: i32, wire: Option<WireColor>) {
+        self.planter = None;
+        self.selected_wire = None;
+        self.defuser = None;
+        self.bomb = if kind == BombKind::Native {
+            wire.map(|wire| QuickBomb {
+                round,
+                handle,
+                wire,
+                cut_consumed: false,
+            })
+        } else {
+            None
+        };
+    }
+
+    fn begin_defuse(&mut self, task: PlayerTask, round: RoundGeneration, handle: i32, kit: bool, allowed: bool) -> bool {
+        self.defuser = None;
+        let Some(bomb) = self
+            .bomb
+            .filter(|bomb| bomb.round == round && bomb.handle == handle && !bomb.cut_consumed)
+        else {
+            return false;
+        };
+        if !allowed || task.round != round {
+            return false;
+        }
+        self.defuser = Some(QuickDefuser {
+            round,
+            handle: bomb.handle,
+            task,
+            kit,
+        });
+        true
+    }
+
+    fn abort_defuse(&mut self) {
+        self.defuser = None;
+    }
+
+    fn abort_plant(&mut self) {
+        self.planter = None;
+        self.selected_wire = None;
+    }
+
+    fn abandon_player(&mut self, slot: i32) {
+        if self.planter.is_some_and(|task| task.player.slot == slot) {
+            self.abort_plant();
+        }
+        if self.defuser.is_some_and(|defuser| defuser.task.player.slot == slot) {
+            self.abort_defuse();
+        }
+    }
+
+    fn cut(&mut self, attempt: QuickCutAttempt, rng: &mut impl Rng) -> Result<QuickCutOutcome, &'static str> {
+        let QuickCutAttempt {
+            round,
+            handle,
+            task,
+            live_pawn,
+            allowed,
+            defuser_matches,
+            wire: selected_wire,
+        } = attempt;
+        let Some(mut bomb) = self.bomb.filter(|bomb| bomb.round == round && bomb.handle == handle) else {
+            return Err("QuickDefuse requires the exact tracked native bomb");
+        };
+        if bomb.cut_consumed {
+            return Err("this bomb has already had its one QuickDefuse cut");
+        }
+        let Some(defuser) = self.defuser else {
+            return Err("start defusing the tracked bomb before selecting a wire");
+        };
+        if !allowed
+            || defuser.round != round
+            || defuser.handle != handle
+            || defuser.task != task
+            || task.round != round
+            || task.player.pawn_handle != live_pawn
+            || !defuser_matches
+        {
+            return Err("QuickDefuse requires the current live defuser of the tracked bomb");
+        }
+        // Consume before touching native timer state: failed writes cannot grant a reroll.
+        bomb.cut_consumed = true;
+        self.bomb = Some(bomb);
+        self.defuser = None;
+        let no_kit_success = selected_wire == bomb.wire && !defuser.kit && rng.random_range(0..2) == 0;
+        let outcome = quick_cut_outcome(bomb.wire, selected_wire, defuser.kit, no_kit_success);
+        Ok(outcome)
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+fn quick_cut_outcome(correct_wire: WireColor, selected_wire: WireColor, kit: bool, no_kit_success: bool) -> QuickCutOutcome {
+    if selected_wire != correct_wire || (!kit && !no_kit_success) {
+        QuickCutOutcome::Exploded
+    } else {
+        QuickCutOutcome::Defused
+    }
+}
+
+fn quick_cut_deadline(outcome: QuickCutOutcome) -> (&'static str, f32) {
+    match outcome {
+        QuickCutOutcome::Defused => ("m_flDefuseCountDown", 1.0),
+        QuickCutOutcome::Exploded => ("m_flC4Blow", 1.0),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,14 +364,20 @@ pub enum ActionResult {
     CreationFailed { created: Option<i32>, error: Fault },
 }
 
-pub fn capabilities(events: Probe, explosion_event: Probe, round_prestart: bool, reasons: &mut Vec<String>) -> Capabilities {
+pub fn capabilities(
+    events: Probe,
+    plant_tracking_events: Probe,
+    explosion_event: Probe,
+    round_prestart: bool,
+    reasons: &mut Vec<String>,
+) -> Capabilities {
     let mut entity_iteration = Probe::default();
     imports!(entity_iteration;
         __s2sdk_GetFirstActiveEntity, __s2sdk_GetNextActiveEntity,
         __s2sdk_GetEntityClassname, __s2sdk_IsValidEntHandle,
     );
     let mut timing = entity_iteration.clone();
-    timing.include(events);
+    timing.include(events.clone());
     for (class, field) in [
         (C4, "m_fArmedTime"),
         (C4, "m_bStartedArming"),
@@ -118,6 +397,14 @@ pub fn capabilities(events: Probe, explosion_event: Probe, round_prestart: bool,
     imports!(timing;
         __s2sdk_GetEntSchema2, __s2sdk_GetEntSchemaEnt2, __s2sdk_SetEntSchema2,
         __s2sdk_GetEntSchemaFloat2, __s2sdk_SetEntSchemaFloat2,
+    );
+    let mut ct_bomb_no_defuse = entity_iteration.clone();
+    ct_bomb_no_defuse.include(plant_tracking_events);
+    for field in ["m_bCannotBeDefused", "m_bBombTicking", "m_bBombDefused"] {
+        ct_bomb_no_defuse.schema(PLANTED, field);
+    }
+    imports!(ct_bomb_no_defuse;
+        __s2sdk_GetEntSchema2, __s2sdk_SetEntSchema2, __s2sdk_EntHandleToEntPointer,
     );
     let mut owned_removal = Probe::default();
     owned_removal.schema("CEntityInstance", "m_pEntity");
@@ -165,16 +452,13 @@ pub fn capabilities(events: Probe, explosion_event: Probe, round_prestart: bool,
     let mut bounce = entity_iteration;
     imports!(bounce; __s2sdk_GetEntityOwner, __s2sdk_SetEntityAbsVelocity);
     Capabilities {
+        ct_bomb_no_defuse: ct_bomb_no_defuse.record("ct_bomb_no_defuse", reasons),
         bomb_timing: timing.record("bomb_timing", reasons),
         chicken_bomb: chicken.record("chicken_bomb", reasons),
         carry_bomb: carry.record("carry_bomb", reasons),
         bomb_bounce: bounce.record("bomb_bounce", reasons),
         ..Capabilities::default()
     }
-}
-
-fn schema(class: &str, field: &str) -> bool {
-    unsafe { s2sdk::__s2sdk_GetSchemaOffset }.is_some() && s2sdk::GetSchemaOffset(&Str::from_str(class), &Str::from_str(field)) >= 0
 }
 
 fn integer(handle: i32, class: &str, field: &str) -> i64 {
@@ -221,17 +505,19 @@ fn set_integer(handle: i32, class: &str, field: &str, value: i64) -> Result<(), 
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum PropertyValue {
     Float(f32),
     Integer(i64),
 }
 
+#[derive(Clone, Copy)]
 struct OwnedProperty {
     handle: i32,
     class: &'static str,
     field: &'static str,
     previous: PropertyValue,
+    written: PropertyValue,
 }
 
 impl OwnedProperty {
@@ -239,11 +525,28 @@ impl OwnedProperty {
         if !s2sdk::IsValidEntHandle(self.handle) {
             return Ok(());
         }
+        if self.class == PLANTED
+            && self.field == "m_bCannotBeDefused"
+            && !plugin_still_owns(self, current_property(self.handle, self.class, self.field, self.written))
+        {
+            return Ok(());
+        }
         match self.previous {
             PropertyValue::Float(value) => set_float(self.handle, self.class, self.field, value),
             PropertyValue::Integer(value) => set_integer(self.handle, self.class, self.field, value),
         }
     }
+}
+
+fn current_property(handle: i32, class: &str, field: &str, kind: PropertyValue) -> PropertyValue {
+    match kind {
+        PropertyValue::Float(_) => PropertyValue::Float(float(handle, class, field)),
+        PropertyValue::Integer(_) => PropertyValue::Integer(integer(handle, class, field)),
+    }
+}
+
+fn plugin_still_owns(property: &OwnedProperty, current: PropertyValue) -> bool {
+    property.class != PLANTED || property.field != "m_bCannotBeDefused" || current == property.written
 }
 
 fn is_defuse_property(property: &OwnedProperty, bomb: i32, pawn: i32) -> bool {
@@ -259,8 +562,13 @@ fn is_finished_bomb_property(property: &OwnedProperty, bomb: i32) -> bool {
         || (property.class == "CCSPlayerPawn" && matches!(property.field, "m_iProgressBarDuration" | "m_flProgressBarStartTime"))
 }
 
+fn should_keep_special_display(kind: BombKind, defused: bool) -> bool {
+    kind == BombKind::Chicken || (kind == BombKind::Carry && !defused)
+}
+
 fn is_consumed_defuse_property(property: &OwnedProperty, bomb: i32, pawn: Option<i32>) -> bool {
-    property.handle == bomb || pawn.is_some_and(|pawn| is_defuse_property(property, bomb, pawn))
+    (property.handle == bomb && !(property.class == PLANTED && property.field == "m_bCannotBeDefused"))
+        || pawn.is_some_and(|pawn| is_defuse_property(property, bomb, pawn))
 }
 
 #[derive(Clone, Copy)]
@@ -292,6 +600,7 @@ struct Planted {
     round: RoundGeneration,
     kind: BombKind,
     planter: Option<PlayerTask>,
+    planting_side: Option<PlantingSide>,
     chicken: Option<i32>,
     proxy: Option<i32>,
     placement: Option<CarryPlacement>,
@@ -300,20 +609,68 @@ struct Planted {
     cleanup_pending: bool,
 }
 
+#[derive(Clone, Copy)]
+struct PendingPlant {
+    round: RoundGeneration,
+    tick: i32,
+    planter: Option<PlayerTask>,
+    planting_side: Option<PlantingSide>,
+    kind: BombKind,
+    wire: Option<WireColor>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PlantTiming {
+    timer_length: f32,
+    blow_time: f32,
+}
+
+fn plant_timing(settings: Option<&BombSettings>, now: f32) -> Option<PlantTiming> {
+    settings.map(|settings| PlantTiming {
+        timer_length: settings.explode_time,
+        blow_time: now + settings.explode_time,
+    })
+}
+
+fn should_bounce_dropped_c4(configured: Option<bool>, available: bool) -> bool {
+    // Legacy C4 bounce applied globally. A mode with explicit bomb settings can
+    // still opt into or out of the behavior.
+    available && configured.unwrap_or(true)
+}
+
+fn dropped_native_c4(classname: &str, valid: bool, has_owner: bool, tracked_carry_proxy: bool) -> bool {
+    valid && classname == "weapon_c4" && !has_owner && !tracked_carry_proxy
+}
+
+fn defuse_duration(settings: Option<&BombSettings>, kit: bool) -> Option<f32> {
+    settings.map(|settings| if kit { settings.defuse_kit_time } else { settings.defuse_time })
+}
+
+fn native_model_scale_candidate(kind: BombKind, handle: i32) -> Option<i32> {
+    (kind == BombKind::Native).then_some(handle)
+}
+
 #[derive(Default)]
 pub struct Bombs {
     arming: Option<TimedAction>,
     defusing: Option<DefuseAction>,
-    before_plant: Option<HashSet<i32>>,
+    before_plant: Option<(RoundGeneration, HashSet<i32>)>,
     plant_task: Option<PlayerTask>,
     plant_weapon: Option<i32>,
-    pending_plant: Option<(RoundGeneration, i32)>,
+    quick_defuse: QuickDefuse,
+    pending_plant: Option<PendingPlant>,
+    newly_planted_native_scale: Option<i32>,
+    native_model_scale_restores: HashSet<i32>,
     planted: Option<Planted>,
     completed_chicken: Option<Planted>,
+    display_until_prestart: bool,
+    display_generation: Option<RoundGeneration>,
     cleanup_requested: bool,
     bouncing: HashMap<i32, f32>,
     retiring: HashSet<i32>,
     retiring_pending: HashSet<i32>,
+    prestart_cleanup: bool,
+    prestart_retiring: HashSet<i32>,
     properties: Vec<OwnedProperty>,
     next_action: u64,
     map_epoch: u64,
@@ -325,9 +682,68 @@ pub struct Bombs {
 }
 
 impl Bombs {
+    pub fn begin_round_prestart_cleanup(&mut self) {
+        self.prestart_cleanup = true;
+        self.prestart_retiring.clear();
+        self.newly_planted_native_scale = None;
+    }
+
+    pub fn finish_round_prestart_cleanup(&mut self) {
+        self.prestart_cleanup = false;
+    }
+
+    pub fn refresh_prestart_retirements(&mut self) {
+        self.retiring.retain(|handle| s2sdk::IsValidEntHandle(*handle));
+        self.retiring_pending.retain(|handle| self.retiring.contains(handle));
+        self.prestart_retiring.retain(|handle| self.retiring.contains(handle));
+    }
+
+    pub fn prestart_removals_ready(&self) -> bool {
+        !self.prestart_cleanup
+            && !self.retiring.is_empty()
+            && self.retiring == self.prestart_retiring
+            && self.planted.is_none()
+            && self.completed_chicken.is_none()
+            && !self.display_until_prestart
+            && self.display_generation.is_none()
+            && self.properties.is_empty()
+            && self.bouncing.is_empty()
+            && self.arming.is_none()
+            && self.defusing.is_none()
+            && self.pending_plant.is_none()
+            && self.pending_actions.is_empty()
+            && self.queued.is_empty()
+            && self.retiring_pending.is_empty()
+            && self.pending_explosion.is_none()
+            && self.active_explosion.is_none()
+            && !self.cleanup_requested
+    }
+
+    pub fn confirm_prestart_removals_after_round_reset(&mut self) {
+        self.refresh_prestart_retirements();
+        self.prestart_cleanup = false;
+        self.prestart_retiring.clear();
+        self.retire_finished_entities();
+    }
+
     pub fn excludes_suicide_c4(&self, player: LivePlayer, weapon: i32) -> bool {
         self.planted
             .is_some_and(|bomb| bomb.proxy == Some(weapon) || bomb.placement.is_some_and(|placement| placement.player == Some(player)))
+    }
+
+    pub fn defuse_policy(&self, round: RoundGeneration, handle: i32) -> DefusePolicy {
+        let Some(planted) = self.planted.filter(|bomb| bomb.round == round && bomb.handle == handle) else {
+            return if self.pending_plant.is_some_and(|pending| pending.round == round) {
+                DefusePolicy::Unknown
+            } else {
+                DefusePolicy::Untracked
+            };
+        };
+        match planted.planting_side {
+            Some(PlantingSide::Terrorist) => DefusePolicy::Allowed,
+            Some(PlantingSide::CounterTerrorist) => DefusePolicy::Forbidden,
+            None => DefusePolicy::Unknown,
+        }
     }
 
     pub fn capture_explosion(&mut self, round: RoundGeneration) {
@@ -386,7 +802,7 @@ impl Bombs {
         let bomb = self.planted?;
         let proxy = bomb.proxy?;
         if bomb.kind != BombKind::Carry
-            || bomb.round != round
+            || !self.tracks_planted_round(bomb.round, round)
             || self.cleanup_requested
             || bomb.cleanup_pending
             || bomb.placement_pending
@@ -409,13 +825,20 @@ impl Bombs {
         self.queued.pop()
     }
 
-    pub fn begin_plant(&mut self, task: PlayerTask) {
+    pub fn begin_plant(&mut self, round: RoundGeneration, task: Option<PlayerTask>) {
+        // The engine installation exists even while a BOT takeover is awaiting its pawn identity.
+        // Capture it before requiring a player or an active weapon for the optional timing write.
+        self.before_plant = Some((round, entity_handles("planted_c4").into_iter().collect()));
+        self.newly_planted_native_scale = None;
+        self.plant_task = task.filter(|task| task.round == round);
+        self.quick_defuse.begin_plant(self.plant_task);
+        self.arming = None;
+        self.plant_weapon = None;
+        let Some(task) = self.plant_task else { return };
         let handle = s2sdk::GetClientActiveWeapon(task.player.slot);
         if !s2sdk::IsValidEntHandle(handle) || s2sdk::GetEntityClassname(handle).to_string() != "weapon_c4" {
             return;
         }
-        self.before_plant = Some(entity_handles("planted_c4").into_iter().collect());
-        self.plant_task = Some(task);
         self.plant_weapon = Some(handle);
         self.arming = Some(TimedAction {
             task,
@@ -425,26 +848,171 @@ impl Bombs {
         });
     }
 
+    pub fn take_native_model_scale_candidate(&mut self) -> Option<i32> {
+        self.newly_planted_native_scale.take()
+    }
+
+    pub fn take_native_model_scale_restores(&mut self) -> Vec<i32> {
+        self.native_model_scale_restores.drain().collect()
+    }
+
     pub fn abort_plant(&mut self) -> Result<(), String> {
         self.arming = None;
         self.before_plant = None;
         self.plant_task = None;
+        self.quick_defuse.abort_plant();
         if let Some(handle) = self.plant_weapon.take() {
             return self.restore_properties(|property| property.handle == handle && property.class == C4);
         }
         Ok(())
     }
 
-    pub fn planted(&mut self, round: RoundGeneration, task: Option<PlayerTask>) {
+    pub fn planted(
+        &mut self,
+        round: RoundGeneration,
+        task: Option<PlayerTask>,
+        planting_team: i32,
+        tick: i32,
+        kind: BombKind,
+        rng: &mut impl Rng,
+    ) -> Result<(), String> {
         self.arming = None;
         self.plant_weapon = None;
-        self.plant_task = task.or(self.plant_task.take());
-        self.pending_plant = Some((round, s2sdk::GetGameTickCount()));
+        // Never replace the beginning's life with a reconnected or respawned completion sender.
+        self.plant_task = self.plant_task.or(task.filter(|task| task.round == round));
+        let planter = self.plant_task;
+        let planting_side = PlantingSide::from_team(planting_team);
+        let selected_wire = self.quick_defuse.take_plant_wire(planter);
+        let wire = (kind == BombKind::Native && planting_side.is_some()).then(|| selected_wire.unwrap_or_else(|| WireColor::random(rng)));
+        self.pending_plant = Some(PendingPlant {
+            round,
+            tick,
+            planter,
+            planting_side,
+            kind,
+            wire,
+        });
+        if planting_side.is_none() {
+            return Err(format!("bomb_planted completion has unknown planting team: {planting_team}"));
+        }
+        Ok(())
+    }
+
+    pub fn select_plant_wire(&mut self, round: RoundGeneration, task: PlayerTask, wire: WireColor) -> Result<(), &'static str> {
+        if task.round != round || self.before_plant.is_none() || self.pending_plant.is_some() {
+            return Err("wire selection is only available between bomb_beginplant and bomb_planted");
+        }
+        self.quick_defuse.select_plant_wire(task, wire)
+    }
+
+    pub fn is_planting_wire_window(&self, round: RoundGeneration, task: PlayerTask) -> bool {
+        task.round == round && self.before_plant.is_some() && self.pending_plant.is_none() && self.quick_defuse.planter == Some(task)
+    }
+
+    pub fn begin_quick_defuse(&mut self, round: RoundGeneration, task: PlayerTask, kit: bool) -> bool {
+        let Some(planted) = self
+            .planted
+            .filter(|bomb| bomb.round == round && bomb.kind == BombKind::Native && s2sdk::IsValidEntHandle(bomb.handle))
+        else {
+            self.quick_defuse.abort_defuse();
+            return false;
+        };
+        self.quick_defuse.begin_defuse(
+            task,
+            round,
+            planted.handle,
+            kit,
+            self.defuse_policy(round, planted.handle) == DefusePolicy::Allowed,
+        )
+    }
+
+    pub fn abort_quick_defuse(&mut self) {
+        self.quick_defuse.abort_defuse();
+    }
+
+    pub fn abandon_quick_defuse_player(&mut self, slot: i32) {
+        self.quick_defuse.abandon_player(slot);
+    }
+
+    pub fn quick_defuser_slot(&self) -> Option<i32> {
+        self.quick_defuse.defuser.map(|defuser| defuser.task.player.slot)
+    }
+
+    pub fn quick_cut(&mut self, request: QuickCutRequest, players: &PlayerTracker, rng: &mut impl Rng) -> Result<QuickCutOutcome, WireCommandError> {
+        let QuickCutRequest {
+            round,
+            live,
+            task,
+            team,
+            wire,
+        } = request;
+        let Some(bomb) = self
+            .planted
+            .filter(|bomb| bomb.round == round && bomb.kind == BombKind::Native && s2sdk::IsValidEntHandle(bomb.handle))
+        else {
+            return Err(WireCommandError::Rejected("QuickDefuse requires a tracked native planted C4"));
+        };
+        match self.defuse_policy(round, bomb.handle) {
+            DefusePolicy::Forbidden => return Err(WireCommandError::Rejected("CT-planted C4 cannot be defused")),
+            DefusePolicy::Unknown => return Err(WireCommandError::Rejected("planted C4 side is not known")),
+            DefusePolicy::Untracked => return Err(WireCommandError::Rejected("QuickDefuse requires the exact tracked C4")),
+            DefusePolicy::Allowed => {}
+        }
+        if !valid_player(task, round, players) || live.slot != task.player.slot || live.pawn_handle as u32 != task.player.pawn_handle || team != 3 {
+            return Err(WireCommandError::Rejected("QuickDefuse requires the current live CT defuser"));
+        }
+        let pointer = s2sdk::EntHandleToEntPointer(bomb.handle);
+        let being_defused = integer(bomb.handle, PLANTED, "m_bBeingDefused") != 0;
+        let defuser = s2sdk::GetEntSchemaEnt2(pointer, &Str::from_str(PLANTED), &Str::from_str("m_hBombDefuser"), 0) as u32;
+        let schema_allows_defuse = integer(bomb.handle, PLANTED, "m_bBombTicking") != 0
+            && integer(bomb.handle, PLANTED, "m_bBombDefused") == 0
+            && integer(bomb.handle, PLANTED, "m_bCannotBeDefused") == 0;
+        let outcome = self
+            .quick_defuse
+            .cut(
+                QuickCutAttempt {
+                    task,
+                    round,
+                    handle: bomb.handle,
+                    live_pawn: live.pawn_handle as u32,
+                    allowed: schema_allows_defuse,
+                    defuser_matches: being_defused && defuser == live.pawn_handle as u32,
+                    wire,
+                },
+                rng,
+            )
+            .map_err(WireCommandError::Rejected)?;
+
+        // A QuickDefuse result owns its native deadline. Do not let a pending configured
+        // defuse update replace it, and never restore the outcome timer during cleanup.
+        self.defusing = None;
+        let (field, value) = quick_cut_deadline(outcome);
+        set_float(bomb.handle, PLANTED, field, value).map_err(|error| WireCommandError::Fault(Fault::mechanism(Mechanism::BombTiming, error)))?;
+        self.properties
+            .retain(|property| !(property.handle == bomb.handle && property.class == PLANTED && property.field == field));
+        self.restore_properties(|property| is_defuse_property(property, bomb.handle, live.pawn_handle))
+            .map_err(|error| WireCommandError::Fault(Fault::mechanism(Mechanism::BombTiming, error)))?;
+        Ok(outcome)
+    }
+
+    fn take_installation(&mut self, round: RoundGeneration, handles: &[i32]) -> Result<i32, String> {
+        let (generation, before) = self.before_plant.take().ok_or("bomb_planted without a tracked installation")?;
+        if generation != round {
+            return Err("bomb_planted installation belongs to another round".into());
+        }
+        let candidates = handles.iter().copied().filter(|handle| !before.contains(handle)).collect::<Vec<_>>();
+        unique_new_bomb(&candidates)
     }
 
     pub fn begin_defuse(&mut self, task: PlayerTask, kit: bool) -> Result<(), String> {
         self.abort_defuse()?;
         if let Some(planted) = self.planted {
+            match self.defuse_policy(task.round, planted.handle) {
+                DefusePolicy::Forbidden => return Ok(()),
+                DefusePolicy::Unknown => return Err("planted C4 planting side is unknown".into()),
+                DefusePolicy::Untracked => return Ok(()),
+                DefusePolicy::Allowed => {}
+            }
             self.defusing = Some(DefuseAction {
                 action: TimedAction {
                     task,
@@ -470,6 +1038,7 @@ impl Bombs {
     pub fn update(
         &mut self,
         settings: Option<&BombSettings>,
+        bounce_available: bool,
         round: RoundGeneration,
         players: &PlayerTracker,
         rng: &mut impl Rng,
@@ -480,12 +1049,27 @@ impl Bombs {
             self.queue_cleanup();
             return Ok(());
         }
+        if self.display_until_prestart {
+            if let Some(bomb) = self.planted.filter(|bomb| bomb.round == round || self.display_generation == Some(round)) {
+                match bomb.kind {
+                    BombKind::Chicken
+                        if bomb.chicken.is_none()
+                            && !bomb.spawn_pending
+                            && !self.completed_chicken.is_some_and(|completed| completed.handle == bomb.handle) =>
+                    {
+                        self.queue(ActionKind::SpawnChicken { round, bomb: bomb.handle });
+                        self.planted.as_mut().expect("planted bomb exists").spawn_pending = true;
+                    }
+                    BombKind::Carry => self.update_carry_placement(bomb, round, players),
+                    _ => {}
+                }
+            }
+            return Ok(());
+        }
         if settings.is_none() {
             self.arming = None;
-            self.before_plant = None;
-            self.plant_task = None;
             self.plant_weapon = None;
-            self.pending_plant = None;
+            self.abort_defuse().map_err(Fault::global)?;
         }
 
         let tick = s2sdk::GetGameTickCount();
@@ -503,25 +1087,24 @@ impl Bombs {
             }
         }
 
-        if let (Some((generation, planted_tick)), Some(settings)) = (self.pending_plant, settings)
-            && tick > planted_tick
-        {
+        if let Some(pending) = self.pending_plant.filter(|pending| tick > pending.tick) {
             self.pending_plant = None;
-            if generation == round {
-                let before = self.before_plant.take().ok_or("bomb_planted without a tracked installation")?;
-                let candidates = entity_handles("planted_c4")
-                    .into_iter()
-                    .filter(|handle| !before.contains(handle))
-                    .collect::<Vec<_>>();
-                let handle = unique_new_bomb(&candidates)?;
+            if pending.round == round {
+                let planting_side = pending
+                    .planting_side
+                    .ok_or_else(|| Fault::mechanism(Mechanism::CtBombNoDefuse, "bomb_planted completion has unknown planting side"))?;
+                let handle = self
+                    .take_installation(round, &entity_handles("planted_c4"))
+                    .map_err(|error| Fault::mechanism(Mechanism::CtBombNoDefuse, error))?;
                 if self.planted.is_some() || self.completed_chicken.is_some() {
                     return Err("second authoritative planted bomb refused".into());
                 }
                 self.planted = Some(Planted {
                     handle,
                     round,
-                    kind: settings.kind,
-                    planter: self.plant_task.take(),
+                    kind: pending.kind,
+                    planter: pending.planter,
+                    planting_side: Some(planting_side),
                     chicken: None,
                     proxy: None,
                     placement: None,
@@ -529,27 +1112,36 @@ impl Bombs {
                     placement_pending: false,
                     cleanup_pending: false,
                 });
+                self.newly_planted_native_scale = native_model_scale_candidate(pending.kind, handle);
+                self.quick_defuse.planted(round, pending.kind, handle, pending.wire);
+                self.plant_task = None;
                 self.plant_weapon = None;
-                self.write_property(handle, PLANTED, "m_flTimerLength", PropertyValue::Float(settings.explode_time))?;
-                self.write_property(handle, PLANTED, "m_flC4Blow", PropertyValue::Float(now + settings.explode_time))?;
-                if settings.kind == BombKind::Carry {
-                    // The native weapon supplies view/world models; keep the ticking C4 for effects and rules only.
-                    self.write_property(
-                        handle,
-                        "CBaseEntity",
-                        "m_fEffects",
-                        PropertyValue::Integer(integer(handle, "CBaseEntity", "m_fEffects") | 32),
-                    )?;
+                if planting_side == PlantingSide::CounterTerrorist {
+                    self.write_property(handle, PLANTED, "m_bCannotBeDefused", PropertyValue::Integer(1))?;
                 }
-                s2sdk::PrintToServer(&Str::from_str(&format!(
-                    "[FunRounds] planted bomb={handle} kind={:?} deadline={}",
-                    settings.kind,
-                    now + settings.explode_time
-                )));
+                if let Some(settings) = settings {
+                    let timing = plant_timing(Some(settings), now).expect("settings provide plant timing");
+                    self.write_property(handle, PLANTED, "m_flTimerLength", PropertyValue::Float(timing.timer_length))?;
+                    self.write_property(handle, PLANTED, "m_flC4Blow", PropertyValue::Float(timing.blow_time))?;
+                    if settings.kind == BombKind::Carry {
+                        // The native weapon supplies view/world models; keep the ticking C4 for effects and rules only.
+                        self.write_property(
+                            handle,
+                            "CBaseEntity",
+                            "m_fEffects",
+                            PropertyValue::Integer(integer(handle, "CBaseEntity", "m_fEffects") | 32),
+                        )?;
+                    }
+                    s2sdk::PrintToServer(&Str::from_str(&format!(
+                        "[FunRounds] planted bomb={handle} kind={:?} deadline={}",
+                        settings.kind, timing.blow_time
+                    )));
+                }
             }
         }
 
         if let Some(action) = self.defusing.as_mut().and_then(|defuse| defuse.take_due(tick))
+            && let Some(duration) = defuse_duration(settings, action.kit)
             && valid_player(action.task, round, players)
             && s2sdk::IsValidEntHandle(action.handle)
             && integer(action.handle, PLANTED, "m_bBeingDefused") != 0
@@ -561,9 +1153,6 @@ impl Bombs {
             ) as u32
                 == action.task.player.pawn_handle
         {
-            let duration = settings.map_or(if action.kit { 5.0 } else { 10.0 }, |settings| {
-                if action.kit { settings.defuse_kit_time } else { settings.defuse_time }
-            });
             self.write_property(action.handle, PLANTED, "m_flDefuseLength", PropertyValue::Float(duration))?;
             self.write_property(action.handle, PLANTED, "m_flDefuseCountDown", PropertyValue::Float(now + duration))?;
             if let Some(player) = LivePlayer::resolve(action.task.player.slot)
@@ -586,92 +1175,42 @@ impl Bombs {
                 || integer(bomb.handle, PLANTED, "m_bBombTicking") == 0
                 || integer(bomb.handle, PLANTED, "m_bBombDefused") != 0)
         {
+            self.queue_native_model_scale_restore(bomb);
             self.release_completed_defuse();
             self.keep_defused_chicken().map_err(Fault::global)?;
             self.defusing = None;
-            let restore = self.restore_properties(|property| is_finished_bomb_property(property, bomb.handle));
+            self.quick_defuse.clear();
+            let is_defused = s2sdk::IsValidEntHandle(bomb.handle) && integer(bomb.handle, PLANTED, "m_bBombDefused") != 0;
+            let is_special = should_keep_special_display(bomb.kind, is_defused);
+            let restore = if is_special {
+                self.restore_properties(|property| {
+                    property.class == "CCSPlayerPawn" && matches!(property.field, "m_iProgressBarDuration" | "m_flProgressBarStartTime")
+                })
+            } else {
+                self.restore_properties(|property| is_finished_bomb_property(property, bomb.handle))
+            };
+            if is_special {
+                self.enter_round_end_display(bomb, round);
+                return restore.map_err(Fault::global);
+            }
             self.cleanup_requested = true;
             self.queue_cleanup();
             return restore.map_err(Fault::global);
         }
 
-        if let (Some(settings), Some(bomb)) = (settings, self.planted)
-            && bomb.round == round
+        if settings.is_some()
+            && let Some(bomb) = self.planted.filter(|bomb| bomb.round == round)
         {
             match bomb.kind {
                 BombKind::Chicken if !bomb.spawn_pending && bomb.chicken.is_none() => {
                     self.queue(ActionKind::SpawnChicken { round, bomb: bomb.handle });
                     self.planted.as_mut().expect("planted bomb exists").spawn_pending = true;
                 }
-                BombKind::Carry => {
-                    if !bomb.spawn_pending && bomb.proxy.is_none() {
-                        let carrier = bomb.planter.filter(|task| valid_player(*task, round, players)).or_else(|| {
-                            (0..s2sdk::GetMaxClients()).find_map(|slot| {
-                                let player = LivePlayer::resolve(slot)?;
-                                let identity = players.identity(slot)?;
-                                let task = PlayerTask { player: identity, round };
-                                players.validates(task, round, player.pawn_handle as u32).then_some(task)
-                            })
-                        });
-                        if let Some(carrier) = carrier {
-                            self.queue(ActionKind::SpawnProxy {
-                                round,
-                                bomb: bomb.handle,
-                                carrier,
-                            });
-                            self.planted.as_mut().expect("planted bomb exists").spawn_pending = true;
-                        }
-                    }
-                    if let Some(proxy) = bomb.proxy
-                        && !bomb.placement_pending
-                        && s2sdk::IsValidEntHandle(proxy)
-                    {
-                        let owner = s2sdk::GetEntityOwner(proxy);
-                        let live = (0..s2sdk::GetMaxClients())
-                            .filter_map(LivePlayer::resolve)
-                            .find(|player| player.pawn_handle == owner);
-                        let present = if live.is_none() && s2sdk::IsValidEntHandle(owner) {
-                            (0..s2sdk::GetMaxClients())
-                                .filter_map(LivePlayer::resolve_present)
-                                .find(|player| player.pawn_handle == owner)
-                        } else {
-                            None
-                        };
-                        let previous_owner = live.or(present).or_else(|| {
-                            bomb.placement
-                                .and_then(|placement| placement.player.filter(|player| player.pawn_handle == owner))
-                        });
-                        let target = if let Some(player) = live {
-                            let pose = if s2sdk::GetClientActiveWeapon(player.slot) == proxy {
-                                CarryPose::Hand
-                            } else {
-                                CarryPose::Back
-                            };
-                            CarryPlacement { player: Some(player), pose }
-                        } else {
-                            CarryPlacement {
-                                player: None,
-                                pose: CarryPose::World,
-                            }
-                        };
-                        self.queue(ActionKind::PlaceCarry {
-                            round,
-                            bomb: bomb.handle,
-                            proxy,
-                            target,
-                            previous_owner,
-                        });
-                        self.planted.as_mut().expect("planted bomb exists").placement_pending = true;
-                    }
-                }
+                BombKind::Carry => self.update_carry_placement(bomb, round, players),
                 _ => {}
             }
-            if settings.bounce {
-                self.update_bounce(now, rng);
-            } else {
-                self.bouncing.clear();
-            }
-        } else if settings.is_some_and(|settings| settings.bounce) {
+        }
+        if should_bounce_dropped_c4(settings.map(|settings| settings.bounce), bounce_available) {
             self.update_bounce(now, rng);
         } else {
             self.bouncing.clear();
@@ -679,10 +1218,85 @@ impl Bombs {
         Ok(())
     }
 
+    fn update_carry_placement(&mut self, bomb: Planted, round: RoundGeneration, players: &PlayerTracker) {
+        if !s2sdk::IsValidEntHandle(bomb.handle) {
+            return;
+        }
+        if !bomb.spawn_pending && bomb.proxy.is_none() {
+            let carrier = bomb.planter.filter(|task| valid_player(*task, round, players)).or_else(|| {
+                (0..s2sdk::GetMaxClients()).find_map(|slot| {
+                    let player = LivePlayer::resolve(slot)?;
+                    let identity = players.identity(slot)?;
+                    let task = PlayerTask { player: identity, round };
+                    players.validates(task, round, player.pawn_handle as u32).then_some(task)
+                })
+            });
+            if let Some(carrier) = carrier {
+                self.queue(ActionKind::SpawnProxy {
+                    round,
+                    bomb: bomb.handle,
+                    carrier,
+                });
+                self.planted.as_mut().expect("planted bomb exists").spawn_pending = true;
+            }
+        }
+        if let Some(proxy) = bomb.proxy
+            && !bomb.placement_pending
+            && s2sdk::IsValidEntHandle(proxy)
+        {
+            let owner = s2sdk::GetEntityOwner(proxy);
+            let live = (0..s2sdk::GetMaxClients())
+                .filter_map(LivePlayer::resolve)
+                .find(|player| player.pawn_handle == owner);
+            let present = if live.is_none() && s2sdk::IsValidEntHandle(owner) {
+                (0..s2sdk::GetMaxClients())
+                    .filter_map(LivePlayer::resolve_present)
+                    .find(|player| player.pawn_handle == owner)
+            } else {
+                None
+            };
+            let previous_owner = live.or(present).or_else(|| {
+                bomb.placement
+                    .and_then(|placement| placement.player.filter(|player| player.pawn_handle == owner))
+            });
+            let target = if let Some(player) = live {
+                let pose = if s2sdk::GetClientActiveWeapon(player.slot) == proxy {
+                    CarryPose::Hand
+                } else {
+                    CarryPose::Back
+                };
+                CarryPlacement { player: Some(player), pose }
+            } else {
+                CarryPlacement {
+                    player: None,
+                    pose: CarryPose::World,
+                }
+            };
+            self.queue(ActionKind::PlaceCarry {
+                round,
+                bomb: bomb.handle,
+                proxy,
+                target,
+                previous_owner,
+            });
+            self.planted.as_mut().expect("planted bomb exists").placement_pending = true;
+        }
+    }
+
     fn update_bounce(&mut self, now: f32, rng: &mut impl Rng) {
         let dropped = entity_handles("weapon_c4")
             .into_iter()
-            .filter(|handle| s2sdk::IsValidEntHandle(*handle) && !s2sdk::IsValidEntHandle(s2sdk::GetEntityOwner(*handle)))
+            .filter(|handle| {
+                if !s2sdk::IsValidEntHandle(*handle) {
+                    return false;
+                }
+                dropped_native_c4(
+                    s2sdk::GetEntityClassname(*handle).as_str(),
+                    true,
+                    s2sdk::IsValidEntHandle(s2sdk::GetEntityOwner(*handle)),
+                    self.is_tracked_carry_proxy(*handle),
+                )
+            })
             .collect::<HashSet<_>>();
         self.bouncing.retain(|handle, _| dropped.contains(handle));
         for handle in dropped {
@@ -697,6 +1311,21 @@ impl Bombs {
                 *due = now + 1.0;
             }
         }
+    }
+
+    fn is_tracked_carry_proxy(&self, handle: i32) -> bool {
+        self.planted
+            .is_some_and(|bomb| bomb.kind == BombKind::Carry && bomb.proxy == Some(handle))
+            || self
+                .completed_chicken
+                .is_some_and(|bomb| bomb.kind == BombKind::Carry && bomb.proxy == Some(handle))
+            || self.retiring.contains(&handle)
+            || self.pending_actions.values().any(|action| match action.kind {
+                ActionKind::PlaceCarry { proxy, .. } => proxy == handle,
+                ActionKind::Cleanup { proxy: Some(proxy), .. } => proxy == handle,
+                ActionKind::RemoveEntity { handle: removing } => removing == handle,
+                _ => false,
+            })
     }
 
     fn write_property(&mut self, handle: i32, class: &'static str, field: &'static str, value: PropertyValue) -> Result<(), Fault> {
@@ -714,6 +1343,7 @@ impl Bombs {
                 class,
                 field,
                 previous,
+                written: value,
             });
         }
         match value {
@@ -722,7 +1352,9 @@ impl Bombs {
         }
         .map_err(|error| {
             Fault::mechanism(
-                if field == "m_fEffects" {
+                if field == "m_bCannotBeDefused" {
+                    Mechanism::CtBombNoDefuse
+                } else if field == "m_fEffects" {
                     Mechanism::CarryBomb
                 } else {
                     Mechanism::BombTiming
@@ -800,6 +1432,7 @@ impl Bombs {
     fn retire_finished_entities(&mut self) {
         self.retiring.retain(|handle| s2sdk::IsValidEntHandle(*handle));
         self.retiring_pending.retain(|handle| self.retiring.contains(handle));
+        self.prestart_retiring.retain(|handle| self.retiring.contains(handle));
         let handles = self.retiring.iter().copied().collect::<Vec<_>>();
         for handle in handles {
             self.queue_remove(handle);
@@ -807,12 +1440,13 @@ impl Bombs {
     }
 
     pub fn acknowledge_shutdown_removals(&mut self) {
-        self.retain_unacknowledged_removals(engine_removal_acknowledged);
+        self.retain_unacknowledged_removals(crate::game::engine_removal_acknowledged);
     }
 
     fn retain_unacknowledged_removals(&mut self, mut acknowledged: impl FnMut(i32) -> bool) {
         self.retiring.retain(|handle| !acknowledged(*handle));
         self.retiring_pending.retain(|handle| self.retiring.contains(handle));
+        self.prestart_retiring.retain(|handle| self.retiring.contains(handle));
     }
 
     fn queue_remove(&mut self, handle: i32) {
@@ -866,8 +1500,8 @@ impl Bombs {
         }
         match action.kind {
             ActionKind::SpawnChicken { round: action_round, bomb } => self.planted.is_some_and(|planted| {
-                planted.round == action_round
-                    && action_round == round
+                action_round == round
+                    && self.tracks_planted_round(planted.round, action_round)
                     && planted.handle == bomb
                     && planted.kind == BombKind::Chicken
                     && planted.chicken.is_none()
@@ -879,8 +1513,8 @@ impl Bombs {
                 bomb,
                 carrier,
             } => self.planted.is_some_and(|planted| {
-                planted.round == action_round
-                    && action_round == round
+                action_round == round
+                    && self.tracks_planted_round(planted.round, action_round)
                     && planted.handle == bomb
                     && planted.kind == BombKind::Carry
                     && planted.proxy.is_none()
@@ -894,17 +1528,28 @@ impl Bombs {
                 proxy,
                 ..
             } => self.planted.is_some_and(|planted| {
-                planted.round == action_round
-                    && action_round == round
+                action_round == round
+                    && self.tracks_planted_round(planted.round, action_round)
                     && planted.handle == bomb
                     && planted.kind == BombKind::Carry
                     && planted.proxy == Some(proxy)
                     && planted.placement_pending
                     && !self.cleanup_requested
             }),
-            ActionKind::Cleanup { .. } => true,
+            ActionKind::Cleanup { .. } => !self.display_until_prestart,
             ActionKind::RemoveEntity { handle } => self.retiring.contains(&handle) && self.retiring_pending.contains(&handle),
         }
+    }
+
+    fn tracks_planted_round(&self, planted_round: RoundGeneration, action_round: RoundGeneration) -> bool {
+        planted_round == action_round || self.display_generation == Some(action_round)
+    }
+
+    fn tracked_planted_mut(&mut self, action_round: RoundGeneration, bomb: i32) -> Option<&mut Planted> {
+        let display_generation = self.display_generation;
+        self.planted
+            .as_mut()
+            .filter(|planted| planted.handle == bomb && (planted.round == action_round || display_generation == Some(action_round)))
     }
 
     pub fn action_cancelled(&mut self, action: Action) {
@@ -914,12 +1559,12 @@ impl Bombs {
         self.pending_actions.remove(&action.id);
         match action.kind {
             ActionKind::SpawnChicken { round, bomb } | ActionKind::SpawnProxy { round, bomb, .. } => {
-                if let Some(planted) = self.planted.as_mut().filter(|planted| planted.round == round && planted.handle == bomb) {
+                if let Some(planted) = self.tracked_planted_mut(round, bomb) {
                     planted.spawn_pending = false;
                 }
             }
             ActionKind::PlaceCarry { round, bomb, .. } => {
-                if let Some(planted) = self.planted.as_mut().filter(|planted| planted.round == round && planted.handle == bomb) {
+                if let Some(planted) = self.tracked_planted_mut(round, bomb) {
                     planted.placement_pending = false;
                 }
             }
@@ -956,14 +1601,10 @@ impl Bombs {
         };
         let completed = match (action.kind, result) {
             (ActionKind::SpawnChicken { round, bomb }, Ok(ActionResult::Chicken(chicken))) => {
-                if let Some(planted) = self
-                    .planted
-                    .as_mut()
-                    .filter(|planted| planted.round == round && planted.handle == bomb && planted.kind == BombKind::Chicken)
-                {
+                if let Some(planted) = self.tracked_planted_mut(round, bomb).filter(|planted| planted.kind == BombKind::Chicken) {
                     planted.chicken = Some(chicken);
                     planted.spawn_pending = false;
-                    if self.cleanup_requested || !accept_business || creation_error.is_some() {
+                    if self.cleanup_requested || (!accept_business && !self.display_until_prestart) || creation_error.is_some() {
                         self.include_in_queued_cleanup(round, bomb, Some(chicken), None);
                     }
                     Ok(())
@@ -978,18 +1619,14 @@ impl Bombs {
                 }
             }
             (ActionKind::SpawnProxy { round, bomb, .. }, Ok(ActionResult::Proxy(proxy))) => {
-                if let Some(planted) = self
-                    .planted
-                    .as_mut()
-                    .filter(|planted| planted.round == round && planted.handle == bomb && planted.kind == BombKind::Carry)
-                {
+                if let Some(planted) = self.tracked_planted_mut(round, bomb).filter(|planted| planted.kind == BombKind::Carry) {
                     planted.proxy = Some(proxy);
                     planted.placement = Some(CarryPlacement {
                         player: None,
                         pose: CarryPose::World,
                     });
                     planted.spawn_pending = false;
-                    if self.cleanup_requested || !accept_business || creation_error.is_some() {
+                    if self.cleanup_requested || (!accept_business && !self.display_until_prestart) || creation_error.is_some() {
                         self.include_in_queued_cleanup(round, bomb, None, Some(proxy));
                     }
                     Ok(())
@@ -1004,19 +1641,20 @@ impl Bombs {
                 }
             }
             (ActionKind::PlaceCarry { round, bomb, proxy, .. }, Ok(ActionResult::Placed(placement))) => {
-                if let Some(planted) = self
-                    .planted
-                    .as_mut()
-                    .filter(|planted| planted.round == round && planted.handle == bomb && planted.proxy == Some(proxy))
-                {
+                if let Some(planted) = self.tracked_planted_mut(round, bomb).filter(|planted| planted.proxy == Some(proxy)) {
                     planted.placement = Some(placement);
                     planted.placement_pending = false;
                 }
                 Ok(())
             }
             (ActionKind::Cleanup { round, bomb, chicken, proxy }, Ok(ActionResult::Cleaned(retiring))) => {
+                if self.prestart_cleanup {
+                    self.prestart_retiring.extend(retiring.iter().copied());
+                }
                 self.retiring.extend(retiring);
-                if let Some(planted) = self.planted.as_mut().filter(|planted| planted.round == round && planted.handle == bomb) {
+                let cleanup_requested = self.cleanup_requested;
+                let mut planted_empty = false;
+                if let Some(planted) = self.tracked_planted_mut(round, bomb) {
                     if planted.chicken == chicken {
                         planted.chicken = None;
                     }
@@ -1024,26 +1662,30 @@ impl Bombs {
                         planted.proxy = None;
                     }
                     planted.cleanup_pending = false;
-                    if self.cleanup_requested && planted.chicken.is_none() && planted.proxy.is_none() && !planted.spawn_pending {
-                        self.planted = None;
-                        self.cleanup_requested = false;
-                    }
+                    planted_empty = cleanup_requested && planted.chicken.is_none() && planted.proxy.is_none() && !planted.spawn_pending;
+                }
+                if planted_empty {
+                    self.planted = None;
+                    self.quick_defuse.clear();
+                    self.cleanup_requested = false;
+                    self.display_generation = None;
                 }
                 Ok(())
             }
-            (ActionKind::SpawnChicken { .. } | ActionKind::SpawnProxy { .. }, Err(error)) => {
-                if let Some(planted) = self.planted.as_mut() {
+            (ActionKind::SpawnChicken { round, bomb } | ActionKind::SpawnProxy { round, bomb, .. }, Err(error)) => {
+                if let Some(planted) = self.tracked_planted_mut(round, bomb) {
                     planted.spawn_pending = false;
                 }
                 Err(error)
             }
-            (ActionKind::PlaceCarry { .. }, Err(error)) => {
-                if let Some(planted) = self.planted.as_mut() {
+            (ActionKind::PlaceCarry { round, bomb, .. }, Err(error)) => {
+                if let Some(planted) = self.tracked_planted_mut(round, bomb) {
                     planted.placement_pending = false;
                 }
                 Err(error)
             }
             (ActionKind::Cleanup { .. }, Err(error)) => {
+                self.prestart_retiring.clear();
                 if let Some(planted) = self.planted.as_mut() {
                     planted.cleanup_pending = false;
                 }
@@ -1057,11 +1699,15 @@ impl Bombs {
                 self.retiring_pending.remove(&handle);
                 if !s2sdk::IsValidEntHandle(handle) {
                     self.retiring.remove(&handle);
+                    self.prestart_retiring.remove(&handle);
+                } else if self.prestart_cleanup {
+                    self.prestart_retiring.insert(handle);
                 }
                 Ok(())
             }
             (ActionKind::RemoveEntity { handle }, Err(error)) => {
                 self.retiring_pending.remove(&handle);
+                self.prestart_retiring.remove(&handle);
                 Err(error)
             }
             _ => Err("bomb engine action returned an unexpected result".into()),
@@ -1127,22 +1773,73 @@ impl Bombs {
         self.cleanup_active()
     }
 
-    pub fn cleanup_after_round_end(&mut self) -> Result<(), String> {
+    pub fn cleanup_after_round_end(&mut self, display_generation: RoundGeneration) -> Result<(), String> {
         self.release_completed_defuse();
         self.keep_defused_chicken()?;
+        if let Some(bomb) = self.planted {
+            let keep_display = match bomb.kind {
+                BombKind::Chicken => true,
+                BombKind::Carry => {
+                    !s2sdk::IsValidEntHandle(bomb.handle)
+                        || should_keep_special_display(bomb.kind, integer(bomb.handle, PLANTED, "m_bBombDefused") != 0)
+                }
+                BombKind::Native => false,
+            };
+            if keep_display {
+                self.enter_round_end_display(bomb, display_generation);
+                return Ok(());
+            }
+        }
         self.cleanup_active()
     }
 
-    fn cleanup_active(&mut self) -> Result<(), String> {
-        self.pending_explosion = None;
+    fn enter_round_end_display(&mut self, bomb: Planted, display_generation: RoundGeneration) {
+        self.display_until_prestart = true;
+        self.display_generation = Some(display_generation);
         self.arming = None;
         self.defusing = None;
+        self.quick_defuse.clear();
         self.before_plant = None;
         self.plant_task = None;
         self.plant_weapon = None;
         self.pending_plant = None;
+        self.pending_explosion = None;
+        self.bouncing.clear();
+
+        // A tick may already have observed the native round-end state and
+        // queued helper cleanup. Keep those helpers for the display phase.
+        self.queued.retain(|action| !matches!(action.kind, ActionKind::Cleanup { .. }));
+        self.pending_actions
+            .retain(|_, action| !matches!(action.kind, ActionKind::Cleanup { .. }));
+        self.cleanup_requested = false;
+        if let Some(planted) = self
+            .planted
+            .as_mut()
+            .filter(|planted| planted.handle == bomb.handle && planted.round == bomb.round)
+        {
+            planted.cleanup_pending = false;
+        }
+    }
+
+    fn cleanup_active(&mut self) -> Result<(), String> {
+        if let Some(bomb) = self.planted.filter(|bomb| bomb.kind == BombKind::Native) {
+            self.native_model_scale_restores.insert(bomb.handle);
+        }
+        self.pending_explosion = None;
+        self.arming = None;
+        self.defusing = None;
+        self.quick_defuse.clear();
+        self.before_plant = None;
+        self.plant_task = None;
+        self.plant_weapon = None;
+        self.pending_plant = None;
+        self.newly_planted_native_scale = None;
         self.bouncing.clear();
         self.cleanup_requested = true;
+        self.display_until_prestart = false;
+        if self.planted.is_none() {
+            self.display_generation = None;
+        }
         for action in std::mem::take(&mut self.queued) {
             if matches!(action.kind, ActionKind::Cleanup { .. } | ActionKind::RemoveEntity { .. }) {
                 self.queued.push(action);
@@ -1156,20 +1853,33 @@ impl Bombs {
         restore
     }
 
+    fn queue_native_model_scale_restore(&mut self, bomb: Planted) {
+        if bomb.kind == BombKind::Native {
+            self.native_model_scale_restores.insert(bomb.handle);
+        }
+    }
+
     pub fn discard_map_state(&mut self) {
         self.map_epoch = self.map_epoch.wrapping_add(1);
         self.arming = None;
         self.defusing = None;
+        self.quick_defuse.clear();
         self.before_plant = None;
         self.plant_task = None;
         self.plant_weapon = None;
         self.pending_plant = None;
+        self.newly_planted_native_scale = None;
+        self.native_model_scale_restores.clear();
         self.planted = None;
         self.completed_chicken = None;
+        self.display_until_prestart = false;
+        self.display_generation = None;
         self.cleanup_requested = false;
         self.bouncing.clear();
         self.retiring.clear();
         self.retiring_pending.clear();
+        self.prestart_cleanup = false;
+        self.prestart_retiring.clear();
         self.properties.clear();
         self.queued.clear();
         self.pending_actions.clear();
@@ -1181,6 +1891,8 @@ impl Bombs {
     pub fn is_clean(&self) -> bool {
         self.planted.is_none()
             && self.completed_chicken.is_none()
+            && !self.display_until_prestart
+            && self.display_generation.is_none()
             && self.properties.is_empty()
             && self.bouncing.is_empty()
             && self.retiring.is_empty()
@@ -1190,30 +1902,12 @@ impl Bombs {
             && self.pending_actions.is_empty()
             && self.queued.is_empty()
             && self.retiring_pending.is_empty()
+            && !self.prestart_cleanup
+            && self.prestart_retiring.is_empty()
             && self.pending_explosion.is_none()
             && self.active_explosion.is_none()
             && !self.cleanup_requested
     }
-}
-
-fn engine_removal_acknowledged(handle: i32) -> bool {
-    if !s2sdk::IsValidEntHandle(handle) {
-        return true;
-    }
-    if !schema("CEntityInstance", "m_pEntity") || !schema("CEntityIdentity", "m_flags") {
-        return false;
-    }
-    let entity = s2sdk::EntHandleToEntPointer(handle);
-    if entity == 0 {
-        return false;
-    }
-    let identity = s2sdk::GetEntSchema2(entity, &Str::from_str("CEntityInstance"), &Str::from_str("m_pEntity"), 0) as usize;
-    if identity == 0 {
-        return false;
-    }
-    let flags = s2sdk::GetEntSchema2(identity, &Str::from_str("CEntityIdentity"), &Str::from_str("m_flags"), 0);
-    // Kill queues native deletion; its full handle can survive until a later engine frame.
-    flags & MARKED_FOR_DELETE != 0 && s2sdk::IsValidEntHandle(handle) && s2sdk::EntHandleToEntPointer(handle) == entity
 }
 
 fn valid_player(task: PlayerTask, round: RoundGeneration, players: &PlayerTracker) -> bool {
@@ -1577,6 +2271,7 @@ mod tests {
                 round,
                 kind,
                 planter: None,
+                planting_side: None,
                 chicken: None,
                 proxy: None,
                 placement: None,
@@ -1802,12 +2497,14 @@ mod tests {
                 class: PLANTED,
                 field: "m_flDefuseCountDown",
                 previous: PropertyValue::Float(12.0),
+                written: PropertyValue::Float(12.0),
             });
             properties.push(OwnedProperty {
                 handle: pawn,
                 class: "CCSPlayerPawn",
                 field: "m_iProgressBarDuration",
                 previous: PropertyValue::Integer(5),
+                written: PropertyValue::Integer(5),
             });
         }
         let mut properties = Vec::new();
@@ -1864,30 +2561,35 @@ mod tests {
             class: PLANTED,
             field: "m_flC4Blow",
             previous: PropertyValue::Float(45.0),
+            written: PropertyValue::Float(45.0),
         };
         let c4_arming = OwnedProperty {
             handle: 11,
             class: C4,
             field: "m_fArmedTime",
             previous: PropertyValue::Float(0.0),
+            written: PropertyValue::Float(0.0),
         };
         let carry_visibility = OwnedProperty {
             handle: 10,
             class: "CBaseEntity",
             field: "m_fEffects",
             previous: PropertyValue::Integer(0),
+            written: PropertyValue::Integer(0),
         };
         let progress = OwnedProperty {
             handle: 21,
             class: "CCSPlayerPawn",
             field: "m_iProgressBarDuration",
             previous: PropertyValue::Integer(0),
+            written: PropertyValue::Integer(0),
         };
         let unrelated = OwnedProperty {
             handle: 21,
             class: "CCSPlayerPawn",
             field: "m_iHealth",
             previous: PropertyValue::Integer(100),
+            written: PropertyValue::Integer(100),
         };
 
         assert!(is_finished_bomb_property(&planted_timer, 10));
@@ -1921,6 +2623,7 @@ mod tests {
                 class,
                 field,
                 previous: PropertyValue::Integer(5),
+                written: PropertyValue::Integer(5),
             };
             assert_eq!(is_consumed_defuse_property(&property, bomb, Some(pawn)), consumed, "{class}.{field}");
             assert_eq!(is_consumed_defuse_property(&property, bomb, None), handle == bomb);
@@ -1938,6 +2641,7 @@ mod tests {
                 round,
                 kind: BombKind::Chicken,
                 planter: None,
+                planting_side: None,
                 chicken: None,
                 proxy: None,
                 placement: None,
@@ -1984,7 +2688,7 @@ mod tests {
         let completed = bombs.planted.take().unwrap();
         bombs.completed_chicken = Some(completed);
 
-        bombs.cleanup_after_round_end().unwrap();
+        bombs.cleanup_after_round_end(completed.round).unwrap();
         assert!(bombs.take_actions().is_empty());
         assert!(!bombs.is_clean());
         assert_eq!(bombs.completed_chicken.unwrap().chicken, Some(chicken));
@@ -2077,10 +2781,17 @@ mod tests {
     }
 
     #[test]
-    fn round_end_still_cleans_carry_and_does_not_keep_an_in_flight_chicken() {
+    fn special_display_survives_round_end_and_prestart_cleanup_cancels_late_creation() {
         let (mut carry, spawn) = pending_helper(BombKind::Carry);
         carry.action_finished(spawn, Ok(ActionResult::Proxy(1024)), true).unwrap();
-        carry.cleanup_after_round_end().unwrap();
+        let planted = carry.planted.unwrap();
+        assert!(should_keep_special_display(planted.kind, false));
+        assert!(!should_keep_special_display(planted.kind, true));
+        carry.enter_round_end_display(planted, planted.round);
+        assert!(carry.display_until_prestart);
+        assert!(carry.take_actions().is_empty());
+        carry.begin_round_prestart_cleanup();
+        carry.cleanup_active().unwrap();
         let cleanup = carry.take_actions().pop().unwrap();
         assert!(matches!(
             cleanup.kind,
@@ -2093,7 +2804,8 @@ mod tests {
         assert!(carry.completed_chicken.is_none());
 
         let (mut chicken, spawn) = pending_helper(BombKind::Chicken);
-        chicken.cleanup_after_round_end().unwrap();
+        chicken.begin_round_prestart_cleanup();
+        chicken.cleanup_active().unwrap();
         assert!(chicken.take_actions().is_empty());
         chicken.action_finished(spawn, Ok(ActionResult::Chicken(2048)), false).unwrap();
         let cleanup = chicken.take_actions().pop().unwrap();
@@ -2128,6 +2840,7 @@ mod tests {
                 round,
                 kind: BombKind::Carry,
                 planter: None,
+                planting_side: None,
                 chicken: None,
                 proxy: Some(proxy),
                 placement: Some(CarryPlacement {
@@ -2195,6 +2908,7 @@ mod tests {
                 round,
                 kind: BombKind::Carry,
                 planter: None,
+                planting_side: None,
                 chicken: None,
                 proxy: Some(55),
                 placement: Some(CarryPlacement {
@@ -2283,6 +2997,7 @@ mod tests {
                 round,
                 kind: BombKind::Chicken,
                 planter: None,
+                planting_side: None,
                 chicken: Some(0x22334455),
                 proxy: None,
                 placement: None,
@@ -2295,6 +3010,7 @@ mod tests {
                 class: PLANTED,
                 field: "m_flC4Blow",
                 previous: PropertyValue::Float(40.0),
+                written: PropertyValue::Float(40.0),
             }],
             ..Bombs::default()
         };

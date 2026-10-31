@@ -1,18 +1,22 @@
 // Copyright (C) 2026 Mai Ooizumi
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::Mode;
+use crate::{KillLoadoutStart, Mode};
 use rand::seq::IndexedRandom;
 
-#[derive(Clone, Copy)]
-pub(crate) enum WeaponSlot {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+/// Inventory category for supported weapon classnames.
+pub enum WeaponSlot {
     Primary = 0,
     Secondary = 1,
     Knife = 2,
+    /// Extra equipment category; unlike firearm slots, it can contain multiple items.
     Extra = 3,
 }
 
-pub(crate) fn weapon_slot(weapon: &str) -> Option<WeaponSlot> {
+/// Returns the loadout slot used by a supported weapon classname.
+pub fn weapon_slot(weapon: &str) -> Option<WeaponSlot> {
     match weapon {
         "weapon_ak47"
         | "weapon_m4a1"
@@ -64,18 +68,18 @@ impl Mode {
     // Each listed slot supplies one item; an omitted slot stays empty.
     pub fn select_equipment(&self, rng: &mut impl rand::Rng) -> Result<Vec<&str>, String> {
         if self.kill_loadout {
-            if !self.weapons.iter().any(|weapon| weapon == "weapon_glock") {
-                return Err(format!("{}: kill loadout requires an initial Glock", self.id));
+            match self.kill_loadout_start.unwrap_or(KillLoadoutStart::Glock) {
+                KillLoadoutStart::Glock => {
+                    if !self.weapons.iter().any(|weapon| weapon == "weapon_glock") {
+                        return Err(format!("{}: kill loadout requires an initial Glock", self.id));
+                    }
+                    return Ok(vec!["weapon_glock"]);
+                }
+                KillLoadoutStart::Random => {}
             }
-            return Ok(vec!["weapon_glock"]);
         }
         if self.random_loadout {
-            let mut candidates = Vec::new();
-            for weapon in self.weapons.iter().map(String::as_str).filter(|weapon| *weapon != "weapon_knife") {
-                if !candidates.contains(&weapon) {
-                    candidates.push(weapon);
-                }
-            }
+            let candidates = self.loadout_candidates();
             if candidates.is_empty() {
                 return Err(format!("{}: random loadout candidates must not be empty", self.id));
             }
@@ -98,10 +102,22 @@ impl Mode {
         Ok(candidates.iter().filter_map(|pool| pool.choose(rng).copied()).collect())
     }
 
-    pub fn select_kill_weapon(&self, rng: &mut impl rand::Rng) -> Result<&str, String> {
+    /// Select a configured kill-upgrade weapon, preferring a different entity class.
+    /// If the configured pool contains only excluded classes, retain its legal behavior.
+    pub fn select_kill_weapon_excluding(&self, rng: &mut impl rand::Rng, excluded: &[&str]) -> Result<&str, String> {
         if !self.kill_loadout {
             return Err(format!("{}: kill loadout is disabled", self.id));
         }
+        let candidates = self.loadout_candidates();
+        let preferred = candidates.iter().copied().filter(|weapon| !excluded.contains(weapon)).collect::<Vec<_>>();
+        preferred
+            .choose(rng)
+            .or_else(|| candidates.choose(rng))
+            .copied()
+            .ok_or_else(|| format!("{}: kill loadout candidates must not be empty", self.id))
+    }
+
+    fn loadout_candidates(&self) -> Vec<&str> {
         let mut candidates = Vec::new();
         for weapon in self.weapons.iter().map(String::as_str).filter(|weapon| *weapon != "weapon_knife") {
             if !candidates.contains(&weapon) {
@@ -109,9 +125,17 @@ impl Mode {
             }
         }
         candidates
-            .choose(rng)
-            .copied()
-            .ok_or_else(|| format!("{}: kill loadout candidates must not be empty", self.id))
+    }
+}
+
+pub fn self_push_force(weapon: &str) -> Option<f32> {
+    match weapon {
+        "weapon_nova" | "weapon_mag7" | "weapon_sawedoff" | "weapon_xm1014" | "weapon_ssg08" => Some(700.0),
+        "weapon_awp" | "weapon_scar20" | "weapon_g3sg1" => Some(1300.0),
+        "weapon_deagle" | "weapon_revolver" => Some(450.0),
+        "weapon_taser" => Some(135.0),
+        _ if matches!(weapon_slot(weapon), Some(WeaponSlot::Primary | WeaponSlot::Secondary)) => Some(135.0),
+        _ => None,
     }
 }
 
@@ -242,13 +266,13 @@ mod tests {
             assert!(mode.weapons.iter().any(|candidate| candidate == loadout[0]));
             assert!(mode.weapons.iter().any(|candidate| candidate == loadout[1]));
         }
-        assert!(mode.select_kill_weapon(&mut rng).is_err());
+        assert!(mode.select_kill_weapon_excluding(&mut rng, &[]).is_err());
 
         mode.random_loadout = false;
         mode.kill_loadout = true;
         mode.weapons = vec!["weapon_glock".into(), "weapon_famas".into()];
         assert_eq!(mode.select_equipment(&mut rng).unwrap(), ["weapon_glock"]);
-        let kill_weapon = mode.select_kill_weapon(&mut rng).unwrap();
+        let kill_weapon = mode.select_kill_weapon_excluding(&mut rng, &[]).unwrap();
         assert!(mode.weapons.iter().any(|weapon| weapon == kill_weapon));
     }
 }

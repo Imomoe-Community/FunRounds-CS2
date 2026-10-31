@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Mai Ooizumi
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::{Ammo, Config, Headshots, Mode, TeamFilter, WeaponDamage, WinCondition};
+use crate::{Ammo, Config, Headshots, Mode, RoundRespawn, TeamFilter, WeaponDamage, WinCondition};
 use rand::{Rng, seq::SliceRandom};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -19,6 +19,9 @@ pub struct Capabilities {
     pub taser_charge: bool,
     pub bunnyhop: bool,
     pub friction: bool,
+    pub time_scale: bool,
+    pub ground_acceleration: bool,
+    pub ground_reverse: bool,
     pub no_spread: bool,
     pub no_recoil: bool,
     pub recoil_view: bool,
@@ -40,8 +43,13 @@ pub struct Capabilities {
     pub energy_shield: bool,
     pub combat_protection: bool,
     pub translucent: bool,
+    pub ghost_visibility: bool,
+    pub ghost_breath: bool,
+    pub afterburn: bool,
+    pub third_person: bool,
     pub delayed_damage: bool,
     pub win_condition: bool,
+    pub ct_bomb_no_defuse: bool,
     pub bomb_timing: bool,
     pub chicken_bomb: bool,
     pub carry_bomb: bool,
@@ -61,15 +69,24 @@ pub struct Capabilities {
     pub c4_assignment: bool,
     pub c4_purchase: bool,
     pub round_respawn: bool,
+    pub round_respawn_all: bool,
+    pub hide_radar: bool,
+    pub hide_player_identification: bool,
     pub respawn: bool,
     pub buy_time: bool,
     pub buy_limit: bool,
+    pub money: bool,
+    pub buy_access: bool,
+    pub buy_anywhere: bool,
     pub friendly_fire_scale: bool,
     pub teammates_as_enemies: bool,
     pub random_spawn: bool,
     pub drop_weapons: bool,
     pub drop_grenades: bool,
+    pub shoot_dropped_grenades: bool,
     pub fall_damage_scale: bool,
+    pub healthshot: bool,
+    pub ordinary_chickens: bool,
 }
 
 impl Capabilities {
@@ -78,6 +95,30 @@ impl Capabilities {
     }
 
     pub fn missing_for(self, mode: &Mode) -> Vec<&'static str> {
+        self.missing_for_stage(mode, true)
+    }
+
+    pub fn supports_mode_with_chicken_config(self, mode: &Mode, chicken_configured: bool) -> bool {
+        self.missing_for_with_chicken_config(mode, chicken_configured).is_empty()
+    }
+
+    pub fn missing_for_with_chicken_config(self, mode: &Mode, chicken_configured: bool) -> Vec<&'static str> {
+        let mut missing = self.missing_for(mode);
+        if chicken_configured && mode.ordinary_chickens && !self.ordinary_chickens {
+            missing.push("ordinary_chickens");
+        }
+        missing
+    }
+
+    pub fn supports_warmup(self, mode: &Mode) -> bool {
+        self.missing_for_stage(mode, false).is_empty()
+    }
+
+    pub fn supports_warmup_with_chicken_config(self, mode: &Mode, chicken_configured: bool) -> bool {
+        self.supports_warmup(mode) && (!chicken_configured || !mode.ordinary_chickens || self.ordinary_chickens)
+    }
+
+    fn missing_for_stage(self, mode: &Mode, require_ct_bomb_no_defuse: bool) -> Vec<&'static str> {
         [
             (mode.clear_weapons != TeamFilter::None, self.clear_weapons, "clear_weapons"),
             (
@@ -101,6 +142,9 @@ impl Capabilities {
             (mode.taser_charge.is_some(), self.taser_charge, "taser_charge"),
             (mode.bunnyhop.is_some(), self.bunnyhop, "bunnyhop"),
             (mode.friction.is_some(), self.friction, "friction"),
+            (mode.time_scale.is_some(), self.time_scale, "time_scale"),
+            (mode.ground_acceleration.is_some(), self.ground_acceleration, "ground_acceleration"),
+            (mode.ground_reverse.is_some(), self.ground_reverse, "ground_reverse"),
             (mode.no_spread.is_some(), self.no_spread, "no_spread"),
             (mode.no_recoil, self.no_recoil, "no_recoil"),
             (mode.recoil_view.is_some(), self.recoil_view, "recoil_view"),
@@ -123,10 +167,20 @@ impl Capabilities {
                 "reflection_lifesteal_frame",
             ),
             (mode.energy_shield, self.energy_shield, "energy_shield"),
-            (mode.combat_protection, self.combat_protection, "combat_protection"),
+            (mode.spawn_protection || mode.kill_protection, self.combat_protection, "combat_protection"),
             (mode.translucent, self.translucent, "translucent"),
+            (mode.ghost.is_some(), self.translucent, "translucent"),
+            (mode.ghost.is_some(), self.ghost_visibility, "ghost_visibility"),
+            (mode.afterburn.is_some(), self.afterburn, "afterburn"),
+            (mode.third_person.is_some(), self.third_person, "third_person"),
+            (
+                mode.ghost.is_some_and(|ghost| ghost.breath_interval > 0.0),
+                self.ghost_breath,
+                "ghost_breath",
+            ),
             (mode.delayed_damage, self.delayed_damage, "delayed_damage"),
             (mode.win_condition == WinCondition::TeamDeathmatch, self.win_condition, "win_condition"),
+            (require_ct_bomb_no_defuse, self.ct_bomb_no_defuse, "ct_bomb_no_defuse"),
             (mode.bomb.is_some(), self.bomb_timing, "bomb_timing"),
             (
                 mode.bomb.as_ref().is_some_and(|bomb| bomb.kind == crate::BombKind::Chicken),
@@ -153,15 +207,30 @@ impl Capabilities {
             (mode.periodic_gravity, self.periodic_gravity, "periodic_gravity"),
             (mode.c4_count.is_some(), self.c4_assignment, "c4_assignment"),
             (mode.c4_buy, self.c4_purchase, "c4_purchase"),
-            (mode.round_respawn, self.round_respawn, "round_respawn"),
+            (mode.round_respawn == RoundRespawn::Dead, self.round_respawn, "round_respawn"),
+            (mode.round_respawn == RoundRespawn::All, self.round_respawn_all, "round_respawn_all"),
+            (mode.hide_radar.is_some(), self.hide_radar, "hide_radar"),
+            (
+                mode.hide_player_identification.is_some(),
+                self.hide_player_identification,
+                "hide_player_identification",
+            ),
             (mode.respawn.is_some(), self.respawn, "respawn"),
             (mode.buy_time.is_some(), self.buy_time, "buy_time"),
             (mode.buy_limit.is_some(), self.buy_limit, "buy_limit"),
+            (mode.round_money_floor.is_some() || mode.money_income.is_some(), self.money, "money"),
+            (mode.buy_access.is_some(), self.buy_access, "buy_access"),
+            (mode.buy_anywhere.is_some(), self.buy_anywhere, "buy_anywhere"),
             (mode.friendly_fire_scale.is_some(), self.friendly_fire_scale, "friendly_fire_scale"),
             (mode.teammates_as_enemies.is_some(), self.teammates_as_enemies, "teammates_as_enemies"),
             (mode.random_spawn.is_some(), self.random_spawn, "random_spawn"),
             (mode.drop_weapons.is_some(), self.drop_weapons, "drop_weapons"),
             (mode.drop_grenades.is_some(), self.drop_grenades, "drop_grenades"),
+            (
+                mode.shoot_dropped_grenades.is_some(),
+                self.shoot_dropped_grenades,
+                "shoot_dropped_grenades",
+            ),
             (mode.fall_damage_scale.is_some(), self.fall_damage_scale, "fall_damage_scale"),
         ]
         .into_iter()
@@ -186,6 +255,7 @@ pub enum Phase {
     Idle,
     Preparing,
     Running,
+    Warmup,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,6 +304,10 @@ impl RoundController {
         self.config.as_ref()
     }
 
+    pub fn hostage_rescue_compat_enabled(&self) -> bool {
+        self.config.as_ref().is_some_and(|config| config.hostage_rescue_compat)
+    }
+
     pub fn capabilities(&self) -> Capabilities {
         self.capabilities
     }
@@ -243,6 +317,15 @@ impl RoundController {
     }
 
     pub fn current_mode(&self) -> Option<&Mode> {
+        if self.phase == Phase::Warmup {
+            return self
+                .config
+                .as_ref()?
+                .warmup
+                .as_ref()
+                .filter(|warmup| warmup.enabled)
+                .map(|warmup| &warmup.mode);
+        }
         self.current.and_then(|index| self.config.as_ref()?.modes.get(index))
     }
 
@@ -278,10 +361,9 @@ impl RoundController {
             NextMode::Id(id) => {
                 let config = self.pending_config.as_ref().or(self.config.as_ref());
                 if !config.is_some_and(|config| {
-                    config
-                        .modes
-                        .iter()
-                        .any(|mode| mode.id == id && mode.enabled && self.capabilities.supports_mode(mode))
+                    config.modes.iter().any(|mode| {
+                        mode.id == id && mode.enabled && self.capabilities.supports_mode_with_chicken_config(mode, config.chicken.is_some())
+                    })
                 }) {
                     return Err(format!("mode is disabled, unavailable or unknown: {id}"));
                 }
@@ -298,6 +380,38 @@ impl RoundController {
         self.enabled = enabled;
         self.clear_round();
         true
+    }
+
+    pub fn start_warmup(&mut self) -> bool {
+        self.clear_round();
+        let Some(config) = self.config.as_ref() else {
+            return false;
+        };
+        let Some(warmup) = config.warmup.as_ref() else {
+            return false;
+        };
+        if !self.enabled
+            || !warmup.enabled
+            || !self
+                .capabilities
+                .supports_warmup_with_chicken_config(&warmup.mode, config.chicken.is_some())
+        {
+            return false;
+        }
+        self.phase = Phase::Warmup;
+        true
+    }
+
+    pub fn stop_warmup(&mut self) -> bool {
+        if self.phase != Phase::Warmup {
+            return false;
+        }
+        self.clear_round();
+        true
+    }
+
+    pub fn clear_active_round(&mut self) {
+        self.clear_round();
     }
 
     pub fn set_capabilities(&mut self, capabilities: Capabilities) -> bool {
@@ -338,12 +452,15 @@ impl RoundController {
         let Some(config) = &self.config else {
             return true;
         };
+        let chicken_configured = config.chicken.is_some();
         if self.remaining.is_empty() {
             self.remaining = config
                 .modes
                 .iter()
                 .enumerate()
-                .filter_map(|(index, mode)| (mode.enabled && self.capabilities.supports_mode(mode)).then_some(index))
+                .filter_map(|(index, mode)| {
+                    (mode.enabled && self.capabilities.supports_mode_with_chicken_config(mode, chicken_configured)).then_some(index)
+                })
                 .collect();
             self.remaining.shuffle(rng);
             if self.remaining.len() > 1
@@ -360,7 +477,7 @@ impl RoundController {
             config
                 .modes
                 .iter()
-                .position(|mode| mode.id == id && mode.enabled && self.capabilities.supports_mode(mode))
+                .position(|mode| mode.id == id && mode.enabled && self.capabilities.supports_mode_with_chicken_config(mode, chicken_configured))
         });
         let selected = if let Some(index) = forced {
             if let Some(position) = self.remaining.iter().position(|&remaining| remaining == index) {
@@ -425,6 +542,7 @@ mod tests {
             clear_weapons: true,
             give_weapons: true,
             give_knife: true,
+            ct_bomb_no_defuse: true,
             ..Capabilities::default()
         }
     }
@@ -595,11 +713,11 @@ mod tests {
             assert_eq!(controller.pending_config(), pending.as_ref());
         }
         assert!(controller.queue_reload("diagnostics = false\nmodes = []").is_err());
-        assert_eq!(controller.current_mode().unwrap().health, 120);
-        assert_eq!(controller.pending_config().unwrap().modes[0].health, 140);
+        assert_eq!(controller.current_mode().unwrap().health, crate::AttributeValue::Fixed(120));
+        assert_eq!(controller.pending_config().unwrap().modes[0].health, crate::AttributeValue::Fixed(140));
         controller.force_next(NextMode::Id("example".into())).unwrap();
         controller.start_round(controller.round_key(2), false, &mut rng);
-        assert_eq!(controller.current_mode().unwrap().health, 140);
+        assert_eq!(controller.current_mode().unwrap().health, crate::AttributeValue::Fixed(140));
         assert!(controller.pending_config().is_none());
     }
 
@@ -691,7 +809,7 @@ mod tests {
     #[test]
     fn constructor_rejects_unvalidated_public_configuration() {
         let mut config = Config::parse(EXAMPLE).unwrap();
-        config.modes[0].health = 0;
+        config.modes[0].health = crate::AttributeValue::Fixed(0);
         assert!(RoundController::new(Some(config), available()).is_err());
     }
 

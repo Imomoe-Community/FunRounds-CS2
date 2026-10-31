@@ -1,4 +1,5 @@
 // Generated from s2sdk.pplugin (group: schema)
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 #[allow(unused_imports)]
 use super::aliases::*;
@@ -195,3 +196,19 @@ pub type _SetEntSchemaEnt2 = unsafe extern "C" fn(usize, &Str, &Str, i32, bool, 
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_SetEntSchemaEnt2: Option<_SetEntSchemaEnt2> = None;
+
+/// Updates the networked state of a schema field for a given entity handle.
+///
+/// # Arguments
+/// * `entityHandle` - (int32): The handle of the entity from which the value is to be retrieved.
+/// * `className` - (string): The name of the class that contains the member.
+/// * `memberName` - (string): The name of the member to be set.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn NetworkStateChanged(entityHandle: i32, className: &Str, memberName: &Str) {
+    unsafe { __s2sdk_NetworkStateChanged.expect("NetworkStateChanged function was not found")(entityHandle, className, memberName) }
+}
+pub type _NetworkStateChanged = unsafe extern "C" fn(i32, &Str, &Str);
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_NetworkStateChanged: Option<_NetworkStateChanged> = None;

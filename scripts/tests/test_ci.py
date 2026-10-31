@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import re
 from unittest.mock import patch
 import zipfile
 
@@ -14,6 +15,13 @@ SPEC.loader.exec_module(ci)
 
 
 class CITests(unittest.TestCase):
+    def test_business_files_do_not_embed_machine_specific_paths(self):
+        pattern = re.compile(r"(?<!\w)[A-Za-z]:[/\\]|/(?:home|Users)/[^/\s]+/")
+        for directory in ("crates", "native", "config"):
+            for path in (ci.ROOT / directory).rglob("*"):
+                if path.is_file() and path.suffix in (".rs", ".cpp", ".hpp", ".asm", ".toml", ".txt", ".pplugin", ".jsonc"):
+                    self.assertIsNone(pattern.search(path.read_text("utf-8")), str(path.relative_to(ci.ROOT)))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -33,14 +41,16 @@ class CITests(unittest.TestCase):
             for name in ("funrounds-core", "funrounds-plugin")
         ))
         self.write("crates/funrounds-core/src/lib.rs", f'pub const VERSION: &str = "{version}";\n')
-        main = {"version": version, "dependencies": [{"name": "s2sdk", "constraints": "=3.0.1"},
+        main = {"version": version, "dependencies": [{"name": "s2sdk", "constraints": "=3.0.6"},
                 {"name": "funrounds_native", "constraints": f"={version}"}]}
-        native = {"version": version, "dependencies": [{"name": "s2sdk", "constraints": "=3.0.1"}]}
+        native = {"version": version, "dependencies": [{"name": "s2sdk", "constraints": "=3.0.6"}]}
         self.write("packaging/funrounds.pplugin", json.dumps(main))
         self.write("native/funrounds-native/funrounds-native.pplugin", json.dumps(native))
-        self.write("bindings/s2sdk.pplugin", '{"version":"3.0.1","dependencies":[{"name":"configs","constraints":">=2.1.0"}]}')
+        self.write("bindings/s2sdk.pplugin", '{"version":"3.0.6","dependencies":[{"name":"configs","constraints":">=2.1.0"}]}')
         self.write("native/funrounds-native/gamedata/funrounds-native.jsonc", '{}')
         self.write("config/funrounds.example.toml", '# Generic example\n')
+        for language in ("zh-CN", "en"):
+            self.write(f"config/i18n/{language}.toml", '[messages]\n"mode.example.name" = "Example"\n')
         self.write("LICENSE", "License")
         self.write("licenses/dependency.txt", "Dependency notice")
 
@@ -51,7 +61,7 @@ class CITests(unittest.TestCase):
             (output / f"funrounds-{version}-{platform}.zip").write_bytes(b"archive")
         return output
 
-    def sdk_fixture(self, platform, version="3.0.1"):
+    def sdk_fixture(self, platform, version="3.0.6"):
         name = "plugify-plugin-s2sdk.dll" if platform == "windows-x64" else "libplugify-plugin-s2sdk.so"
         self.write(f"native-output/s2sdk/bin/{name}", "patched SDK")
         self.write("native-output/s2sdk/plugify-plugin-s2sdk.pplugin", json.dumps({"name": "s2sdk", "version": version}))
@@ -135,6 +145,8 @@ class CITests(unittest.TestCase):
                     self.assertIn("addons/plugify/envs/s2sdk/translations.jsonc", names)
                     self.assertTrue(any(name.startswith("addons/plugify/envs/s2sdk/bin/") for name in names))
                     self.assertIn("addons/plugify/configs/funrounds.example.toml", names)
+                    for language in ("zh-CN", "en"):
+                        self.assertIn(f"addons/plugify/configs/funrounds/i18n/{language}.toml", names)
                     self.assertFalse(any("fr_players" in name or "private" in name or name.endswith("/funrounds.toml") for name in names))
 
     def test_missing_binary_fails_before_creating_archive(self):

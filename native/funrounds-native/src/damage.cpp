@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mai Ooizumi
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 #include "damage.hpp"
 
 #include <algorithm>
@@ -156,11 +159,84 @@ struct DamageState {
     polyhook::HookHandle hook = nullptr;
     DamagePreCallback owner = nullptr;
     DamagePreCallback callback = nullptr;
+    EntityDamagePreCallback entityOwner = nullptr;
+    EntityDamagePreCallback entityCallback = nullptr;
     bool postInstalled = false;
+    bool commonReady = false;
+    bool traceReady = false;
     bool ready = false;
 };
 
 DamageState g_damage;
+#if defined(FUNROUNDS_NATIVE_LIFECYCLE_PROBE)
+bool g_probeFailDamagePostRegistration = false;
+bool g_probeFailDamagePostRemoval = false;
+std::int32_t g_probeDamageTargetCalls = 0;
+std::uintptr_t g_probeDamageTargetChecksum = 0;
+polyhook::_RemoveCallback g_probeOriginalRemoveCallback = nullptr;
+#if defined(_MSC_VER)
+#define FUNROUNDS_DAMAGE_PROBE_NOINLINE __declspec(noinline)
+#else
+#define FUNROUNDS_DAMAGE_PROBE_NOINLINE __attribute__((noinline))
+#endif
+
+extern "C" FUNROUNDS_DAMAGE_PROBE_NOINLINE std::int64_t DamageRegistrationProbeTarget(void* first,
+                                                                                       void* second,
+                                                                                       void* third) {
+    ++g_probeDamageTargetCalls;
+    const auto firstValue = reinterpret_cast<std::uintptr_t>(first);
+    const auto secondValue = reinterpret_cast<std::uintptr_t>(second);
+    const auto thirdValue = reinterpret_cast<std::uintptr_t>(third);
+    g_probeDamageTargetChecksum = ((firstValue << 1U) ^ secondValue) +
+                                 ((thirdValue << 2U) ^ g_probeDamageTargetChecksum ^ 0x9E3779B97F4A7C15ULL);
+    g_probeDamageTargetChecksum ^= static_cast<std::uintptr_t>(g_probeDamageTargetCalls);
+    return static_cast<std::int64_t>(g_probeDamageTargetCalls + 41);
+}
+
+std::int32_t DamageRegistrationProbeCallback(std::int32_t,
+                                             std::int32_t,
+                                             std::int32_t,
+                                             std::int32_t,
+                                             std::int32_t,
+                                             bool,
+                                             float,
+                                             std::uint32_t,
+                                             float&,
+                                             bool&,
+                                             std::int32_t,
+                                             bool) {
+    return kActionAllow;
+}
+
+bool FailPostDamageRemovalOnce(polyhook::HookHandle hook,
+                               polyhook::CallbackType type,
+                               polyhook::CallbackHandler handler) {
+    if (type == polyhook::CallbackType::Post && g_probeFailDamagePostRemoval) {
+        g_probeFailDamagePostRemoval = false;
+        throw std::bad_alloc{};
+    }
+    return g_probeOriginalRemoveCallback(hook, type, handler);
+}
+
+class ScopedDamageRemoveFailure {
+public:
+    ScopedDamageRemoveFailure() noexcept : original_(__polyhook_RemoveCallback) {
+        g_probeOriginalRemoveCallback = original_;
+        __polyhook_RemoveCallback = FailPostDamageRemovalOnce;
+    }
+
+    ~ScopedDamageRemoveFailure() {
+        __polyhook_RemoveCallback = original_;
+        g_probeOriginalRemoveCallback = nullptr;
+    }
+
+    ScopedDamageRemoveFailure(const ScopedDamageRemoveFailure&) = delete;
+    ScopedDamageRemoveFailure& operator=(const ScopedDamageRemoveFailure&) = delete;
+
+private:
+    polyhook::_RemoveCallback original_;
+};
+#endif
 
 polyhook::ResultType DamageHook(polyhook::HookHandle,
                                 polyhook::ParametersHandle,
@@ -205,18 +281,25 @@ bool ResolveDamageInfo() noexcept {
         return false;
     }
 
+    if (info.shouldBleed.offset != info.originalDamage.offset + static_cast<std::int32_t>(sizeof(float)) ||
+        info.shouldSpark.offset != info.shouldBleed.offset + static_cast<std::int32_t>(sizeof(bool)) ||
+        info.damageFlags.offset + static_cast<std::int32_t>(sizeof(std::uint64_t)) != info.hitGroupId.offset) {
+        return false;
+    }
+    return true;
+}
+
+bool ResolveDamageTrace() noexcept {
+    const auto& info = g_damage.info;
     const auto traceOffset = info.damageFlags.offset - static_cast<std::int32_t>(sizeof(CGameTrace*));
     const auto afterSpark = info.shouldSpark.offset + static_cast<std::int32_t>(sizeof(bool));
     const auto alignedTraceOffset = (afterSpark + static_cast<std::int32_t>(alignof(CGameTrace*)) - 1) &
                                     ~(static_cast<std::int32_t>(alignof(CGameTrace*)) - 1);
-    if (info.shouldBleed.offset != info.originalDamage.offset + static_cast<std::int32_t>(sizeof(float)) ||
-        info.shouldSpark.offset != info.shouldBleed.offset + static_cast<std::int32_t>(sizeof(bool)) ||
-        traceOffset != alignedTraceOffset ||
-        info.damageFlags.offset + static_cast<std::int32_t>(sizeof(std::uint64_t)) != info.hitGroupId.offset ||
-        traceOffset < 0 || traceOffset > g_damage.infoSize - static_cast<std::int32_t>(sizeof(CGameTrace*))) {
+    if (traceOffset != alignedTraceOffset || traceOffset < 0 ||
+        traceOffset > g_damage.infoSize - static_cast<std::int32_t>(sizeof(CGameTrace*))) {
         return false;
     }
-    info.trace = traceOffset;
+    g_damage.info.trace = traceOffset;
     return true;
 }
 
@@ -285,7 +368,7 @@ bool ResolveNavPhysics() noexcept {
 }
 
 bool ResolveDamageAddresses() noexcept {
-    if (!__s2sdk_GetGameConfigSignature || !ResolveNavPhysics()) {
+    if (!__s2sdk_GetGameConfigSignature) {
         return false;
     }
     g_damage.takeDamageAddress = s2sdk::GetGameConfigSignature(GameConfig(), "CBaseEntity_TakeDamageOld");
@@ -320,12 +403,25 @@ bool ResolveWeaponHandle(std::int32_t handle, void*& weapon) noexcept {
     return weapon && HandleFromEntity(weapon) == handle && IsWeaponEntity(weapon);
 }
 
+bool EnsureDamageCommonReady() {
+    if (g_damage.commonReady) {
+        return true;
+    }
+    if (!EnsureEngine() || !ResolveDamageInfo() || !ResolveDamageResult() ||
+        !ResolveDamageAddresses()) {
+        return false;
+    }
+    g_damage.commonReady = true;
+    return true;
+}
+
 bool EnsureDamageReady() {
     if (g_damage.ready) {
         return true;
     }
-    if (!EnsureEngine() || !ResolveDamageInfo() || !ResolveDamageResult() ||
-        !ResolveHeadshotMask() || !ResolveDamageAddresses()) {
+    if (!EnsureDamageCommonReady() ||
+        (!g_damage.traceReady && !(g_damage.traceReady = ResolveDamageTrace())) ||
+        !ResolveHeadshotMask() || !ResolveNavPhysics()) {
         return false;
     }
     g_damage.ready = true;
@@ -404,9 +500,13 @@ std::int32_t ClassifyWeapon(void* attackerPawn, std::uint32_t damageType) noexce
     }
 }
 
-bool RegisterDamageCallbacks(polyhook::HookHandle hook, DamagePreCallback callback) {
-    g_damage.owner = callback;
+bool RegisterDamageCallbacks(polyhook::HookHandle hook,
+                             DamagePreCallback playerCallback,
+                             EntityDamagePreCallback entityCallback) {
+    g_damage.owner = playerCallback;
     g_damage.callback = nullptr;
+    g_damage.entityOwner = entityCallback;
+    g_damage.entityCallback = nullptr;
     g_damage.postInstalled = false;
 
     try {
@@ -414,6 +514,12 @@ bool RegisterDamageCallbacks(polyhook::HookHandle hook, DamagePreCallback callba
         if (!polyhook::IsCallbackRegistered(hook, polyhook::CallbackType::Pre, DamageHook)) {
             return false;
         }
+#if defined(FUNROUNDS_NATIVE_LIFECYCLE_PROBE)
+        if (g_probeFailDamagePostRegistration) {
+            g_probeFailDamagePostRegistration = false;
+            throw std::bad_alloc{};
+        }
+#endif
         (void)polyhook::AddCallback(hook, polyhook::CallbackType::Post, DamageHook);
         if (!polyhook::IsCallbackRegistered(hook, polyhook::CallbackType::Post, DamageHook)) {
             return false;
@@ -423,8 +529,9 @@ bool RegisterDamageCallbacks(polyhook::HookHandle hook, DamagePreCallback callba
     }
 
     g_damage.postInstalled = true;
-    g_damage.callback = callback;
-    DamageFrameStack::SetEnabled(true);
+    g_damage.callback = playerCallback;
+    g_damage.entityCallback = entityCallback;
+    DamageFrameStack::SetEnabled(playerCallback != nullptr || entityCallback != nullptr);
     return true;
 }
 
@@ -500,6 +607,8 @@ bool DetachDamageHook() noexcept {
         g_damage.hook = nullptr;
         g_damage.takeDamageAddress = nullptr;
         g_damage.postInstalled = false;
+        g_damage.commonReady = false;
+        g_damage.traceReady = false;
         g_damage.ready = false;
         return true;
     } catch (...) {
@@ -507,10 +616,31 @@ bool DetachDamageHook() noexcept {
     }
 }
 
-void ClearDamageOwner() noexcept {
+void ClearDamageSubscriptions() noexcept {
     g_damage.owner = nullptr;
     g_damage.callback = nullptr;
+    g_damage.entityOwner = nullptr;
+    g_damage.entityCallback = nullptr;
     DamageFrameStack::SetEnabled(false);
+}
+
+void RefreshDamageFrameTracking() noexcept {
+    DamageFrameStack::SetEnabled(g_damage.callback != nullptr || g_damage.entityCallback != nullptr);
+}
+
+void SuppressDamage(void* info, polyhook::ParametersHandle params, polyhook::ReturnHandle result) noexcept {
+    WriteField(info, g_damage.info.shouldBleed.offset, false);
+    WriteField(info, g_damage.info.shouldSpark.offset, false);
+    auto* damageResult = polyhook::GetArgument<void*>(params, 2);
+    if (damageResult) {
+        const auto& offsets = g_damage.result;
+        WriteField(damageResult, offsets.healthLost.offset, std::int32_t{0});
+        WriteField(damageResult, offsets.damageDealt.offset, 0.0f);
+        WriteField(damageResult, offsets.totalledHealthLost.offset, std::int32_t{0});
+        WriteField(damageResult, offsets.totalledDamageDealt.offset, 0.0f);
+        WriteField(damageResult, offsets.damageSuppressed.offset, true);
+    }
+    polyhook::SetReturn<std::int64_t>(result, 1);
 }
 
 polyhook::ResultType DamageHook(polyhook::HookHandle,
@@ -530,15 +660,45 @@ polyhook::ResultType DamageHook(polyhook::HookHandle,
     }
     DamageFrameStack::Push();
     try {
-        const auto callback = g_damage.callback;
         auto* info = polyhook::GetArgument<void*>(params, 1);
         auto* victim = polyhook::GetArgument<void*>(params, 0);
-        if (!callback || !info || !victim || !g_damage.ready) {
+        if (!info || !victim || !g_damage.commonReady) {
             return polyhook::ResultType::Ignored;
         }
 
         const auto victimHandle = HandleFromEntity(victim);
-        if (victimHandle == -1 || !IsPlayerPawn(victimHandle)) {
+        if (victimHandle == -1) {
+            return polyhook::ResultType::Ignored;
+        }
+
+        if (!IsPlayerPawn(victimHandle)) {
+            const auto callback = g_damage.entityCallback;
+            if (!callback || EntityFromHandle(victimHandle) != victim || HandleFromEntity(victim) != victimHandle) {
+                return polyhook::ResultType::Ignored;
+            }
+
+            const auto& fields = g_damage.info;
+            const auto attackerHandle = ToApiHandle(ReadField<std::uint32_t>(info, fields.attackerHandle.offset));
+            const auto inflictorHandle = ToApiHandle(ReadField<std::uint32_t>(info, fields.inflictorHandle.offset));
+            const auto abilityHandle = ToApiHandle(ReadField<std::uint32_t>(info, fields.abilityHandle.offset));
+            const auto damageType = ReadField<std::uint32_t>(info, fields.damageType.offset);
+            const auto damage = ReadField<float>(info, fields.damage.offset);
+            const bool skipPluginRules = DamageCallScope<EntityDamagePreCallback>::SkipRules(info, callback);
+            if (callback(victimHandle,
+                         attackerHandle,
+                         inflictorHandle,
+                         abilityHandle,
+                         damage,
+                         damageType,
+                         skipPluginRules) != kActionAllow) {
+                SuppressDamage(info, params, result);
+                return polyhook::ResultType::Supercede;
+            }
+            return polyhook::ResultType::Ignored;
+        }
+
+        const auto callback = g_damage.callback;
+        if (!callback || !g_damage.ready) {
             return polyhook::ResultType::Ignored;
         }
 
@@ -582,18 +742,7 @@ polyhook::ResultType DamageHook(polyhook::HookHandle,
                                      skipPluginRules);
         const bool blocked = action != kActionAllow || !std::isfinite(multiplier) || multiplier <= 0.0f;
         if (blocked) {
-            WriteField(info, fields.shouldBleed.offset, false);
-            WriteField(info, fields.shouldSpark.offset, false);
-            auto* damageResult = polyhook::GetArgument<void*>(params, 2);
-            if (damageResult) {
-                const auto& offsets = g_damage.result;
-                WriteField(damageResult, offsets.healthLost.offset, std::int32_t{0});
-                WriteField(damageResult, offsets.damageDealt.offset, 0.0f);
-                WriteField(damageResult, offsets.totalledHealthLost.offset, std::int32_t{0});
-                WriteField(damageResult, offsets.totalledDamageDealt.offset, 0.0f);
-                WriteField(damageResult, offsets.damageSuppressed.offset, true);
-            }
-            polyhook::SetReturn<std::int64_t>(result, 1);
+            SuppressDamage(info, params, result);
             return polyhook::ResultType::Supercede;
         }
 
@@ -687,8 +836,10 @@ private:
     bool constructed_ = false;
 };
 
-bool InstallDamageHook(DamagePreCallback callback) {
-    if (!callback || !EnsureDamageReady() || !__polyhook_HookDetour ||
+bool InstallDamageHook(DamagePreCallback playerCallback, EntityDamagePreCallback entityCallback) {
+    if ((!playerCallback && !entityCallback) ||
+        (playerCallback && !EnsureDamageReady()) ||
+        (entityCallback && !EnsureDamageCommonReady()) || !__polyhook_HookDetour ||
         !__polyhook_AddCallback || !__polyhook_IsCallbackRegistered || !__polyhook_FindDetour) {
         return false;
     }
@@ -709,13 +860,27 @@ bool InstallDamageHook(DamagePreCallback callback) {
         return false;
     }
     g_damage.hook = hook;
-    if (!RegisterDamageCallbacks(hook, callback)) {
+    if (!RegisterDamageCallbacks(hook, playerCallback, entityCallback)) {
         if (DetachDamageHook()) {
-            ClearDamageOwner();
+            ClearDamageSubscriptions();
         }
         return false;
     }
     return true;
+}
+
+bool DamageHookIsActive() noexcept {
+    if (!g_damage.hook || !g_damage.takeDamageAddress || !g_damage.postInstalled ||
+        !__polyhook_FindDetour || !__polyhook_IsCallbackRegistered) {
+        return false;
+    }
+    try {
+        return polyhook::FindDetour(g_damage.takeDamageAddress) == g_damage.hook &&
+               polyhook::IsCallbackRegistered(g_damage.hook, polyhook::CallbackType::Pre, DamageHook) &&
+               polyhook::IsCallbackRegistered(g_damage.hook, polyhook::CallbackType::Post, DamageHook);
+    } catch (...) {
+        return false;
+    }
 }
 
 } // namespace
@@ -724,23 +889,197 @@ bool EnsureDamageAvailable() {
     return EnsureDamageReady();
 }
 
+bool EnsureEntityDamageAvailable() {
+    return EnsureDamageCommonReady();
+}
+
+#if defined(FUNROUNDS_NATIVE_LIFECYCLE_PROBE)
+bool ProbeNativeDamagePaths(std::int32_t pawnHandle,
+                            std::int32_t victimHandle,
+                            std::int32_t weaponHandle,
+                            std::int32_t nonWeaponHandle) noexcept {
+    try {
+        if (!EnsureEngine() || !ResolveNavPhysics() || pawnHandle == -1 || victimHandle == -1 || weaponHandle == -1 ||
+            nonWeaponHandle == -1) {
+            return false;
+        }
+        void* pawn = EntityFromHandle(pawnHandle);
+        void* victim = EntityFromHandle(victimHandle);
+        void* weapon = nullptr;
+        void* nonWeapon = nullptr;
+        return pawn && HandleFromEntity(pawn) == pawnHandle && IsPlayerPawn(pawnHandle) && victim &&
+               HandleFromEntity(victim) == victimHandle && TraceVictimHead(pawnHandle, pawn, victim) &&
+               ResolveWeaponHandle(weaponHandle, weapon) && weapon &&
+               !ResolveWeaponHandle(nonWeaponHandle, nonWeapon) &&
+               s2sdk::NativeFixtureNavTraceCallCount() == 1 &&
+               s2sdk::NativeFixtureLastEyePositionHandle() == pawnHandle &&
+               s2sdk::NativeFixtureLastEyeAngleHandle() == pawnHandle;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool ProbeDamageRegistrationRollback() noexcept {
+    try {
+        if (!__polyhook_HookDetour || !__polyhook_FindDetour || !__polyhook_AddCallback ||
+            !__polyhook_IsCallbackRegistered || !__polyhook_RemoveCallback || !__polyhook_UnhookDetour ||
+            DamageFrameStack::ActiveCalls() != 0) {
+            return false;
+        }
+
+        auto* const target = reinterpret_cast<void*>(&DamageRegistrationProbeTarget);
+        if (polyhook::FindDetour(target)) {
+            return false;
+        }
+        constexpr std::array argumentKinds{polyhook::DataType::Pointer,
+                                           polyhook::DataType::Pointer,
+                                           polyhook::DataType::Pointer};
+        const plg::vector<polyhook::DataType> argumentTypes(argumentKinds.begin(), argumentKinds.end());
+        const auto hook = polyhook::HookDetour(target,
+                                               polyhook::DataType::Int64,
+                                               argumentTypes,
+                                               -1,
+                                               "FunRounds::DamageRegistrationProbe");
+        if (!hook) {
+            return false;
+        }
+
+        g_damage.takeDamageAddress = target;
+        g_damage.hook = hook;
+        g_damage.owner = nullptr;
+        g_damage.callback = nullptr;
+        g_damage.entityOwner = nullptr;
+        g_damage.entityCallback = nullptr;
+        g_damage.postInstalled = false;
+        g_damage.commonReady = false;
+        g_damage.traceReady = false;
+        g_damage.ready = false;
+        g_probeDamageTargetCalls = 0;
+        g_probeDamageTargetChecksum = 0;
+        g_probeFailDamagePostRegistration = true;
+        const bool installed = RegisterDamageCallbacks(hook, DamageRegistrationProbeCallback, nullptr);
+        const bool preRegistered = polyhook::IsCallbackRegistered(hook, polyhook::CallbackType::Pre, DamageHook);
+        const bool ownerRetained = !installed && preRegistered && g_damage.owner == DamageRegistrationProbeCallback &&
+                                   g_damage.callback == nullptr && !g_damage.entityOwner && !g_damage.entityCallback &&
+                                   !g_damage.postInstalled;
+        const auto throughPartialHook = reinterpret_cast<std::int64_t (*)(void*, void*, void*)>(target)(nullptr,
+                                                                                                          nullptr,
+                                                                                                          nullptr);
+        const bool frameBalanced = DamageFrameStack::ActiveCalls() == 0;
+        const bool detached = DetachDamageHook();
+        if (detached) {
+            ClearDamageSubscriptions();
+        }
+        const auto afterDetach = reinterpret_cast<std::int64_t (*)(void*, void*, void*)>(target)(nullptr,
+                                                                                                 nullptr,
+                                                                                                 nullptr);
+        return ownerRetained && throughPartialHook == 42 && frameBalanced && detached &&
+               afterDetach == 43 && DamageFrameStack::ActiveCalls() == 0 && polyhook::FindDetour(target) == nullptr;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool ProbeDamageDetachFailureRetry() noexcept {
+    try {
+        if (!__polyhook_HookDetour || !__polyhook_FindDetour || !__polyhook_AddCallback ||
+            !__polyhook_IsCallbackRegistered || !__polyhook_RemoveCallback || !__polyhook_UnhookDetour ||
+            g_damage.owner || g_damage.entityOwner || g_damage.entityCallback || DamageFrameStack::ActiveCalls() != 0) {
+            return false;
+        }
+
+        auto* const target = reinterpret_cast<void*>(&DamageRegistrationProbeTarget);
+        if (polyhook::FindDetour(target)) {
+            return false;
+        }
+        constexpr std::array argumentKinds{polyhook::DataType::Pointer,
+                                           polyhook::DataType::Pointer,
+                                           polyhook::DataType::Pointer};
+        const plg::vector<polyhook::DataType> argumentTypes(argumentKinds.begin(), argumentKinds.end());
+        const auto hook = polyhook::HookDetour(target,
+                                               polyhook::DataType::Int64,
+                                               argumentTypes,
+                                               -1,
+                                               "FunRounds::DamageDetachProbe");
+        if (!hook) {
+            return false;
+        }
+
+        g_damage.takeDamageAddress = target;
+        g_damage.hook = hook;
+        g_damage.ready = false;
+        g_probeDamageTargetCalls = 0;
+        if (!RegisterDamageCallbacks(hook, DamageRegistrationProbeCallback, nullptr)) {
+            if (DetachDamageHook()) {
+                ClearDamageSubscriptions();
+            }
+            return false;
+        }
+
+        bool partialDetach = false;
+        std::int64_t throughPostOnly = 0;
+        bool stackBalanced = false;
+        {
+            ScopedDamageRemoveFailure failPostRemoval;
+            g_probeFailDamagePostRemoval = true;
+            const bool firstDetach = DetachDamageHook();
+            partialDetach = !firstDetach && polyhook::FindDetour(target) == hook &&
+                            !polyhook::IsCallbackRegistered(hook, polyhook::CallbackType::Pre, DamageHook) &&
+                            polyhook::IsCallbackRegistered(hook, polyhook::CallbackType::Post, DamageHook) &&
+                            !g_damage.postInstalled && g_damage.owner == DamageRegistrationProbeCallback;
+            throughPostOnly = reinterpret_cast<std::int64_t (*)(void*, void*, void*)>(target)(nullptr,
+                                                                                              nullptr,
+                                                                                              nullptr);
+            stackBalanced = DamageFrameStack::ActiveCalls() == 0;
+        }
+
+        const bool retryDetached = DetachDamageHook();
+        if (retryDetached) {
+            ClearDamageSubscriptions();
+        }
+        return partialDetach && throughPostOnly == 42 && stackBalanced && retryDetached && !g_damage.owner &&
+               !g_damage.entityOwner && !g_damage.entityCallback &&
+               DamageFrameStack::ActiveCalls() == 0 && polyhook::FindDetour(target) == nullptr;
+    } catch (...) {
+        return false;
+    }
+}
+#endif
+
 bool HookDamage(DamagePreCallback callback) {
     if (!callback) {
         return false;
     }
-    if (g_damage.owner == callback && g_damage.callback == callback && g_damage.hook) {
+    if (g_damage.owner == callback && g_damage.callback == callback && DamageHookIsActive()) {
         return true;
     }
     if (g_damage.owner && g_damage.owner != callback) {
         return false;
     }
     if (g_damage.owner == callback) {
+        if (g_damage.entityOwner) {
+            return false;
+        }
         if (!DetachDamageHook()) {
             return false;
         }
-        ClearDamageOwner();
+        ClearDamageSubscriptions();
+    } else if (g_damage.hook) {
+        if (DamageHookIsActive()) {
+            if (!EnsureDamageReady()) {
+                return false;
+            }
+            g_damage.owner = callback;
+            g_damage.callback = callback;
+            RefreshDamageFrameTracking();
+            return true;
+        }
+        if (g_damage.entityOwner || !DetachDamageHook()) {
+            return false;
+        }
+        ClearDamageSubscriptions();
     }
-    return InstallDamageHook(callback);
+    return EnsureDamageReady() && InstallDamageHook(callback, nullptr);
 }
 
 bool UnhookDamage(DamagePreCallback callback) {
@@ -748,21 +1087,82 @@ bool UnhookDamage(DamagePreCallback callback) {
         return false;
     }
     g_damage.callback = nullptr;
-    DamageFrameStack::SetEnabled(false);
+    RefreshDamageFrameTracking();
+    if (g_damage.entityCallback) {
+        g_damage.owner = nullptr;
+        return true;
+    }
     if (!DetachDamageHook()) {
         return false;
     }
-    ClearDamageOwner();
+    ClearDamageSubscriptions();
+    return true;
+}
+
+bool HookEntityDamage(EntityDamagePreCallback callback) {
+    if (!callback) {
+        return false;
+    }
+    if (g_damage.entityOwner == callback && g_damage.entityCallback == callback && DamageHookIsActive()) {
+        return true;
+    }
+    if (g_damage.entityOwner && g_damage.entityOwner != callback) {
+        return false;
+    }
+    if (g_damage.entityOwner == callback) {
+        if (g_damage.owner) {
+            return false;
+        }
+        if (!DetachDamageHook()) {
+            return false;
+        }
+        ClearDamageSubscriptions();
+    } else if (g_damage.hook) {
+        if (DamageHookIsActive()) {
+            if (!EnsureDamageCommonReady()) {
+                return false;
+            }
+            g_damage.entityOwner = callback;
+            g_damage.entityCallback = callback;
+            RefreshDamageFrameTracking();
+            return true;
+        }
+        if (g_damage.owner || !DetachDamageHook()) {
+            return false;
+        }
+        ClearDamageSubscriptions();
+    }
+    return EnsureDamageCommonReady() && InstallDamageHook(nullptr, callback);
+}
+
+bool UnhookEntityDamage(EntityDamagePreCallback callback) {
+    if (!callback) {
+        return false;
+    }
+    if (callback != g_damage.entityOwner) {
+        return g_damage.entityCallback != callback;
+    }
+    g_damage.entityCallback = nullptr;
+    RefreshDamageFrameTracking();
+    if (g_damage.callback) {
+        g_damage.entityOwner = nullptr;
+        return true;
+    }
+    if (!DetachDamageHook()) {
+        return false;
+    }
+    ClearDamageSubscriptions();
     return true;
 }
 
 bool ShutdownDamage() noexcept {
     g_damage.callback = nullptr;
-    DamageFrameStack::SetEnabled(false);
+    g_damage.entityCallback = nullptr;
+    RefreshDamageFrameTracking();
     try {
         const bool detached = DetachDamageHook();
         if (detached) {
-            ClearDamageOwner();
+            ClearDamageSubscriptions();
         }
         return detached;
     } catch (...) {
@@ -787,7 +1187,7 @@ std::int32_t ApplyDamage(std::int32_t victimHandle,
         if (!forceValues || !positionValues || !EnsureDamageReady() || !g_damage.damageConstructorAddress ||
             !g_damage.takeDamageAddress || !g_damage.infoClass || victimHandle == -1 || inflictorHandle == -1 ||
             attackerHandle == -1) {
-            return 0;
+            return -1;
         }
 
         void* victim = EntityFromHandle(victimHandle);
@@ -795,11 +1195,11 @@ std::int32_t ApplyDamage(std::int32_t victimHandle,
         void* attacker = EntityFromHandle(attackerHandle);
         void* weapon = nullptr;
         if (!ResolveWeaponHandle(weaponHandle, weapon)) {
-            return 0;
+            return -1;
         }
         if (!victim || !inflictor || !attacker || HandleFromEntity(victim) != victimHandle ||
             HandleFromEntity(inflictor) != inflictorHandle || HandleFromEntity(attacker) != attackerHandle) {
-            return 0;
+            return -1;
         }
 
         const Vector force{forceValues[0], forceValues[1], forceValues[2]};
@@ -807,7 +1207,7 @@ std::int32_t ApplyDamage(std::int32_t victimHandle,
         NativeDamageInfoStorage info(g_damage.infoClass);
         auto constructor = reinterpret_cast<NativeDamageConstructor>(g_damage.damageConstructorAddress);
         if (!info.Construct(constructor, inflictor, attacker, weapon, force, position, damage, damageType)) {
-            return 0;
+            return -1;
         }
 
         auto* damageInfo = static_cast<CTakeDamageInfo*>(info.Get());
@@ -815,14 +1215,15 @@ std::int32_t ApplyDamage(std::int32_t victimHandle,
                    weapon ? ToNativeHandle(weaponHandle) : kInvalidEntityHandle);
         CTakeDamageResult damageResult(damage);
         damageResult.CopyFrom(damageInfo, damage);
-        DamageCallScope<DamagePreCallback> scope(damageInfo, g_damage.callback, skipPluginRules);
+        DamageCallScope<DamagePreCallback> playerScope(damageInfo, g_damage.callback, skipPluginRules);
+        DamageCallScope<EntityDamagePreCallback> entityScope(damageInfo, g_damage.entityCallback, skipPluginRules);
         (void)reinterpret_cast<TakeDamageFunction>(g_damage.takeDamageAddress)(
             static_cast<CBaseEntity*>(victim), damageInfo, &damageResult);
         const auto applied = ReadField<std::int32_t>(&damageResult, g_damage.result.healthLost.offset);
         (void)info.Destruct();
-        return applied;
+        return applied < 0 ? -1 : applied;
     } catch (...) {
-        return 0;
+        return -1;
     }
 }
 
@@ -831,6 +1232,14 @@ std::int32_t ApplyDamage(std::int32_t victimHandle,
 extern "C" PLUGIN_API bool HasPlayerTakeDamagePre() {
     try {
         return funrounds::native::detail::EnsureDamageAvailable();
+    } catch (...) {
+        return false;
+    }
+}
+
+extern "C" PLUGIN_API bool HasEntityTakeDamagePre() {
+    try {
+        return funrounds::native::detail::EnsureEntityDamageAvailable();
     } catch (...) {
         return false;
     }
@@ -847,6 +1256,24 @@ extern "C" PLUGIN_API bool HookPlayerTakeDamagePre(funrounds::native::detail::Da
 extern "C" PLUGIN_API bool UnhookPlayerTakeDamagePre(funrounds::native::detail::DamagePreCallback callback) {
     try {
         return funrounds::native::detail::UnhookDamage(callback);
+    } catch (...) {
+        return false;
+    }
+}
+
+extern "C" PLUGIN_API bool HookEntityTakeDamagePre(
+    funrounds::native::detail::EntityDamagePreCallback callback) {
+    try {
+        return funrounds::native::detail::HookEntityDamage(callback);
+    } catch (...) {
+        return false;
+    }
+}
+
+extern "C" PLUGIN_API bool UnhookEntityTakeDamagePre(
+    funrounds::native::detail::EntityDamagePreCallback callback) {
+    try {
+        return funrounds::native::detail::UnhookEntityDamage(callback);
     } catch (...) {
         return false;
     }

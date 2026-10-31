@@ -1,4 +1,5 @@
 // Generated from s2sdk.pplugin (group: clients)
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 #[allow(unused_imports)]
 use super::aliases::*;
@@ -305,6 +306,20 @@ pub type _RespawnClient = unsafe extern "C" fn(i32);
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_RespawnClient: Option<_RespawnClient> = None;
 
+/// Forces a full engine respawn for a player, including when the current pawn is alive. Supported in CS2.
+///
+/// # Arguments
+/// * `playerSlot` - (int32): The index of the player's slot to respawn.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn ForceRespawnClient(playerSlot: i32) {
+    unsafe { __s2sdk_ForceRespawnClient.expect("ForceRespawnClient function was not found")(playerSlot) }
+}
+pub type _ForceRespawnClient = unsafe extern "C" fn(i32);
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_ForceRespawnClient: Option<_ForceRespawnClient> = None;
+
 /// Returns the client's speed value.
 ///
 /// # Arguments
@@ -552,3 +567,20 @@ pub type _GetClientSteamID64 = unsafe extern "C" fn(i32) -> u64;
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_GetClientSteamID64: Option<_GetClientSteamID64> = None;
+
+/// Retrieves a client's language as an ISO code. Unlike GetClientLanguage, which returns the raw cl_language value ("english", "schinese"), this returns the code translation files are keyed by ("en", "zh-CN"). Empty until the client answers the cl_language query, and always empty for bots. Reliably available starting from OnClientAuthenticated and OnClientPutInServer.
+///
+/// # Arguments
+/// * `playerSlot` - (int32): The index of the player's slot.
+///
+/// # Returns - (string):
+/// The client's ISO language code.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetClientLanguageCode(playerSlot: i32) -> Str {
+    unsafe { __s2sdk_GetClientLanguageCode.expect("GetClientLanguageCode function was not found")(playerSlot) }
+}
+pub type _GetClientLanguageCode = unsafe extern "C" fn(i32) -> Str;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetClientLanguageCode: Option<_GetClientLanguageCode> = None;

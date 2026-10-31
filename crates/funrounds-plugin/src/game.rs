@@ -1,7 +1,10 @@
 // Copyright (C) 2026 Mai Ooizumi
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::s2sdk;
+use crate::{
+    capability::{Probe, imports},
+    s2sdk,
+};
 use plugify::Str;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,16 +22,24 @@ pub struct DamagePlayers {
 
 impl DamagePlayers {
     pub fn resolve(victim: i32, attacker: i32) -> Self {
-        Self::from_players(victim, attacker, (0..s2sdk::GetMaxClients()).filter_map(LivePlayer::resolve_present))
+        Self::from_players(
+            victim,
+            attacker,
+            (0..s2sdk::GetMaxClients()).filter_map(LivePlayer::resolve_present),
+            |player| player.pawn_controller().is_some(),
+        )
     }
 
-    fn from_players(victim: i32, attacker: i32, players: impl Iterator<Item = LivePlayer>) -> Self {
+    fn from_players(victim: i32, attacker: i32, players: impl Iterator<Item = LivePlayer>, owns_pawn: impl Fn(LivePlayer) -> bool) -> Self {
         let mut result = Self::default();
         for player in players {
-            if player.pawn_handle == victim || player.controller_handle == victim {
+            // BOT takeover can leave multiple controllers pointing at one pawn.
+            // Explicit controller attribution remains valid even for a dead source.
+            let pawn_matches = (player.pawn_handle == victim || player.pawn_handle == attacker) && owns_pawn(player);
+            if player.controller_handle == victim || (player.pawn_handle == victim && pawn_matches) {
                 result.victim = Some(player);
             }
-            if player.pawn_handle == attacker || player.controller_handle == attacker {
+            if player.controller_handle == attacker || (player.pawn_handle == attacker && pawn_matches) {
                 result.attacker = Some(player);
             }
             if result.victim.is_some() && result.attacker.is_some() {
@@ -49,6 +60,31 @@ pub(crate) fn entity_handles(classname: &str) -> Vec<i32> {
         current = s2sdk::GetNextActiveEntity(current);
     }
     handles
+}
+
+pub(crate) fn engine_removal_acknowledged(handle: i32) -> bool {
+    if !s2sdk::IsValidEntHandle(handle) {
+        return true;
+    }
+    let Some(offset) = (unsafe { s2sdk::__s2sdk_GetSchemaOffset }) else {
+        return false;
+    };
+    if unsafe { offset(&Str::from_str("CEntityInstance"), &Str::from_str("m_pEntity")) } < 0
+        || unsafe { offset(&Str::from_str("CEntityIdentity"), &Str::from_str("m_flags")) } < 0
+    {
+        return false;
+    }
+    let entity = s2sdk::EntHandleToEntPointer(handle);
+    if entity == 0 {
+        return false;
+    }
+    let identity = s2sdk::GetEntSchema2(entity, &Str::from_str("CEntityInstance"), &Str::from_str("m_pEntity"), 0) as usize;
+    if identity == 0 {
+        return false;
+    }
+    let flags = s2sdk::GetEntSchema2(identity, &Str::from_str("CEntityIdentity"), &Str::from_str("m_flags"), 0);
+    // Kill queues native deletion; the same full handle can survive until a later frame.
+    flags & (1 << 9) != 0 && s2sdk::IsValidEntHandle(handle) && s2sdk::EntHandleToEntPointer(handle) == entity
 }
 
 impl LivePlayer {
@@ -99,10 +135,20 @@ impl LivePlayer {
 
     // Call only on the game thread. Keep handles rather than borrowed engine pointers.
     pub fn resolve(slot: i32) -> Option<Self> {
-        if slot < 0 || slot >= s2sdk::GetMaxClients() || !s2sdk::IsClientInGame(slot) || !s2sdk::IsClientAlive(slot) {
+        if slot < 0 || slot >= s2sdk::GetMaxClients() || !s2sdk::IsClientInGame(slot) {
             return None;
         }
-        Self::resolve_handles(slot)
+        if s2sdk::IsClientAlive(slot) {
+            return Self::resolve_handles(slot);
+        }
+        // IsClientAlive follows m_hPlayerPawn, while GetClientPawn/Health follow
+        // current m_hPawn. Only accept the latter as a live takeover pawn when its
+        // authoritative controller link still points to this exact slot controller.
+        if s2sdk::GetClientHealth(slot) <= 0 {
+            return None;
+        }
+        let player = Self::resolve_handles(slot)?;
+        (s2sdk::GetEntityClassname(player.pawn_handle).as_str() == "player" && player.pawn_controller().is_some()).then_some(player)
     }
 
     // Death cleanup needs the current pawn identity without treating a dead player as active.
@@ -111,6 +157,14 @@ impl LivePlayer {
             return None;
         }
         Self::resolve_handles(slot)
+    }
+
+    /// Live interaction callbacks carry a pawn, not a controller. During BOT takeover,
+    /// stale slots may still expose that pawn, so its reverse controller link decides ownership.
+    pub(crate) fn resolve_pawn_owner(pawn_handle: i32) -> Option<Self> {
+        (0..s2sdk::GetMaxClients())
+            .filter_map(Self::resolve)
+            .find(|player| player.pawn_handle == pawn_handle && player.pawn_controller().is_some())
     }
 
     fn resolve_handles(slot: i32) -> Option<Self> {
@@ -129,6 +183,35 @@ impl LivePlayer {
             pawn_handle,
         })
     }
+
+    pub fn pawn_controller(self) -> Option<i32> {
+        if Self::resolve_present(self.slot) != Some(self) {
+            return None;
+        }
+        let class = Str::from_str("CBasePlayerPawn");
+        let field = Str::from_str("m_hController");
+        if s2sdk::GetSchemaOffset(&class, &field) < 0 {
+            return None;
+        }
+        let pointer = s2sdk::EntHandleToEntPointer(self.pawn_handle);
+        if pointer == 0 || s2sdk::EntPointerToEntHandle(pointer) != self.pawn_handle {
+            return None;
+        }
+        let controller = s2sdk::GetEntSchemaEnt2(pointer, &class, &field, 0);
+        (s2sdk::IsValidEntHandle(controller) && controller == self.controller_handle).then_some(controller)
+    }
+}
+
+pub fn bot_takeover_probe() -> Probe {
+    let mut probe = Probe::default();
+    imports!(probe;
+        __s2sdk_GetMaxClients, __s2sdk_IsClientInGame, __s2sdk_IsClientAlive, __s2sdk_GetClientHealth, __s2sdk_GetEntityClassname,
+        __s2sdk_PlayerSlotToEntHandle, __s2sdk_GetClientPawn, __s2sdk_IsValidEntHandle,
+        __s2sdk_EntHandleToEntPointer, __s2sdk_EntPointerToEntHandle,
+        __s2sdk_GetEntSchemaEnt2, __s2sdk_GetSchemaOffset,
+    );
+    probe.schema("CBasePlayerPawn", "m_hController");
+    probe
 }
 
 pub fn warmup() -> Option<bool> {
@@ -211,6 +294,7 @@ mod tests {
             victim.controller_handle,
             attacker.pawn_handle,
             [attacker, victim, victim].into_iter().inspect(|player| visited.push(player.slot)),
+            |_| true,
         );
         assert_eq!(
             players,
@@ -220,7 +304,7 @@ mod tests {
             }
         );
         assert_eq!(visited, [5, 2]);
-        let players = DamagePlayers::from_players(victim.pawn_handle, victim.controller_handle, [victim].into_iter());
+        let players = DamagePlayers::from_players(victim.pawn_handle, victim.controller_handle, [victim].into_iter(), |_| true);
         assert_eq!(players.victim, players.attacker);
         assert_eq!(players.victim, Some(victim));
     }
@@ -234,7 +318,7 @@ mod tests {
         };
         // The input is resolve_present, deliberately independent of alive state.
         assert_eq!(
-            DamagePlayers::from_players(present.pawn_handle, present.controller_handle, [present].into_iter()).attacker,
+            DamagePlayers::from_players(present.pawn_handle, present.controller_handle, [present].into_iter(), |_| true).attacker,
             Some(present)
         );
         let previous = LivePlayer {
@@ -242,11 +326,22 @@ mod tests {
             pawn_handle: 0x12002,
             ..present
         };
-        let players = DamagePlayers::from_players(present.pawn_handle, previous.controller_handle, [present].into_iter());
+        let players = DamagePlayers::from_players(present.pawn_handle, previous.controller_handle, [present].into_iter(), |_| true);
         assert_eq!(players.victim, Some(present));
         assert_eq!(players.attacker, None);
         assert_eq!(
-            DamagePlayers::from_players(-1, previous.pawn_handle, [present].into_iter()),
+            DamagePlayers::from_players(present.pawn_handle, present.controller_handle, [present].into_iter(), |_| false),
+            DamagePlayers {
+                victim: None,
+                attacker: Some(present)
+            }
+        );
+        assert_eq!(
+            DamagePlayers::from_players(present.pawn_handle, present.pawn_handle, [present].into_iter(), |_| false),
+            DamagePlayers::default()
+        );
+        assert_eq!(
+            DamagePlayers::from_players(-1, previous.pawn_handle, [present].into_iter(), |_| true),
             DamagePlayers::default()
         );
     }

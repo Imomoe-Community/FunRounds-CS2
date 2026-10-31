@@ -6,6 +6,7 @@ use crate::s2sdk;
 pub type DamagePreCallback = crate::funrounds_native::DamagePreCallback;
 pub const DMG_BULLET: u32 = 1 << 1;
 pub const DMG_FALL: u32 = 1 << 5;
+pub const DMG_BURN: u32 = 1 << 3;
 pub const DMG_SLASH: u32 = 1 << 2;
 pub const DMG_BLAST: u32 = 1 << 6;
 pub const DMG_HEADSHOT: u32 = 1 << 25;
@@ -20,6 +21,7 @@ struct InternalDamage {
     victim_slot: i32,
     attacker_slot: i32,
     headshot: bool,
+    check_protection: bool,
     suppress_lifesteal: bool,
     random_heal: Option<crate::runtime::RandomHealReceipt>,
     frame_token: Option<u64>,
@@ -36,6 +38,7 @@ impl InternalDamage {
             victim_slot: context.victim_slot,
             attacker_slot: context.attacker_slot,
             headshot: context.headshot,
+            check_protection: context.check_protection,
             suppress_lifesteal: context.suppress_lifesteal,
             random_heal: context.random_heal,
             frame_token: None,
@@ -52,6 +55,9 @@ pub(crate) struct InternalDamageContext {
     pub victim_slot: i32,
     pub attacker_slot: i32,
     pub headshot: bool,
+    // Replays already checked at settlement leave this false; suicide blast
+    // checks in the native pre-hook, while its forced finish bypasses protection.
+    pub check_protection: bool,
     pub suppress_lifesteal: bool,
     pub random_heal: Option<crate::runtime::RandomHealReceipt>,
     pub death_weapon: Option<String>,
@@ -80,7 +86,7 @@ impl Drop for InternalDamageGuard {
     }
 }
 
-fn internal_damage(damage: &Damage) -> Option<bool> {
+fn internal_damage(damage: &Damage) -> Option<(bool, bool)> {
     if !damage.skip_plugin_rules {
         return None;
     }
@@ -93,7 +99,22 @@ fn internal_damage(damage: &Damage) -> Option<bool> {
             if matches && (expected.suppress_lifesteal || expected.death_weapon.is_some() || expected.random_heal.is_some()) {
                 expected.frame_token = current_damage_frame_token();
             }
-            matches.then_some(expected.headshot)
+            matches.then_some((expected.headshot, expected.check_protection))
+        })
+    })
+}
+
+pub(crate) fn internal_damage_attacker_slot(damage: &Damage) -> Option<i32> {
+    if !damage.skip_plugin_rules {
+        return None;
+    }
+    INTERNAL_DAMAGE.with(|active| {
+        active.borrow().as_ref().and_then(|expected| {
+            (damage.victim == expected.victim
+                && damage.attacker == expected.attacker
+                && damage.inflictor == expected.inflictor
+                && damage.weapon == expected.weapon)
+                .then_some(expected.attacker_slot)
         })
     })
 }
@@ -172,10 +193,13 @@ pub fn damage_frame_token_available() -> bool {
 }
 
 // Internal native replays synchronously re-enter the damage hook; exact handles keep unrelated damage in scope.
-pub fn apply_internal_damage(damage: &Damage, mark_headshot: &mut bool) -> bool {
-    let Some(headshot) = internal_damage(damage) else { return false };
+pub fn apply_internal_damage(damage: &Damage, mark_headshot: &mut bool, protected: impl FnOnce() -> bool) -> Option<i32> {
+    let (headshot, check_protection) = internal_damage(damage)?;
+    if check_protection && protected() {
+        return Some(1);
+    }
     *mark_headshot = headshot;
-    true
+    Some(0)
 }
 
 pub struct Damage {
@@ -199,6 +223,12 @@ impl Damage {
     pub fn headshot_rule(&self, player_attributed: bool, classic: bool) -> (i32, f32, bool) {
         if classic && self.damage_type & DMG_FALL != 0 {
             return (0, 1.0, false);
+        }
+        // Engine inferno hits and owned entityflame afterburn ticks are not
+        // headshots. Their attacker may be unattributed, which otherwise falls
+        // through the generic world-damage exception below.
+        if self.damage_type & DMG_BURN != 0 {
+            return (1, 1.0, false);
         }
         headshot_rule(player_attributed, self.weapon_kind, self.hit_group, self.traced_head)
     }
@@ -252,19 +282,95 @@ impl Bridge {
     }
 }
 
+pub struct EntityBridge {
+    callback: crate::funrounds_native::EntityDamagePreCallback,
+}
+
+impl EntityBridge {
+    pub fn subscribe(callback: crate::funrounds_native::EntityDamagePreCallback) -> (Option<Self>, bool) {
+        // These three imports are optional additions to the native ABI.
+        // They are optional for existing installations, so check the whole new
+        // surface before calling any generated wrapper (which expects imports).
+        let imports_available = unsafe {
+            std::ptr::addr_of!(crate::funrounds_native::__funrounds_native_HasEntityTakeDamagePre)
+                .read()
+                .is_some()
+                && std::ptr::addr_of!(crate::funrounds_native::__funrounds_native_HookEntityTakeDamagePre)
+                    .read()
+                    .is_some()
+                && std::ptr::addr_of!(crate::funrounds_native::__funrounds_native_UnhookEntityTakeDamagePre)
+                    .read()
+                    .is_some()
+        };
+        if !imports_available {
+            return (None, false);
+        }
+        if !crate::funrounds_native::HasEntityTakeDamagePre() {
+            return (None, false);
+        }
+        if crate::funrounds_native::HookEntityTakeDamagePre(callback) {
+            (Some(Self { callback }), true)
+        } else {
+            // Registration may have left a partial shared detour; only a confirmed detach
+            // permits a later start attempt.
+            let detached = crate::funrounds_native::UnhookEntityTakeDamagePre(callback);
+            ((!detached).then_some(Self { callback }), false)
+        }
+    }
+
+    pub fn unsubscribe(&self) -> bool {
+        crate::funrounds_native::UnhookEntityTakeDamagePre(self.callback)
+    }
+}
+
 pub fn reflection_available() -> bool {
     unsafe { crate::funrounds_native::__funrounds_native_TakeEntityDamageWithWeapon }.is_some()
 }
 
-pub fn finish_self_damage(pawn: i32) -> Result<i32, crate::fault::Fault> {
+pub(crate) struct NativeDamageCall<'a> {
+    pub victim: i32,
+    pub inflictor: i32,
+    pub attacker: i32,
+    pub force: &'a plugify::Vec3,
+    pub position: &'a plugify::Vec3,
+    pub amount: f32,
+    pub damage_type: u32,
+    pub weapon: i32,
+    pub skip_plugin_rules: bool,
+}
+
+pub fn apply_native_damage(call: NativeDamageCall<'_>, mechanism: crate::fault::Mechanism, failure: &str) -> Result<i32, crate::fault::Fault> {
     if !reflection_available() {
         return Err(crate::fault::Fault::mechanism(
-            crate::fault::Mechanism::NativeSelfDamage,
-            "native self-damage API became unavailable",
+            mechanism,
+            format!("{failure}: native damage API unavailable"),
         ));
     }
+    let result = crate::funrounds_native::TakeEntityDamageWithWeapon(
+        call.victim,
+        call.inflictor,
+        call.attacker,
+        call.force,
+        call.position,
+        call.amount,
+        call.damage_type as i32,
+        call.weapon,
+        call.skip_plugin_rules,
+    );
+    native_damage_result(result, mechanism, failure)
+}
+
+fn native_damage_result(result: i32, mechanism: crate::fault::Mechanism, failure: &str) -> Result<i32, crate::fault::Fault> {
+    if result < 0 {
+        Err(crate::fault::Fault::mechanism(mechanism, failure))
+    } else {
+        Ok(result)
+    }
+}
+
+pub fn finish_self_damage(pawn: i32) -> Result<i32, crate::fault::Fault> {
     let zero = plugify::Vec3 { x: 0.0, y: 0.0, z: 0.0 };
-    let result = with_internal_damage_context(
+    with_internal_damage_context(
         InternalDamageContext {
             victim: pawn,
             attacker: pawn,
@@ -273,25 +379,29 @@ pub fn finish_self_damage(pawn: i32) -> Result<i32, crate::fault::Fault> {
             victim_slot: -1,
             attacker_slot: -1,
             headshot: false,
+            check_protection: false,
             suppress_lifesteal: true,
             random_heal: None,
             death_weapon: None,
         },
-        || crate::funrounds_native::TakeEntityDamageWithWeapon(pawn, pawn, pawn, &zero, &zero, 1.0, 0x0200_0000, -1, true),
-    );
-    if result < 0 {
-        Err(crate::fault::Fault::mechanism(
-            crate::fault::Mechanism::NativeSelfDamage,
-            "native self-damage finish rejected after identity validation",
-        ))
-    } else {
-        Ok(result)
-    }
-}
-
-fn take_damage_with_weapon(victim: i32, inflictor: i32, attacker: i32, amount: f32, damage_type: u32, weapon: i32) -> i32 {
-    let zero = plugify::Vec3 { x: 0.0, y: 0.0, z: 0.0 };
-    crate::funrounds_native::TakeEntityDamageWithWeapon(victim, inflictor, attacker, &zero, &zero, amount, damage_type as i32, weapon, true)
+        || {
+            apply_native_damage(
+                NativeDamageCall {
+                    victim: pawn,
+                    inflictor: pawn,
+                    attacker: pawn,
+                    force: &zero,
+                    position: &zero,
+                    amount: 1.0,
+                    damage_type: 0x0200_0000,
+                    weapon: -1,
+                    skip_plugin_rules: true,
+                },
+                crate::fault::Mechanism::NativeSelfDamage,
+                "native self-damage finish rejected after identity validation",
+            )
+        },
+    )
 }
 
 pub fn delayed_damage_eligible(target_slot: i32, source_slot: i32, damage_type: u32, amount: f32) -> bool {
@@ -398,6 +508,7 @@ impl DelayedDamage {
                 victim_slot: self.target.player.slot,
                 attacker_slot: self.source.player.slot,
                 headshot: self.headshot,
+                check_protection: false,
                 suppress_lifesteal: false,
                 random_heal: (self.random_heal > 0).then_some(crate::runtime::RandomHealReceipt {
                     target: self.target,
@@ -410,24 +521,26 @@ impl DelayedDamage {
                 death_weapon: event_weapon(self.weapon_class.as_deref()),
             },
             || {
-                take_damage_with_weapon(
-                    self.target_live.pawn_handle,
-                    inflictor,
-                    self.source_live.pawn_handle,
-                    self.amount,
-                    self.damage_type,
-                    weapon,
+                apply_native_damage(
+                    NativeDamageCall {
+                        victim: self.target_live.pawn_handle,
+                        inflictor,
+                        attacker: self.source_live.pawn_handle,
+                        force: &plugify::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                        position: &plugify::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                        amount: self.amount,
+                        damage_type: self.damage_type,
+                        weapon,
+                        skip_plugin_rules: true,
+                    },
+                    crate::fault::Mechanism::DelayedDamage,
+                    "native delayed damage rejected after identity validation",
                 )
             },
         );
-        if result < 0 {
-            return Err(crate::fault::Fault::mechanism(
-                crate::fault::Mechanism::DelayedDamage,
-                "native delayed damage rejected after identity validation",
-            )
-            .context(format!("target slot={} source slot={}", self.target.player.slot, self.source.player.slot)));
-        }
-        Ok(())
+        result
+            .map(|_| ())
+            .map_err(|fault| fault.context(format!("target slot={} source slot={}", self.target.player.slot, self.source.player.slot)))
     }
 }
 
@@ -466,28 +579,30 @@ impl Reflection {
                 victim_slot: self.target.player.slot,
                 attacker_slot: self.source.player.slot,
                 headshot: false,
+                check_protection: false,
                 suppress_lifesteal: self.suppress_lifesteal,
                 random_heal: None,
                 death_weapon: event_weapon(self.weapon_class.as_deref()),
             },
             || {
-                take_damage_with_weapon(
-                    self.target_live.pawn_handle,
-                    inflictor,
-                    self.source_live.pawn_handle,
-                    self.amount,
-                    self.damage_type,
-                    weapon,
+                apply_native_damage(
+                    NativeDamageCall {
+                        victim: self.target_live.pawn_handle,
+                        inflictor,
+                        attacker: self.source_live.pawn_handle,
+                        force: &plugify::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                        position: &plugify::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                        amount: self.amount,
+                        damage_type: self.damage_type,
+                        weapon,
+                        skip_plugin_rules: true,
+                    },
+                    crate::fault::Mechanism::Reflection,
+                    "native reflected damage rejected after identity validation",
                 )
             },
         );
-        if result < 0 {
-            return Err(crate::fault::Fault::mechanism(
-                crate::fault::Mechanism::Reflection,
-                "native reflected damage rejected after identity validation",
-            ));
-        }
-        Ok(())
+        result.map(|_| ())
     }
 }
 
@@ -558,7 +673,9 @@ mod tests {
         let (action, special, mark) = damage.headshot_rule(true, true);
         assert_eq!((action, special, mark), (0, 1.0, false));
         assert_eq!(
-            funrounds_core::classic_damage_scale(Some((450, 100)), true, true, false).map(|common| common * special),
+            funrounds_core::HealthCurve::default()
+                .damage_scale(Some((450, 100)), true, true, false)
+                .map(|common| common * special),
             Some(1.0)
         );
         assert_eq!(damage.headshot_rule(true, false).0, 1);

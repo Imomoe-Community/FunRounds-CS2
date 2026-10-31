@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mai Ooizumi
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 #include "touch.hpp"
 
 #include <algorithm>
@@ -23,6 +26,20 @@ struct TouchHook {
 std::vector<TouchHook> g_hooks;
 EntityTouchPreCallback g_owner = nullptr;
 EntityTouchPreCallback g_callback = nullptr;
+#if defined(FUNROUNDS_NATIVE_LIFECYCLE_PROBE)
+bool g_probeFailNextTouchAdd = false;
+bool g_probeFailNextTouchRemove = false;
+
+std::int32_t TouchRetryProbeCallback(std::int32_t, std::int32_t) {
+    return 0;
+}
+
+std::int32_t TouchForeignProbeCallback(std::int32_t, std::int32_t) {
+    // The foreign callback is only passed to UnhookTouch, but keep its body
+    // distinct from TouchRetryProbeCallback so Release ICF cannot alias them.
+    return 1;
+}
+#endif
 
 polyhook::ResultType TouchPre(polyhook::HookHandle,
                               polyhook::ParametersHandle params,
@@ -72,6 +89,12 @@ bool RemoveHook(TouchHook& record) noexcept {
         if (current != record.handle) {
             return false;
         }
+#if defined(FUNROUNDS_NATIVE_LIFECYCLE_PROBE)
+        if (g_probeFailNextTouchRemove) {
+            g_probeFailNextTouchRemove = false;
+            return false;
+        }
+#endif
 
         if (polyhook::IsCallbackRegistered(current, polyhook::CallbackType::Pre, TouchPre)) {
             (void)polyhook::RemoveCallback(current, polyhook::CallbackType::Pre, TouchPre);
@@ -110,6 +133,12 @@ bool DetachAll() noexcept {
 }
 
 bool AddTouchCallback(polyhook::HookHandle hook) {
+#if defined(FUNROUNDS_NATIVE_LIFECYCLE_PROBE)
+    if (g_probeFailNextTouchAdd) {
+        g_probeFailNextTouchAdd = false;
+        return false;
+    }
+#endif
     return polyhook::AddCallback(hook, polyhook::CallbackType::Pre, TouchPre);
 }
 
@@ -233,9 +262,78 @@ bool HookTouch(std::int32_t entityHandle, EntityTouchPreCallback callback) {
     return true;
 }
 
-bool UnhookTouch(EntityTouchPreCallback callback) {
-    if (!callback || callback != g_owner) {
+#if defined(FUNROUNDS_NATIVE_LIFECYCLE_PROBE)
+bool ProbeTouchUnhookContract(std::int32_t entityHandle) noexcept {
+    if (g_owner || !g_hooks.empty()) {
         return false;
+    }
+    try {
+        // Unhooking an unused callback is idempotent, while null is never a
+        // valid callback identity.
+        if (UnhookTouch(nullptr) || !UnhookTouch(TouchForeignProbeCallback) || !g_hooks.empty() ||
+            g_owner || g_callback) {
+            return false;
+        }
+
+        g_probeFailNextTouchAdd = true;
+        g_probeFailNextTouchRemove = true;
+        const bool firstHook = HookTouch(entityHandle, TouchRetryProbeCallback);
+        const bool retained = g_owner == TouchRetryProbeCallback && g_hooks.size() == 1 &&
+                              !g_hooks.front().callbackRegistered;
+        const bool retryHook = HookTouch(entityHandle, TouchRetryProbeCallback);
+        const bool ready = retryHook && g_callback == TouchRetryProbeCallback &&
+                           g_hooks.front().callbackRegistered;
+
+        // A different callback may unhook its own empty lease, but must not
+        // disturb the callback that owns the live Touch detours.
+        const bool foreignNoOp = UnhookTouch(TouchForeignProbeCallback);
+        const bool ownerPreserved = g_owner == TouchRetryProbeCallback &&
+                                    g_callback == TouchRetryProbeCallback && g_hooks.size() == 1 &&
+                                    g_hooks.front().callbackRegistered &&
+                                    polyhook::IsCallbackRegistered(g_hooks.front().handle,
+                                                                   polyhook::CallbackType::Pre,
+                                                                   TouchPre);
+
+        // Keep a failed owner detach recorded and retryable. A no-owner call in
+        // between must not erase or detach that retained owner state.
+        g_probeFailNextTouchRemove = true;
+        const bool firstDetach = UnhookTouch(TouchRetryProbeCallback);
+        const bool retainedAfterDetachFailure = !firstDetach &&
+                                                g_owner == TouchRetryProbeCallback &&
+                                                !g_callback && g_hooks.size() == 1 &&
+                                                g_hooks.front().callbackRegistered &&
+                                                polyhook::IsCallbackRegistered(g_hooks.front().handle,
+                                                                               polyhook::CallbackType::Pre,
+                                                                               TouchPre);
+        const bool foreignNoOpOnRetainedOwner = UnhookTouch(TouchForeignProbeCallback);
+        const bool retainedAfterForeignNoOp = g_owner == TouchRetryProbeCallback &&
+                                              g_hooks.size() == 1 &&
+                                              !g_callback &&
+                                              g_hooks.front().callbackRegistered &&
+                                              polyhook::IsCallbackRegistered(g_hooks.front().handle,
+                                                                             polyhook::CallbackType::Pre,
+                                                                             TouchPre);
+        const bool unhooked = UnhookTouch(TouchRetryProbeCallback);
+        g_probeFailNextTouchAdd = false;
+        g_probeFailNextTouchRemove = false;
+        return !firstHook && retained && ready && foreignNoOp && ownerPreserved &&
+               retainedAfterDetachFailure && foreignNoOpOnRetainedOwner && retainedAfterForeignNoOp &&
+               unhooked && g_hooks.empty() && !g_owner && !g_callback;
+    } catch (...) {
+        g_probeFailNextTouchAdd = false;
+        g_probeFailNextTouchRemove = false;
+        (void)ShutdownTouch();
+        return false;
+    }
+}
+#endif
+
+bool UnhookTouch(EntityTouchPreCallback callback) {
+    if (!callback) {
+        return false;
+    }
+    if (callback != g_owner) {
+        return true;
     }
     return DetachAll();
 }

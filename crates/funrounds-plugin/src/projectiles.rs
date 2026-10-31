@@ -47,10 +47,28 @@ pub struct Impact {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChickenImpact {
+    pub task: PlayerTask,
+    pub projectile: i32,
+    pub chicken: i32,
+    pub amount: f32,
+    pub force: Vec3,
+    pub hit_position: Vec3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TouchContext {
+    pub dodgeball_enabled: bool,
+    pub knives_enabled: bool,
+    pub damageable_chicken: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Claim {
     Ignore,
     Block { projectile: i32, remove: bool },
     Apply(Impact),
+    DamageChicken(ChickenImpact),
 }
 
 #[derive(Clone, Copy)]
@@ -143,6 +161,7 @@ impl Projectiles {
             "import:funrounds_native:TakeEntityDamageWithWeapon",
         );
         decoys.schema(DECOY_THROWER_CLASS, "m_hThrower");
+        decoys.include(crate::touch::probe());
         let mut knives = decoys.clone();
         imports!(knives;
             __s2sdk_CreateEntityByName, __s2sdk_DispatchSpawn2, __s2sdk_SetEntityModel,
@@ -182,24 +201,34 @@ impl Projectiles {
         self.seen_decoys.extend(existing);
     }
 
-    pub fn observe_decoy_throw(&mut self, task: PlayerTask, now: f32) {
+    pub fn observe_decoy_throw(&mut self, task: PlayerTask, now: f32) -> Vec<i32> {
+        self.observe_decoy_throw_with(task, now, s2sdk::IsValidEntHandle)
+    }
+
+    fn observe_decoy_throw_with(&mut self, task: PlayerTask, now: f32, mut valid_handle: impl FnMut(i32) -> bool) -> Vec<i32> {
         if !now.is_finite() || self.pending_decoys.iter().any(|pending| pending.task == task) {
-            return;
+            return Vec::new();
         }
-        let mut matched = false;
-        for candidate in &self.recent_decoys {
-            if candidate.task == task && now - candidate.seen_at <= DECOY_THROW_WINDOW {
-                self.tracked.insert(
-                    candidate.handle,
-                    Tracked {
-                        task,
-                        kind: Kind::Dodgeball,
-                        expires_at: None,
-                        claimed: false,
-                    },
-                );
-                matched = true;
-            }
+        let retired = &self.retired;
+        self.recent_decoys
+            .retain(|candidate| valid_handle(candidate.handle) && !retired.contains(&candidate.handle));
+        let matched_handles = self
+            .recent_decoys
+            .iter()
+            .filter(|candidate| candidate.task == task && now - candidate.seen_at <= DECOY_THROW_WINDOW)
+            .map(|candidate| candidate.handle)
+            .collect::<Vec<_>>();
+        let matched = !matched_handles.is_empty();
+        for &handle in &matched_handles {
+            self.tracked.insert(
+                handle,
+                Tracked {
+                    task,
+                    kind: Kind::Dodgeball,
+                    expires_at: None,
+                    claimed: false,
+                },
+            );
         }
         self.recent_decoys.retain(|candidate| !(matched && candidate.task == task));
         if !matched {
@@ -208,44 +237,137 @@ impl Projectiles {
                 expires_at: now + DECOY_THROW_WINDOW,
             });
         }
+        matched_handles
     }
 
-    // Poll only entity identity and ownership. The actual collision remains the native damage hook.
-    pub fn discover_decoys(&mut self, now: f32, round: RoundGeneration, players: &PlayerTracker) {
+    // Poll identity and ownership before the throw event so we can match it to the thrower's life.
+    pub fn discover_decoys(&mut self, now: f32, round: RoundGeneration, players: &PlayerTracker) -> Vec<i32> {
         if !now.is_finite() {
-            return;
+            return Vec::new();
         }
         self.seen_decoys.retain(|handle| s2sdk::IsValidEntHandle(*handle));
         self.baseline_decoys.retain(|handle| s2sdk::IsValidEntHandle(*handle));
         self.pending_decoys
             .retain(|pending| pending.expires_at >= now && valid_task(pending.task, round, players).is_some());
-        self.recent_decoys
-            .retain(|candidate| now - candidate.seen_at <= DECOY_THROW_WINDOW && valid_task(candidate.task, round, players).is_some());
+        let retired = &self.retired;
+        self.recent_decoys.retain(|candidate| {
+            now - candidate.seen_at <= DECOY_THROW_WINDOW
+                && valid_task(candidate.task, round, players).is_some()
+                && s2sdk::IsValidEntHandle(candidate.handle)
+                && !retired.contains(&candidate.handle)
+        });
 
+        let mut touches = Vec::new();
         for handle in entity_handles(DECOY_PROJECTILE) {
-            if !self.seen_decoys.insert(handle) || self.tracked.contains_key(&handle) {
+            if self.retired.contains(&handle) {
                 continue;
             }
-            let Some(thrower) = decoy_thrower(handle) else { continue };
-            if let Some(index) = self
+            if let Some(tracked) = self.tracked.get(&handle) {
+                if needs_dodgeball_touch(*tracked, crate::touch::owns_projectile(handle)) {
+                    touches.push(handle);
+                }
+                continue;
+            }
+            if !self.mark_decoy_seen(handle) {
+                continue;
+            }
+            let Some(thrower) = decoy_thrower(handle) else {
+                self.seen_decoys.remove(&handle);
+                continue;
+            };
+            let pending = self
                 .pending_decoys
                 .iter()
-                .position(|pending| pending.task.player.pawn_handle as i32 == thrower && valid_task(pending.task, round, players).is_some())
-            {
-                let pending = self.pending_decoys.remove(index);
+                .position(|pending| pending.task.player.pawn_handle as i32 == thrower && valid_task(pending.task, round, players).is_some());
+            let task = pending
+                .map(|index| self.pending_decoys[index].task)
+                .or_else(|| current_thrower_task(handle, round, players));
+            let Some(task) = task else {
+                self.seen_decoys.remove(&handle);
+                continue;
+            };
+
+            if let Some(index) = pending {
+                self.pending_decoys.remove(index);
                 self.tracked.insert(
                     handle,
                     Tracked {
-                        task: pending.task,
+                        task,
                         kind: Kind::Dodgeball,
                         expires_at: None,
                         claimed: false,
                     },
                 );
-            } else if let Some(task) = current_thrower_task(handle, round, players) {
-                self.recent_decoys.push(RecentDecoy { handle, task, seen_at: now });
+                touches.push(handle);
+            } else {
+                self.remember_recent_decoy(handle, task, now);
             }
         }
+        touches
+    }
+
+    pub fn register_dodgeball_touch(&mut self, handle: i32) -> Result<(), String> {
+        let registered = self.register_dodgeball_touch_with(handle, s2sdk::IsValidEntHandle, crate::touch::owns_projectile, || {
+            crate::hook_knife_touch(handle)
+        })?;
+        if registered {
+            crate::touch::track(handle);
+        }
+        Ok(())
+    }
+
+    fn mark_decoy_seen(&mut self, handle: i32) -> bool {
+        !self.retired.contains(&handle) && self.seen_decoys.insert(handle)
+    }
+
+    fn remember_recent_decoy(&mut self, handle: i32, task: PlayerTask, now: f32) {
+        if !self.retired.contains(&handle) {
+            self.recent_decoys.push(RecentDecoy { handle, task, seen_at: now });
+        }
+    }
+
+    fn register_dodgeball_touch_with(
+        &mut self,
+        handle: i32,
+        mut valid_handle: impl FnMut(i32) -> bool,
+        already_registered: impl Fn(i32) -> bool,
+        mut register: impl FnMut() -> bool,
+    ) -> Result<bool, String> {
+        if !valid_handle(handle) {
+            self.forget_expired_decoy(handle);
+            return Ok(false);
+        }
+        if self.retired.contains(&handle) {
+            return Ok(false);
+        }
+        if !self.tracked.get(&handle).is_some_and(|tracked| tracked.kind == Kind::Dodgeball) {
+            return Err("dodgeball identity changed before Touch registration".into());
+        }
+        if already_registered(handle) {
+            return Ok(true);
+        }
+        if register() {
+            if valid_handle(handle) {
+                return Ok(true);
+            }
+            self.forget_expired_decoy(handle);
+            return Ok(false);
+        }
+        if !valid_handle(handle) {
+            self.forget_expired_decoy(handle);
+            return Ok(false);
+        }
+        self.tracked.remove(&handle);
+        self.retired.insert(handle);
+        Err(format!("native Touch hook failed for dodgeball decoy {handle}"))
+    }
+
+    fn forget_expired_decoy(&mut self, handle: i32) {
+        self.tracked.remove(&handle);
+        self.seen_decoys.remove(&handle);
+        self.baseline_decoys.remove(&handle);
+        self.recent_decoys.retain(|candidate| candidate.handle != handle);
+        crate::touch::forget(handle);
     }
 
     pub fn schedule_knife(&mut self, task: PlayerTask, fire_tick: i32) {
@@ -427,7 +549,7 @@ impl Projectiles {
         let Some(projectile) = self.tracked.get_mut(&damage.inflictor) else {
             return Claim::Ignore;
         };
-        if !claim_once(&mut projectile.claimed) {
+        if !claim_tracked_once(projectile) {
             return Claim::Block {
                 projectile: damage.inflictor,
                 remove: false,
@@ -509,7 +631,7 @@ impl Projectiles {
         other_handle: i32,
         round: RoundGeneration,
         players: &PlayerTracker,
-        throwing_knives_mode: bool,
+        context: TouchContext,
     ) -> Claim {
         if self.retired.contains(&entity_handle) {
             return Claim::Block {
@@ -520,6 +642,62 @@ impl Projectiles {
         let Some(tracked) = self.tracked.get(&entity_handle).copied() else {
             return Claim::Ignore;
         };
+        if tracked.kind == Kind::Dodgeball {
+            if !context.dodgeball_enabled || !s2sdk::IsValidEntHandle(entity_handle) || valid_task(tracked.task, round, players).is_none() {
+                self.retired.insert(entity_handle);
+                return Claim::Block {
+                    projectile: entity_handle,
+                    remove: true,
+                };
+            }
+            if tracked.claimed {
+                return Claim::Block {
+                    projectile: entity_handle,
+                    remove: false,
+                };
+            }
+            let Some((victim, victim_task)) = live_player_task_for_handle(other_handle, round, players) else {
+                self.retired.insert(entity_handle);
+                if let Some(projectile) = self.tracked.get_mut(&entity_handle) {
+                    projectile.claimed = true;
+                }
+                return Claim::Block {
+                    projectile: entity_handle,
+                    remove: true,
+                };
+            };
+            let position = s2sdk::GetEntityAbsOrigin(entity_handle);
+            let velocity = s2sdk::GetEntityAbsVelocity(entity_handle);
+            let amount = funrounds_core::dodgeball_damage(s2sdk::GetClientHealth(victim.slot));
+            if !finite_vec(position) || !finite_vec(velocity) || length_squared(velocity) <= f32::EPSILON || !amount.is_finite() || amount <= 0.0 {
+                self.retired.insert(entity_handle);
+                if let Some(projectile) = self.tracked.get_mut(&entity_handle) {
+                    projectile.claimed = true;
+                }
+                return Claim::Block {
+                    projectile: entity_handle,
+                    remove: true,
+                };
+            }
+            let projectile = self.tracked.get_mut(&entity_handle).expect("dodgeball was read above");
+            if !claim_tracked_once(projectile) {
+                return Claim::Block {
+                    projectile: entity_handle,
+                    remove: false,
+                };
+            }
+            return Claim::Apply(Impact {
+                task: tracked.task,
+                projectile: entity_handle,
+                victim,
+                victim_task,
+                kind: Kind::Dodgeball,
+                amount,
+                headshot: false,
+                force: velocity,
+                hit_position: position,
+            });
+        }
         if tracked.kind != Kind::Knife {
             return Claim::Ignore;
         }
@@ -529,7 +707,7 @@ impl Projectiles {
                 remove: false,
             };
         }
-        if !throwing_knives_mode
+        if !context.knives_enabled
             || !s2sdk::IsValidEntHandle(entity_handle)
             || tracked.expires_at.is_some_and(|expires_at| s2sdk::GetGameTime() >= expires_at)
             || valid_task(tracked.task, round, players).is_none()
@@ -541,27 +719,42 @@ impl Projectiles {
             };
         }
 
-        // World, prop, and non-player contacts keep their native physics response.
-        // Only a live player touch can claim the one damage action.
-        let Some((victim, victim_task)) = live_player_task_for_handle(other_handle, round, players) else {
-            return Claim::Ignore;
-        };
+        // World and prop contacts keep their native physics response.
+        // Only live players and validated damageable chickens can claim damage.
         let position = s2sdk::GetEntityAbsOrigin(entity_handle);
         let velocity = s2sdk::GetEntityAbsVelocity(entity_handle);
-        let eye = s2sdk::GetClientEyePosition(victim.slot);
-        let Some(impact) = knife_impact(tracked.task, entity_handle, victim, victim_task, position, velocity, eye) else {
+        if let Some((victim, victim_task)) = live_player_task_for_handle(other_handle, round, players) {
+            let eye = s2sdk::GetClientEyePosition(victim.slot);
+            let Some(impact) = knife_impact(tracked.task, entity_handle, victim, victim_task, position, velocity, eye) else {
+                return Claim::Ignore;
+            };
+            let Some(projectile) = self.tracked.get_mut(&entity_handle) else {
+                return Claim::Ignore;
+            };
+            if !claim_tracked_once(projectile) {
+                return Claim::Block {
+                    projectile: entity_handle,
+                    remove: false,
+                };
+            }
+            return Claim::Apply(impact);
+        }
+        if !context.damageable_chicken || other_handle == entity_handle || !s2sdk::IsValidEntHandle(other_handle) {
+            return Claim::Ignore;
+        }
+        let Some(impact) = knife_chicken_impact(tracked.task, entity_handle, other_handle, position, velocity) else {
             return Claim::Ignore;
         };
         let Some(projectile) = self.tracked.get_mut(&entity_handle) else {
             return Claim::Ignore;
         };
-        if !claim_once(&mut projectile.claimed) {
+        if !claim_tracked_once(projectile) {
             return Claim::Block {
                 projectile: entity_handle,
                 remove: false,
             };
         }
-        Claim::Apply(impact)
+        Claim::DamageChicken(impact)
     }
 
     // The native damage action can synchronously re-enter the damage hook. Match only that exact pair.
@@ -612,6 +805,26 @@ impl Projectiles {
             .map(|_| impact.projectile);
         if handle.is_some() && s2sdk::IsValidEntHandle(impact.projectile) {
             self.retired.insert(impact.projectile);
+        }
+    }
+
+    pub fn chicken_impact_current(&self, impact: ChickenImpact, round: RoundGeneration, players: &PlayerTracker) -> bool {
+        impact.task.round == round
+            && s2sdk::IsValidEntHandle(impact.projectile)
+            && self
+                .tracked
+                .get(&impact.projectile)
+                .is_some_and(|tracked| tracked.kind == Kind::Knife && tracked.claimed && tracked.task == impact.task)
+            && valid_task(impact.task, round, players).is_some()
+    }
+
+    pub fn finish_chicken_impact(&mut self, impact: ChickenImpact) {
+        if self
+            .tracked
+            .get(&impact.projectile)
+            .is_some_and(|tracked| tracked.task == impact.task && tracked.kind == Kind::Knife && tracked.claimed)
+        {
+            self.retire(impact.projectile);
         }
     }
 
@@ -686,10 +899,15 @@ impl Projectiles {
     pub fn clear(&mut self) {
         self.pending_knives.clear();
         self.pending_decoys.clear();
+        let handles = self
+            .tracked
+            .keys()
+            .copied()
+            .chain(self.recent_decoys.iter().map(|candidate| candidate.handle))
+            .collect::<Vec<_>>();
         self.recent_decoys.clear();
         self.seen_decoys.clear();
         self.baseline_decoys.clear();
-        let handles = self.tracked.keys().copied().collect::<Vec<_>>();
         self.retire_handles(handles)
     }
 
@@ -874,27 +1092,43 @@ fn spawn_knife(task: PlayerTask, player: LivePlayer, created: &mut Option<i32>, 
 }
 
 pub fn apply_impact(impact: Impact) -> Result<i32, Fault> {
-    if !crate::damage::reflection_available() {
-        return Err(Fault::mechanism(
-            Mechanism::ProjectileDamage,
-            "funrounds_native TakeEntityDamageWithWeapon unavailable",
-        ));
-    }
     let damage_type = match impact.kind {
         Kind::Dodgeball => crate::damage::DMG_BLAST,
         Kind::Knife => crate::damage::DMG_SLASH,
     };
-    Ok(crate::funrounds_native::TakeEntityDamageWithWeapon(
-        impact.victim.pawn_handle,
-        impact.projectile,
-        impact.task.player.pawn_handle as i32,
-        &impact.force,
-        &impact.hit_position,
-        impact.amount,
-        damage_type as i32,
-        -1,
-        false,
-    ))
+    crate::damage::apply_native_damage(
+        crate::damage::NativeDamageCall {
+            victim: impact.victim.pawn_handle,
+            inflictor: impact.projectile,
+            attacker: impact.task.player.pawn_handle as i32,
+            force: &impact.force,
+            position: &impact.hit_position,
+            amount: impact.amount,
+            damage_type,
+            weapon: -1,
+            skip_plugin_rules: false,
+        },
+        Mechanism::ProjectileDamage,
+        "funrounds_native TakeEntityDamageWithWeapon rejected projectile damage",
+    )
+}
+
+pub fn apply_chicken_impact(impact: ChickenImpact) -> Result<i32, Fault> {
+    crate::damage::apply_native_damage(
+        crate::damage::NativeDamageCall {
+            victim: impact.chicken,
+            inflictor: impact.projectile,
+            attacker: impact.task.player.pawn_handle as i32,
+            force: &impact.force,
+            position: &impact.hit_position,
+            amount: impact.amount,
+            damage_type: crate::damage::DMG_SLASH,
+            weapon: -1,
+            skip_plugin_rules: false,
+        },
+        Mechanism::ProjectileDamage,
+        "funrounds_native TakeEntityDamageWithWeapon rejected throwing-knife chicken damage",
+    )
 }
 
 pub fn remove_entity(handle: i32) {
@@ -920,6 +1154,14 @@ fn claim_once(claimed: &mut bool) -> bool {
         *claimed = true;
         true
     }
+}
+
+fn claim_tracked_once(projectile: &mut Tracked) -> bool {
+    claim_once(&mut projectile.claimed)
+}
+
+fn needs_dodgeball_touch(projectile: Tracked, touch_registered: bool) -> bool {
+    projectile.kind == Kind::Dodgeball && !projectile.claimed && !touch_registered
 }
 
 fn knife_impact(
@@ -959,6 +1201,20 @@ fn knife_impact(
     })
 }
 
+fn knife_chicken_impact(task: PlayerTask, projectile: i32, chicken: i32, position: Vec3, velocity: Vec3) -> Option<ChickenImpact> {
+    if !finite_vec(position) || !finite_vec(velocity) || length_squared(velocity) <= f32::EPSILON {
+        return None;
+    }
+    Some(ChickenImpact {
+        task,
+        projectile,
+        chicken,
+        amount: funrounds_core::THROWING_KNIFE_BODY_DAMAGE,
+        force: velocity,
+        hit_position: position,
+    })
+}
+
 fn impact_matches_damage(impact: Impact, damage: &Damage) -> bool {
     impact.projectile == damage.inflictor
         && impact.victim.pawn_handle == damage.victim
@@ -967,9 +1223,7 @@ fn impact_matches_damage(impact: Impact, damage: &Damage) -> bool {
 }
 
 fn live_player_for_handle(handle: i32) -> Option<LivePlayer> {
-    (0..s2sdk::GetMaxClients())
-        .filter_map(LivePlayer::resolve)
-        .find(|player| player.pawn_handle == handle)
+    LivePlayer::resolve_pawn_owner(handle)
 }
 
 fn live_player_task_for_handle(handle: i32, round: RoundGeneration, players: &PlayerTracker) -> Option<(LivePlayer, PlayerTask)> {
@@ -978,6 +1232,9 @@ fn live_player_task_for_handle(handle: i32, round: RoundGeneration, players: &Pl
         round,
         player: players.identity(victim.slot)?,
     };
+    if victim.pawn_handle as u32 != task.player.pawn_handle {
+        return None;
+    }
     task_matches_tracker(task, round, players).then_some((victim, task))
 }
 
@@ -1569,14 +1826,14 @@ mod tests {
         projectiles.active_impact = Some(impact);
 
         crate::touch::track(impact.projectile);
-        assert!(crate::touch::owns(impact.projectile));
-        assert!(!crate::touch::owns(impact.projectile + (1 << 15)));
+        assert!(crate::touch::owns_projectile(impact.projectile));
+        assert!(!crate::touch::owns_projectile(impact.projectile + (1 << 15)));
         crate::touch::forget(impact.projectile);
-        assert!(!crate::touch::owns(impact.projectile));
+        assert!(!crate::touch::owns_projectile(impact.projectile));
         crate::touch::track(impact.projectile);
         projectiles.discard_map_state();
 
-        assert!(!crate::touch::owns(impact.projectile));
+        assert!(!crate::touch::owns_projectile(impact.projectile));
         assert!(projectiles.tracked.is_empty());
         assert!(projectiles.retired.is_empty());
         assert!(projectiles.baseline_decoys.is_empty());

@@ -73,6 +73,41 @@ impl PlayerTracker {
         Some(*player)
     }
 
+    /// Bind an existing connection to the pawn it has just taken over.
+    /// The expected identity is captured when the takeover event arrives so a later
+    /// spawn, disconnect, or slot reuse cannot bind a different life to that event.
+    pub fn takeover_identity(&self, expected: PlayerIdentity, pawn_handle: u32) -> Option<PlayerIdentity> {
+        if pawn_handle == u32::MAX {
+            return None;
+        }
+        let current = self.players.get(&expected.slot).copied()?;
+        if current != expected {
+            return None;
+        }
+        if current.pawn_handle == pawn_handle && !current.pending_pawn {
+            return Some(current);
+        }
+        Some(PlayerIdentity {
+            life: current.life.checked_add(1).expect("life generation exhausted"),
+            pawn_handle,
+            pending_pawn: false,
+            ..current
+        })
+    }
+
+    pub fn takeover(&mut self, expected: PlayerIdentity, pawn_handle: u32) -> Option<PlayerIdentity> {
+        let adopted = self.takeover_identity(expected, pawn_handle)?;
+        for (slot, player) in &mut self.players {
+            if *slot != expected.slot && player.pawn_handle == pawn_handle {
+                player.life = player.life.checked_add(1).expect("life generation exhausted");
+                player.pawn_handle = u32::MAX;
+                player.pending_pawn = false;
+            }
+        }
+        self.players.insert(expected.slot, adopted);
+        Some(adopted)
+    }
+
     pub fn death(&mut self, slot: i32) -> bool {
         let Some(player) = self.players.get_mut(&slot) else {
             return false;
@@ -92,6 +127,16 @@ impl PlayerTracker {
 
     pub fn identity(&self, slot: i32) -> Option<PlayerIdentity> {
         self.players.get(&slot).copied().filter(|player| player.pawn_handle != u32::MAX)
+    }
+
+    pub fn pawn_owners(&self, pawn_handle: u32) -> Vec<i32> {
+        if pawn_handle == u32::MAX {
+            return Vec::new();
+        }
+        self.players
+            .values()
+            .filter_map(|player| (player.pawn_handle == pawn_handle && !player.pending_pawn).then_some(player.slot))
+            .collect()
     }
 
     pub fn connection_identity(&self, slot: i32) -> Option<PlayerIdentity> {
@@ -241,6 +286,7 @@ mod tests {
             clear_weapons: true,
             give_weapons: true,
             give_knife: true,
+            ct_bomb_no_defuse: true,
             ..Capabilities::default()
         };
         let mut controller = RoundController::new(Some(config), capabilities).unwrap();

@@ -17,10 +17,6 @@ pub fn suicide_blast_damage(victim_health: i32, distance: f32) -> f32 {
     (FALLOFF_BASE - (distance - FULL_DAMAGE_RADIUS) * PI).max(0.0)
 }
 
-pub fn suicide_in_blast_range(distance: f32) -> bool {
-    suicide_blast_damage(1, distance) > 0.0
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SuicideSequence {
     task: PlayerTask,
@@ -43,6 +39,14 @@ impl SuicideSequence {
 
     pub fn task(self) -> PlayerTask {
         self.task
+    }
+
+    pub fn retarget(&mut self, task: PlayerTask) -> bool {
+        if self.task.round != task.round || self.task.player.pawn_handle != task.player.pawn_handle {
+            return false;
+        }
+        self.task = task;
+        true
     }
 
     pub fn triggered(self) -> bool {
