@@ -212,7 +212,7 @@ give_weapons = "all"
 # shoot_dropped_grenades = true    # 允许射击引爆掉落的手雷
 # hide_player_identification = true# 隐藏玩家瞄准识别信息
 
-# third_person：第三人称越肩视角
+# third_person：第三人称视角
 # third_person = { distance = 64.0, follow_eyes = true, clip_camera_offset = true, return_strength = 2.0 }
 # ghost：幽灵隐身机制（根据静步/蹲下/移动调整透明度；可设脚步声与心跳距离）
 # ghost = { team = "terrorists", crouch_alpha = 0, slow_walk_alpha = 20, normal_alpha = 120 }

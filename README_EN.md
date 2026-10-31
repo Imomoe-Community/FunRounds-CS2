@@ -29,7 +29,7 @@ At the start of each round (or on administrative demand), it seamlessly applies 
 | Category | Description |
 | :--- | :--- |
 | **Attributes & Physics** | Health (1–10,000 or random range), armor/helmets, gravity scaling, speed multiplier, friction, auto-bunnyhopping, ground acceleration, ground reverse walking (`ground_reverse`), time scale (`time_scale`), and periodic speed/gravity oscillation. |
-| **Visuals & Camera** | Over-the-shoulder third person (`third_person`), stealth ghost mode with breathing audio cues and distance awareness (`ghost`), night vision (`fr_nvg`), crosshair/radar hiding (`hide_hud`), model RGB tinting, translucency, and scope restrictions. |
+| **Visuals & Camera** |  Third person camera (`third_person`), stealth ghost mode with breathing audio cues and distance awareness (`ghost`), night vision (`fr_nvg`), crosshair/radar hiding (`hide_hud`), model RGB tinting, translucency, and scope restrictions. |
 | **Recoil & Knockback** | Weapon recoil self-push knockback (`fr_knock` supports ground and air modes), recoil & spread suppression, view-punch intensity/decay (`recoil_view` / `view_punch_decay`), fast switch (`fast_switch`), and shooting dropped grenades. |
 | **Loadouts & Ammunition** | Team-specific weapon clearing and granting, 4 ammo modes (inherit / reserve / clip / single-shot), taser recharge intervals, automatic grenade replenishment (HE/flash/smoke/decoy/molotov), kill progression (`kill_loadout`), and random draws. |
 | **Combat Modifiers** | Vampiric lifesteal, reflect damage (`reflect_damage`), HP-scaled damage/speed/decay, energy absorption shield, miss penalty self-damage, decoy dodgeball collisions (`dodgeball`), throwing knives with bouncing, and afterburn damage. |
