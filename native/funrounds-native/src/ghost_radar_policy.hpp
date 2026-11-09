@@ -30,6 +30,21 @@ struct SpottedState {
     std::uint64_t spottedByMask{};
 };
 
+inline constexpr std::uint8_t kSpottedByMaskLowWordChanged = 1U << 0;
+inline constexpr std::uint8_t kSpottedByMaskHighWordChanged = 1U << 1;
+
+inline std::uint8_t ChangedSpottedByMaskWords(std::uint64_t before, std::uint64_t after) noexcept {
+    const std::uint64_t changed = before ^ after;
+    std::uint8_t changedWords = 0;
+    if (static_cast<std::uint32_t>(changed) != 0) {
+        changedWords = static_cast<std::uint8_t>(changedWords | kSpottedByMaskLowWordChanged);
+    }
+    if (static_cast<std::uint32_t>(changed >> 32) != 0) {
+        changedWords = static_cast<std::uint8_t>(changedWords | kSpottedByMaskHighWordChanged);
+    }
+    return changedWords;
+}
+
 template <typename Frame, std::size_t Capacity>
 class NestedInvocationStack final {
 public:
@@ -212,13 +227,21 @@ template <typename RepeatedUpdates>
 std::size_t FilterEntityUpdates(RepeatedUpdates& updates,
                                 std::int32_t recipientSlot,
                                 const std::vector<Target>& sortedTargets) {
+    const int count = updates.size();
+    int write = 0;
     std::size_t removed = 0;
-    for (int index = updates.size(); index > 0;) {
-        --index;
-        if (ShouldFilterEntityUpdate(updates.Get(index).entity_idx(), recipientSlot, sortedTargets)) {
-            updates.DeleteSubrange(index, 1);
+    for (int read = 0; read < count; ++read) {
+        if (ShouldFilterEntityUpdate(updates.Get(read).entity_idx(), recipientSlot, sortedTargets)) {
             ++removed;
+            continue;
         }
+        if (write != read) {
+            updates.Swap(write, read);
+        }
+        ++write;
+    }
+    while (updates.size() > write) {
+        updates.RemoveLast();
     }
     return removed;
 }

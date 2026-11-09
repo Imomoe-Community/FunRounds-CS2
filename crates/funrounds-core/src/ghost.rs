@@ -7,6 +7,7 @@ use serde::Deserialize;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GhostSettings {
     pub team: TeamFilter,
+    pub speed_multiplier: f32,
     pub crouch_alpha: u8,
     pub slow_walk_alpha: u8,
     pub normal_alpha: u8,
@@ -22,6 +23,7 @@ impl Default for GhostSettings {
     fn default() -> Self {
         Self {
             team: TeamFilter::Terrorists,
+            speed_multiplier: 1.0,
             crouch_alpha: 0,
             slow_walk_alpha: 13,
             normal_alpha: 127,
@@ -47,7 +49,8 @@ pub enum GhostPose {
 pub struct GhostFrame {
     pub pose: GhostPose,
     pub horizontal_speed: f32,
-    pub bunny_hop: bool,
+    pub grounded: bool,
+    pub crouching: bool,
     pub attacking: bool,
     pub reloading: bool,
     pub using: bool,
@@ -58,7 +61,8 @@ impl Default for GhostFrame {
         Self {
             pose: GhostPose::Normal,
             horizontal_speed: 0.0,
-            bunny_hop: false,
+            grounded: true,
+            crouching: false,
             attacking: false,
             reloading: false,
             using: false,
@@ -68,18 +72,28 @@ impl Default for GhostFrame {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GhostState {
+    airborne_hidden: bool,
     reloading: bool,
     reveal_until: f32,
 }
 
 impl GhostState {
     pub fn alpha(&mut self, settings: GhostSettings, frame: GhostFrame, now: f32) -> u8 {
+        if frame.grounded {
+            self.airborne_hidden = false;
+        } else if frame.crouching && frame.horizontal_speed.is_finite() && frame.horizontal_speed >= 1.0 {
+            self.airborne_hidden = true;
+        }
         let reloading = frame.reloading;
         if reloading || self.reloading {
             self.reveal_until = now + settings.reveal_delay;
         }
         self.reloading = reloading;
-        ghost_alpha(settings, frame, reloading, self.reveal_until, now)
+        if self.airborne_hidden && !reloading && now >= self.reveal_until {
+            settings.crouch_alpha
+        } else {
+            ghost_alpha(settings, frame, reloading, self.reveal_until, now)
+        }
     }
 }
 
@@ -87,7 +101,7 @@ pub fn ghost_alpha(settings: GhostSettings, frame: GhostFrame, reloading: bool, 
     if reloading || now < reveal_until {
         return settings.normal_alpha;
     }
-    if frame.bunny_hop || !frame.horizontal_speed.is_finite() {
+    if !frame.horizontal_speed.is_finite() {
         return pose_alpha(settings, frame.pose);
     }
     if frame.horizontal_speed <= settings.speed_reveal_start {
@@ -111,6 +125,7 @@ const fn pose_alpha(settings: GhostSettings, pose: GhostPose) -> u8 {
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct GhostInput {
     team: Option<TeamFilter>,
+    speed_multiplier: Option<f32>,
     crouch_alpha: Option<u8>,
     slow_walk_alpha: Option<u8>,
     normal_alpha: Option<u8>,
@@ -126,6 +141,7 @@ impl GhostInput {
     pub(crate) fn resolve(self, base: GhostSettings) -> GhostSettings {
         GhostSettings {
             team: self.team.unwrap_or(base.team),
+            speed_multiplier: self.speed_multiplier.unwrap_or(base.speed_multiplier),
             crouch_alpha: self.crouch_alpha.unwrap_or(base.crouch_alpha),
             slow_walk_alpha: self.slow_walk_alpha.unwrap_or(base.slow_walk_alpha),
             normal_alpha: self.normal_alpha.unwrap_or(base.normal_alpha),
@@ -141,6 +157,9 @@ impl GhostInput {
 
 impl GhostSettings {
     pub(crate) fn validate(self) -> Result<(), String> {
+        if !self.speed_multiplier.is_finite() || self.speed_multiplier <= 0.0 {
+            return Err("ghost speed_multiplier must be finite and positive".into());
+        }
         if !self.reveal_delay.is_finite() || self.reveal_delay < 0.0 {
             return Err("ghost reveal_delay must be finite and non-negative".into());
         }

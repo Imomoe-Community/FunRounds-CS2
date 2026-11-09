@@ -76,8 +76,8 @@ void GhostRadarMapEndCallback() noexcept;
 bool RequiredImportsAvailable() noexcept {
     return __polyhook_FindVirtual2 != nullptr && __polyhook_AddCallback != nullptr &&
            __polyhook_IsCallbackRegistered != nullptr && __polyhook_RemoveCallback != nullptr &&
-           __s2sdk_QueryInterface != nullptr && __s2sdk_NetworkStateChanged != nullptr &&
-           __s2sdk_OnMapEnd_Register != nullptr && __s2sdk_OnMapEnd_Unregister != nullptr &&
+           __s2sdk_QueryInterface != nullptr && __s2sdk_OnMapEnd_Register != nullptr &&
+           __s2sdk_OnMapEnd_Unregister != nullptr &&
            __s2sdk_EntHandleToEntPointer != nullptr && __s2sdk_EntPointerToEntHandle != nullptr &&
            __s2sdk_IsEntityPlayerPawn != nullptr;
 }
@@ -167,10 +167,24 @@ void WriteSpottedByMask(void* pawn, std::uint64_t value) noexcept {
     }
 }
 
-void MarkSpottedStateChanged(std::int32_t pawnHandle) noexcept {
-    try {
-        s2sdk::NetworkStateChanged(pawnHandle, kPawnClass, kSpottedStateField);
-    } catch (...) {
+void MarkSpottedStateChanged(void* pawn,
+                             bool spottedChanged,
+                             std::uint8_t spottedByMaskChangedWords) noexcept {
+    if (pawn == nullptr) {
+        return;
+    }
+
+    auto* const entity = reinterpret_cast<CEntityInstance*>(pawn);
+    if (spottedChanged) {
+        entity->NetworkStateChanged(NetworkStateChanged_t(static_cast<std::uint32_t>(g_layout.spottedOffset)));
+    }
+    if ((spottedByMaskChangedWords & ghost_radar::kSpottedByMaskLowWordChanged) != 0) {
+        entity->NetworkStateChanged(NetworkStateChanged_t(static_cast<std::uint32_t>(g_layout.spottedByMaskOffset)));
+    }
+    if ((spottedByMaskChangedWords & ghost_radar::kSpottedByMaskHighWordChanged) != 0) {
+        entity->NetworkStateChanged(NetworkStateChanged_t(
+            static_cast<std::uint32_t>(g_layout.spottedByMaskOffset) +
+            static_cast<std::uint32_t>(sizeof(std::uint32_t))));
     }
 }
 
@@ -224,24 +238,28 @@ void RestoreOwnedSpottedStates() noexcept {
             continue;
         }
 
-        bool changed = false;
+        bool spottedChanged = false;
         bool* const spotted = SpottedField(pawn);
         if (owned.ownsSpotted && spotted != nullptr && *spotted == owned.filteredSpotted &&
             *spotted != owned.originalSpotted) {
             *spotted = owned.originalSpotted;
-            changed = true;
+            spottedChanged = true;
         }
 
+        bool spottedByMaskChanged = false;
+        std::uint8_t spottedByMaskChangedWords = 0;
         const std::uint64_t spottedByMask = ReadSpottedByMask(pawn);
         if (owned.ownsSpottedByMask && spottedByMask == owned.filteredSpottedByMask &&
             spottedByMask != owned.originalSpottedByMask) {
             WriteSpottedByMask(pawn, owned.originalSpottedByMask);
-            changed = true;
+            spottedByMaskChanged = true;
+            spottedByMaskChangedWords = ghost_radar::ChangedSpottedByMaskWords(
+                spottedByMask, owned.originalSpottedByMask);
         }
 
-        if (changed) {
-            MarkSpottedStateChanged(owned.pawnHandle);
-        }
+        MarkSpottedStateChanged(pawn,
+                                spottedChanged,
+                                spottedByMaskChanged ? spottedByMaskChangedWords : 0);
     }
     g_ownedStates.clear();
 }
@@ -286,6 +304,8 @@ void ApplySpottedStateFilter() {
             continue;
         }
 
+        const std::uint8_t spottedByMaskChangedWords = ghost_radar::ChangedSpottedByMaskWords(
+            originalMask, filtered.spottedByMask);
         if (owned.ownsSpotted) {
             *spotted = filtered.spotted;
         }
@@ -293,7 +313,9 @@ void ApplySpottedStateFilter() {
             WriteSpottedByMask(pawn, filtered.spottedByMask);
         }
         nextOwned.push_back(owned);
-        MarkSpottedStateChanged(pawnHandle);
+        MarkSpottedStateChanged(pawn,
+                                owned.ownsSpotted,
+                                owned.ownsSpottedByMask ? spottedByMaskChangedWords : 0);
     }
     g_ownedStates = std::move(nextOwned);
 }
@@ -420,7 +442,7 @@ bool ShutdownGhostRadarStateFilter() noexcept {
     g_hooks.preWorldUpdateHook = nullptr;
     g_hooks.gameFrameHook = nullptr;
     g_hooks.server = nullptr;
-    g_hooks.ready.store(false, std::memory_order_release);
+    g_layout = {};
     return true;
 }
 

@@ -20,9 +20,13 @@ pub type DamagePreCallback = unsafe extern "C" fn(i32, i32, i32, i32, i32, bool,
 #[allow(unused)]
 pub type EntityDamagePreCallback = unsafe extern "C" fn(i32, i32, i32, i32, f32, u32, bool) -> i32;
 
-/// Synchronous decision for every entity sharing the selected Touch implementation.
+/// Synchronous veto decision for a subscribed Touch implementation; any nonzero callback result suppresses the original call.
 #[allow(unused)]
 pub type EntityTouchPreCallback = unsafe extern "C" fn(i32, i32) -> i32;
+
+/// Produces forward and left input for the exact airborne pawn, or returns false to keep native input.
+#[allow(unused)]
+pub type AirMoveAssist = unsafe extern "C" fn(i32, i32, i32, f32, f32, f32, &mut f32, &mut f32) -> bool;
 
 /// Synchronous target observation for an exact live player pawn; target is -1 if no committed match and inUse reports the current E state.
 #[allow(unused)]

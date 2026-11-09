@@ -1,5 +1,5 @@
 {
-  "version": "0.3.0-alpha.test.2",
+  "version": "0.4.0-alpha.test.3",
   "name": "funrounds",
   "description": "Configurable special rounds for Counter-Strike 2",
   "author": "Mai Ooizumi",
@@ -10,11 +10,11 @@
   "dependencies": [
     {
       "name": "s2sdk",
-      "constraints": "=3.0.6"
+      "constraints": "=3.3.1"
     },
     {
       "name": "funrounds_native",
-      "constraints": "=0.3.0-alpha.test.2"
+      "constraints": "=0.4.0-alpha.test.3"
     }
   ],
   "methods": []

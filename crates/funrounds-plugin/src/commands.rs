@@ -59,6 +59,7 @@ impl Command {
             ["fr_reload"] => Ok(Self::Reload),
             ["fr_enable", "0"] => Ok(Self::Enable(false)),
             ["fr_enable", "1"] => Ok(Self::Enable(true)),
+            ["fr_next", "id", id] if !id.is_empty() => Ok(Self::Next(NextMode::Id((*id).into()))),
             ["fr_next", "random"] => Ok(Self::Next(NextMode::Random)),
             ["fr_next", id] if !id.is_empty() => Ok(Self::Next(NextMode::Id((*id).into()))),
             _ => Err("command.usage"),
@@ -88,7 +89,7 @@ pub fn client_executable(name: &str) -> bool {
     )
 }
 
-pub fn status_reply_parts(message: &str) -> impl Iterator<Item = &str> {
+pub fn line_reply_parts(message: &str) -> impl Iterator<Item = &str> {
     // The recovery fixture exposed native single-reply truncation at 2047 bytes.
     message.lines().flat_map(|mut line| {
         std::iter::from_fn(move || {
@@ -145,12 +146,12 @@ mod tests {
             "恢复错误".repeat(500),
             "write failed;".repeat(200)
         );
-        let parts = status_reply_parts(&message).collect::<Vec<_>>();
+        let parts = line_reply_parts(&message).collect::<Vec<_>>();
         assert!(parts.len() > 2);
         assert!(parts.iter().all(|part| !part.is_empty() && part.len() <= 1024));
         assert_eq!(parts.concat(), message);
         assert_eq!(
-            status_reply_parts("recovery=Stopped\nfaults=Global:[failure]\nexcluded=sample:[equipment]").collect::<Vec<_>>(),
+            line_reply_parts("recovery=Stopped\nfaults=Global:[failure]\nexcluded=sample:[equipment]").collect::<Vec<_>>(),
             ["recovery=Stopped", "faults=Global:[failure]", "excluded=sample:[equipment]",]
         );
     }

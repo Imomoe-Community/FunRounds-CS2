@@ -1163,6 +1163,7 @@ bool ShutdownDamage() noexcept {
         const bool detached = DetachDamageHook();
         if (detached) {
             ClearDamageSubscriptions();
+            g_damage = {};
         }
         return detached;
     } catch (...) {

@@ -1,6 +1,22 @@
 // Copyright (C) 2026 Mai Ooizumi
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+pub(crate) mod afterburn;
+pub(crate) mod chickens;
+pub(crate) mod combat;
+mod composed;
+pub(crate) mod grapple;
+pub(crate) mod healthshot;
+pub(crate) mod proximity;
+mod public_properties;
+mod regions;
+pub(crate) mod respawn;
+pub(crate) mod shooting;
+pub(crate) mod suicide;
+pub(crate) mod teamkill;
+pub(crate) use combat::RandomHealReceipt;
+pub(crate) use composed::execute as execute_composed;
+
 use crate::{
     commands::Command,
     effects::{Effect, equipment},
@@ -14,7 +30,7 @@ use funrounds_core::{
     SelfDamage, TeamDeathmatch,
 };
 use plugify::Str;
-use rand::{RngExt, SeedableRng, rngs::StdRng, seq::SliceRandom};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::thread::{ThreadId, current};
@@ -30,8 +46,12 @@ enum PendingAction {
 
 pub struct EventCapabilities {
     pub grenade_thrown: bool,
+    pub smoke_events: bool,
+    pub spawn_listener_available: bool,
     pub weapon_fire: bool,
+    pub bullet_impact: bool,
     pub player_hurt: bool,
+    pub player_blind: bool,
     pub damage: bool,
     pub chicken_damage: bool,
     pub chicken_follow_block_support: bool,
@@ -39,6 +59,7 @@ pub struct EventCapabilities {
     pub bot_takeover: crate::capability::Probe,
     pub round_prestart: bool,
     pub bombs: crate::capability::Probe,
+    pub grapple_bomb_use: bool,
     pub bomb_plant_tracking: crate::capability::Probe,
     pub moving_blast: crate::capability::Probe,
     pub healthshot: bool,
@@ -59,66 +80,11 @@ struct PendingTakeover {
     event_tick: i32,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct RandomHealReceipt {
-    pub target: PlayerTask,
-    pub source: PlayerTask,
-    pub target_live: LivePlayer,
-    pub source_live: LivePlayer,
-    pub frame_token: u64,
-    pub amount: i32,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct NativeSelfDamageShot {
-    task: PlayerTask,
-    player: LivePlayer,
-    tick: i32,
-    weapon: FiredWeapon,
-    player_hit: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct FiredWeapon {
+pub(crate) struct FiredWeapon {
     handle: i32,
     classname: String,
     item_definition: u16,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingChickenBlastKill {
-    round: RoundGeneration,
-    victim: PlayerIdentity,
-    tick: i32,
-    damage_frame_token: Option<u64>,
-    source: crate::chicken_entities::KillWeaponSource,
-}
-
-impl PendingChickenBlastKill {
-    fn matches(&self, round: RoundGeneration, victim: PlayerIdentity, attacker: PlayerIdentity, tick: i32, frame_token: Option<u64>) -> bool {
-        self.round == round
-            && self.victim == victim
-            && self.source.attacker == attacker
-            && self.tick == tick
-            && self.damage_frame_token.is_none_or(|expected| frame_token == Some(expected))
-    }
-}
-
-fn chicken_weapon_source_readback_matches(
-    source: &crate::chicken_entities::KillWeaponSource,
-    attacker: PlayerIdentity,
-    valid: bool,
-    owner: i32,
-    inventory: &[i32],
-    classname: &str,
-    item_definition: u16,
-) -> bool {
-    source.attacker == attacker
-        && valid
-        && owner == attacker.pawn_handle as i32
-        && inventory.contains(&source.handle)
-        && source.classname == classname
-        && source.item_definition == item_definition
 }
 
 fn tracked_upgrade_weapon(effect: &Effect, player: LivePlayer) -> Option<KillWeaponTarget> {
@@ -177,141 +143,42 @@ fn kill_weapon_target_readback_matches(
         && crate::effects::equipment::kill_loadout_source_weapon(classname)
 }
 
-fn capture_chicken_damage_weapon_source(
-    damage: crate::chicken_entities::EntityDamageSource,
-    players: &PlayerTracker,
-    controllers: &HashMap<i32, i32>,
-) -> Option<crate::chicken_entities::KillWeaponSource> {
-    let item_definition_reader = unsafe { crate::effects::__s2sdk_GetWeaponItemDefinition }.expect("required native ABI checked at startup");
-    for slot in 0..s2sdk::GetMaxClients() {
-        let Some(player) = LivePlayer::resolve(slot) else { continue };
-        if (s2sdk::GetClientTeam(slot) as i32) < 2
-            || player.pawn_handle != damage.attacker
-            || controllers.get(&slot) != Some(&player.controller_handle)
-        {
-            continue;
-        }
-        let Some(attacker) = players
-            .identity(slot)
-            .filter(|identity| identity.pawn_handle == player.pawn_handle as u32)
-        else {
-            continue;
-        };
-        let inventory = s2sdk::GetClientWeapons(slot);
-        for handle in [damage.ability, damage.inflictor] {
-            if handle == -1
-                || !s2sdk::IsValidEntHandle(handle)
-                || s2sdk::GetEntityOwner(handle) != player.pawn_handle
-                || !inventory.iter().any(|owned| *owned == handle)
-            {
-                continue;
-            }
-            let classname = s2sdk::GetEntityClassname(handle).to_string();
-            if !classname.starts_with("weapon_") {
-                continue;
-            }
-            let item_definition = unsafe { item_definition_reader(handle) };
-            return Some(crate::chicken_entities::KillWeaponSource {
-                attacker,
-                handle,
-                classname,
-                item_definition,
-            });
-        }
-    }
-    None
-}
-
-fn chicken_weapon_source_is_current(
-    source: &crate::chicken_entities::KillWeaponSource,
-    players: &PlayerTracker,
-    controllers: &HashMap<i32, i32>,
-) -> bool {
-    let Some(player) = LivePlayer::resolve(source.attacker.slot) else {
-        return false;
-    };
-    if players.identity(player.slot) != Some(source.attacker)
-        || controllers.get(&player.slot) != Some(&player.controller_handle)
-        || player.pawn_handle != source.attacker.pawn_handle as i32
-    {
-        return false;
-    }
-    let valid = s2sdk::IsValidEntHandle(source.handle);
-    if !valid {
-        return false;
-    }
-    let owner = s2sdk::GetEntityOwner(source.handle);
-    let inventory = s2sdk::GetClientWeapons(player.slot).iter().copied().collect::<Vec<_>>();
-    let classname = s2sdk::GetEntityClassname(source.handle).to_string();
-    let item_definition_reader = unsafe { crate::effects::__s2sdk_GetWeaponItemDefinition }.expect("required native ABI checked at startup");
-    let item_definition = unsafe { item_definition_reader(source.handle) };
-    chicken_weapon_source_readback_matches(source, source.attacker, valid, owner, &inventory, &classname, item_definition)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct OwnedFloat {
-    previous: f32,
-    installed: f32,
-}
-
-#[derive(Clone, Debug)]
-struct WeaponInventory {
-    player: LivePlayer,
-    identity: PlayerIdentity,
-    weapons: HashMap<i32, String>,
-}
-
-impl NativeSelfDamageShot {
-    fn matches_hit(&self, task: PlayerTask, player: LivePlayer, tick: i32, damage: &crate::damage::Damage) -> bool {
-        self.task == task
-            && self.player == player
-            && self.tick == tick
-            && self.weapon.handle == damage.weapon
-            && damage.weapon_class.as_deref() == Some(self.weapon.classname.as_str())
-    }
-
-    fn mark_player_hit(&mut self, task: PlayerTask, player: LivePlayer, tick: i32, damage: &crate::damage::Damage) -> bool {
-        if !self.matches_hit(task, player, tick, damage) {
-            return false;
-        }
-        self.player_hit = true;
-        true
-    }
-}
-
-fn native_self_damage_signature(damage: &crate::damage::Damage, player: LivePlayer) -> bool {
-    !damage.skip_plugin_rules
-        && damage.victim == player.pawn_handle
-        && damage.attacker == player.pawn_handle
-        && damage.inflictor == player.pawn_handle
-        && damage.weapon == -1
-        && damage.weapon_kind == 0
-        && damage.damage_type == 0
-        && damage.amount.is_finite()
-        && damage.amount > 0.0
-}
-
-fn round_end_finish_valid(
-    enabled: bool,
-    phase: Phase,
-    task: PlayerTask,
-    player: LivePlayer,
-    current_identity: Option<PlayerIdentity>,
-    live_player: Option<LivePlayer>,
-) -> bool {
-    enabled && phase == Phase::Idle && current_identity == Some(task.player) && live_player == Some(player)
-}
-
-fn round_end_finish_due(tick: i32, queued_tick: i32) -> bool {
-    tick > queued_tick
-}
-
 fn tracks_chicken_life(phase: Phase) -> bool {
     matches!(phase, Phase::Preparing | Phase::Running | Phase::Warmup)
 }
 
+fn mode_configured(config: &funrounds_core::Config, predicate: impl Fn(&funrounds_core::Mode) -> bool) -> bool {
+    config.modes.iter().chain(config.warmup.iter().map(|warmup| &warmup.mode)).any(predicate)
+}
+
 fn active_combat_phase(phase: Phase) -> bool {
     matches!(phase, Phase::Running | Phase::Warmup)
+}
+
+fn wall_hang_capability(reasons: &mut Vec<String>) -> bool {
+    let mut probe = crate::capability::Probe::default();
+    crate::capability::imports!(probe;
+        __s2sdk_GetEntityMoveType, __s2sdk_GetClientFlags, __s2sdk_GetClientButtons,
+        __s2sdk_GetClientAbsOrigin, __s2sdk_GetEntityAbsVelocity, __s2sdk_SetEntityAbsVelocity,
+        __s2sdk_IsValidEntHandle, __s2sdk_EntHandleToEntPointer, __s2sdk_EntIndexToEntHandle,
+        __s2sdk_GetEntityClassname, __s2sdk_GetSchemaOffset, __s2sdk_GetEntSchema2,
+        __s2sdk_GetEntSchemaVector3D2, __s2sdk_GetClientGravity, __s2sdk_SetClientGravity,
+    );
+    let native = unsafe { std::ptr::addr_of!(crate::funrounds_native::__funrounds_native_HasPlayerMovementHullSupport).read() };
+    probe.require(unsafe { native.is_some_and(|support| support()) }, "native:HasPlayerMovementHullSupport");
+    for (class, field) in [
+        ("CBasePlayerPawn", "m_pMovementServices"),
+        ("CPlayer_MovementServices", "m_nQueuedButtonDownMask"),
+        ("CPlayer_MovementServices", "m_nQueuedButtonChangeMask"),
+        ("CPlayer_MovementServices", "m_nButtons"),
+        ("CInButtonState", "m_pButtonStates"),
+        ("CBaseEntity", "m_pCollision"),
+        ("CCollisionProperty", "m_vecMins"),
+        ("CCollisionProperty", "m_vecMaxs"),
+    ] {
+        probe.schema(class, field);
+    }
+    probe.record("wall_hang", reasons)
 }
 
 fn damageable_chicken(handle: i32) -> bool {
@@ -329,201 +196,34 @@ fn damageable_chicken(handle: i32) -> bool {
         && s2sdk::GetEntSchema2(pointer, &Str::from_str(BASE_ENTITY), &Str::from_str("m_lifeState"), 0) == 0
 }
 
-fn use_button_rising_edge(states: &mut HashMap<i32, (PlayerIdentity, bool)>, identity: PlayerIdentity, down: bool) -> bool {
-    let rising = down && !states.get(&identity.slot).is_some_and(|(old, was_down)| *old == identity && *was_down);
-    if down {
-        states.insert(identity.slot, (identity, true));
-    } else if states.get(&identity.slot).is_some_and(|(old, _)| *old == identity) {
-        states.remove(&identity.slot);
-    }
-    rising
-}
-
-fn update_owned_minimum(properties: &mut HashMap<i32, OwnedFloat>, handle: i32, current: f32, installed: f32) -> Option<f32> {
-    if !current.is_finite() || !installed.is_finite() {
-        return None;
-    }
-    match properties.get(&handle).copied() {
-        Some(_) if (current - installed).abs() <= 0.0001 => None,
-        Some(owner) if current < installed => {
-            properties.insert(handle, owner);
-            Some(installed)
-        }
-        Some(_) => {
-            properties.remove(&handle);
-            None
-        }
-        None if current < installed => {
-            properties.insert(
-                handle,
-                OwnedFloat {
-                    previous: current,
-                    installed,
-                },
-            );
-            Some(installed)
-        }
-        None => None,
-    }
-}
-
-fn owned_float_restore(owner: OwnedFloat, current: f32) -> Option<f32> {
-    (current.is_finite() && (current - owner.installed).abs() <= 0.0001).then_some(owner.previous)
-}
-
-fn matches_weapon_item(classname: &str, item: &str) -> bool {
-    let item = item.trim().to_ascii_lowercase();
-    let classname = classname.trim().to_ascii_lowercase();
-    !item.is_empty() && (item == classname || format!("weapon_{item}") == classname || format!("weapon_{classname}") == item)
-}
-
-fn player_movement_services_for_handle(handle: i32) -> Option<usize> {
-    if !s2sdk::IsValidEntHandle(handle) {
-        return None;
-    }
-    let pawn = s2sdk::EntHandleToEntPointer(handle);
-    if pawn == 0 || s2sdk::EntPointerToEntHandle(pawn) != handle || s2sdk::GetEntityClassname(handle).as_str() != "player" {
-        return None;
-    }
-    let pawn_class = Str::from_str("CBasePlayerPawn");
-    let services_field = Str::from_str("m_pMovementServices");
-    let movement_class = Str::from_str("CCSPlayer_MovementServices");
-    let duck_field = Str::from_str("m_flDuckSpeed");
-    if s2sdk::GetSchemaOffset(&pawn_class, &services_field) < 0 || s2sdk::GetSchemaOffset(&movement_class, &duck_field) < 0 {
-        return None;
-    }
-    let services = s2sdk::GetEntSchema2(pawn, &pawn_class, &services_field, 0) as usize;
-    (services != 0).then_some(services)
-}
-
-fn duck_speed_for_handle(handle: i32) -> Option<f32> {
-    let services = player_movement_services_for_handle(handle)?;
-    let speed = s2sdk::GetEntSchemaFloat2(services, &Str::from_str("CCSPlayer_MovementServices"), &Str::from_str("m_flDuckSpeed"), 0) as f32;
-    speed.is_finite().then_some(speed)
-}
-
-fn set_duck_speed_for_handle(handle: i32, value: f32) -> bool {
-    if !value.is_finite() {
-        return false;
-    }
-    let Some(services) = player_movement_services_for_handle(handle) else {
-        return false;
-    };
-    s2sdk::SetEntSchemaFloat2(
-        services,
-        &Str::from_str("CCSPlayer_MovementServices"),
-        &Str::from_str("m_flDuckSpeed"),
-        f64::from(value),
-        true,
-        0,
-    );
-    duck_speed_for_handle(handle).is_some_and(|actual| (actual - value).abs() <= 0.0001)
-}
-
-fn release_duck_speed(handle: i32, owner: OwnedFloat) -> bool {
-    if !s2sdk::IsValidEntHandle(handle) {
-        return true;
-    }
-    let Some(current) = duck_speed_for_handle(handle) else { return false };
-    let Some(previous) = owned_float_restore(owner, current) else {
-        return true;
-    };
-    set_duck_speed_for_handle(handle, previous)
-}
-
-fn duck_speed_update_candidate(player: LivePlayer, active_player: Option<LivePlayer>, team: i32) -> Option<f32> {
-    if active_player != Some(player) || !matches!(team, 2 | 3) {
-        return None;
-    }
-    duck_speed_for_handle(player.pawn_handle)
-}
-
-fn release_model_scale(handle: i32, owner: OwnedFloat) -> bool {
-    if !s2sdk::IsValidEntHandle(handle) {
-        return true;
-    }
-    let Some(current) = Runtime::entity_model_scale(handle) else {
-        return false;
-    };
-    let Some(previous) = owned_float_restore(owner, current) else {
-        return true;
-    };
-    Runtime::set_entity_model_scale(handle, previous)
-}
-
-fn lethal_suicide_finish_amount(anchor: f32, health: i32) -> Option<f32> {
-    if !anchor.is_finite() || anchor <= 0.0 || health <= 0 {
-        return None;
-    }
-    let current_health_amount = health as f32 * 10.0;
-    current_health_amount.is_finite().then_some(anchor.max(current_health_amount))
-}
-
 // Execute after releasing the runtime lock: these engine calls can fire synchronous events.
 pub enum EngineAction {
+    Composed(composed::Action),
+    Shooting(shooting::Action),
+    Proximity(proximity::Action),
+    Shockwave(proximity::ShockwaveAction),
+    HeGuidance(proximity::GuidanceAction),
+    HeGuidanceFuseRestore(proximity::GuidanceFuseRestoreAction),
+    Teamkill(teamkill::Action),
     Rollback(PlayerTask, LivePlayer),
     Loadout(PlayerTask, LivePlayer, Vec<String>),
     SettleLoadout(PlayerTask, LivePlayer, i32),
     Upgrade(PlayerTask, LivePlayer, Option<KillWeaponTarget>),
     ThirdPerson(PlayerTask, LivePlayer),
-    GrantC4(PlayerTask, LivePlayer),
-    RemoveC4(PlayerTask, LivePlayer, Vec<i32>),
-    Respawn(PlayerTask, LivePlayer, i32),
-    RoundRespawn(PlayerTask, LivePlayer, i32),
-    LowHealthFinish(PlayerTask, LivePlayer, bool),
+    Suicide(suicide::Action),
+    Respawn(respawn::Action),
     EndRound(RoundGeneration, s2sdk::CSRoundEndReason),
-    CenterDisplay {
-        generation: RoundGeneration,
-    },
+    CenterDisplay { generation: RoundGeneration },
     Projectile(crate::projectiles::Action),
     HostageRescue(crate::compat::hostage_rescue::ForwardAction),
     Bomb(crate::bombs::Action),
     Equipment(equipment::Action),
     ProjectileImpact(crate::projectiles::Impact),
-    Reflection(crate::damage::Reflection),
-    DelayedDamage(crate::damage::DelayedDamage),
-    Suicide(crate::suicide::Action),
-    ChickenSpawn {
-        round: RoundGeneration,
-        origin: plugify::Vec3,
-    },
-    ChickenBlast {
-        round: RoundGeneration,
-        chicken: i32,
-        attacker: Option<i32>,
-        origin: plugify::Vec3,
-        config: funrounds_core::ChickenBlastConfig,
-    },
-    ChickenRemove(i32),
-    SuicideFeedbackRemove(i32),
-    ChickenPurchase {
-        task: PlayerTask,
-        player: LivePlayer,
-        price: u32,
-        origin: plugify::Vec3,
-    },
-    HealthshotUse {
-        task: PlayerTask,
-        player: LivePlayer,
-        base_health: i32,
-        config: funrounds_core::HealthshotConfig,
-    },
-    HealthshotPurchase {
-        task: PlayerTask,
-        player: LivePlayer,
-        price: u32,
-    },
-    ChickenEat {
-        task: PlayerTask,
-        player: LivePlayer,
-        chicken: i32,
-        outcome: funrounds_core::ChickenEatOutcome,
-    },
-    AfterburnIgnite {
-        task: PlayerTask,
-        player: LivePlayer,
-    },
-    AfterburnRemove(i32),
+    Combat(combat::Action),
+    Chicken(chickens::Action),
+    Healthshot(healthshot::Action),
+    Afterburn(afterburn::Action),
+    Grapple(grapple::Action),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -544,11 +244,6 @@ pub struct PreparedEquipmentEffect {
     pub effect: Effect,
     pub mode: funrounds_core::Mode,
     pub upgrade: Option<PreparedUpgrade>,
-}
-
-fn clear_chicken_purchase_state(slot: i32, pending: &mut HashMap<i32, PlayerTask>, actions: &mut Vec<EngineAction>) {
-    pending.remove(&slot);
-    actions.retain(|action| !matches!(action, EngineAction::ChickenPurchase { task, .. } if task.player.slot == slot));
 }
 
 pub struct Runtime {
@@ -573,12 +268,9 @@ pub struct Runtime {
     third_person_map_detach_pending: bool,
     equipment: Vec<String>,
     parameters: Parameters,
-    healthshot_parameters: Parameters,
-    healthshot_hooks_ready: bool,
-    healthshot_override_active: bool,
-    healthshot_faulted: bool,
-    healthshot_purchases: HashMap<i32, PlayerTask>,
+    healthshot: healthshot::State,
     ground_reverse: crate::ground_reverse::GroundReverse,
+    air_strafe: crate::autostrafe::AirStrafe,
     night_vision: crate::night_vision::NightVision,
     ghost: crate::effects::GhostRuntime,
     team_names: Parameters,
@@ -591,46 +283,41 @@ pub struct Runtime {
     team_match: Option<TeamDeathmatch>,
     periodic_movement: Option<(RoundGeneration, funrounds_core::PeriodicMovement)>,
     money_income: Option<(RoundGeneration, MoneyIncome, f32)>,
-    respawns: Vec<(PlayerTask, LivePlayer, i32, f32)>,
-    round_respawns: Vec<(PlayerTask, LivePlayer, i32, f32)>,
-    low_health_finishes: Vec<PlayerTask>,
+    respawning: respawn::State,
     bombs: crate::bombs::Bombs,
     projectiles: crate::projectiles::Projectiles,
     hostage_rescue: crate::compat::hostage_rescue::State,
     chickens: crate::chicken_adapter::ChickenAdapter,
-    chicken_entities: crate::chicken_entities::Chickens,
-    chicken_ready: bool,
-    chicken_follow_block_support: bool,
-    chicken_use_ready: bool,
-    chicken_use_buttons: HashMap<i32, (PlayerIdentity, bool)>,
-    chicken_spawn_round: Option<RoundGeneration>,
-    pending_chicken_blast_kills: HashMap<i32, PendingChickenBlastKill>,
-    chicken_cleanup: Vec<i32>,
-    chicken_purchases: HashMap<i32, PlayerTask>,
+    ordinary_chickens: chickens::State,
+    use_target_hook_ready: bool,
+    grapple_bomb_use_ready: bool,
+    use_target_hook_requested: bool,
+    use_target_probe_retry_at: f32,
+    grapple: grapple::State,
+    he_guidance_spawn_listener_available: bool,
+    he_guidance_spawn_listener_requested: bool,
+    he_guidance_spawn_listener_ready: bool,
+    he_guidance_probe_ready: bool,
+    composed: composed::State,
+    regions: regions::State,
+    shooting: shooting::State,
+    proximity: proximity::State,
+    teamkills: teamkill::State,
     afterburns: crate::afterburn::Afterburns,
-    afterburn_cleanup: Vec<i32>,
     impacts: Vec<crate::projectiles::Impact>,
     chicken_impacts: Vec<crate::projectiles::ChickenImpact>,
-    suicide_feedback: crate::suicide::FeedbackEntities,
-    suicide_feedback_cleanup: Vec<i32>,
-    combat: HashMap<i32, (PlayerTask, funrounds_core::CombatLife)>,
-    reflections: Vec<crate::damage::Reflection>,
-    delayed_damage: Vec<crate::damage::DelayedDamage>,
-    random_heals: Vec<RandomHealReceipt>,
-    native_self_damage_shots: HashMap<i32, NativeSelfDamageShot>,
+    combat: combat::State,
     suicides: crate::suicide::Suicides,
-    c4_assigned: bool,
+    death_explosives: suicide::DeathExplosions,
     engine_actions: Vec<EngineAction>,
     equipment_in_flight: usize,
     settling_loadouts: Vec<(PlayerTask, i32, i32)>,
     prestart_context: Option<(i32, bool)>,
     warmup_active: bool,
     warmup_activation_pending: bool,
+    warmup_round_faulted: bool,
     round_transition_waiting: bool,
-    duck_speed: HashMap<i32, OwnedFloat>,
-    weapon_inventory: HashMap<i32, WeaponInventory>,
-    model_scales: HashMap<i32, OwnedFloat>,
-    model_scale_restore_pending: HashSet<i32>,
+    public_properties: public_properties::State,
 }
 
 impl Runtime {
@@ -659,7 +346,11 @@ impl Runtime {
         }
         let mut capability_reasons = Vec::new();
         let mut capabilities = parameters::capabilities(events.weapon_fire, events.round_prestart, &mut capability_reasons);
-        capabilities.healthshot = healthshot_configured && events.healthshot;
+        let mut autostrafe = crate::capability::Probe::default();
+        autostrafe.require(crate::autostrafe::available(), "native:air_move");
+        autostrafe.require(events.combat_events, "events:player_spawn/player_death");
+        capabilities.autostrafe = autostrafe.record("autostrafe", &mut capability_reasons);
+        capabilities.healthshot = events.healthshot;
         if healthshot_configured && !events.healthshot {
             capability_reasons.push("healthshot:[native hooks or required health ConVars unavailable]".into());
         }
@@ -685,6 +376,17 @@ impl Runtime {
         );
         suicide.require(unsafe { s2sdk::__s2sdk_SetEventString }.is_some(), "import:SetEventString");
         capabilities.suicide = suicide.record("suicide", &mut capability_reasons);
+        let mut death_explosion = crate::suicide::blast_probe();
+        death_explosion.require(events.damage, "hook:entity_damage");
+        death_explosion.require(events.player_hurt, "event:player_hurt");
+        death_explosion.require(events.combat_events, "events:player_spawn/player_death");
+        death_explosion.require(crate::damage::reflection_available(), "import:TakeEntityDamageWithWeapon");
+        death_explosion.require(
+            crate::KNIFE_DEATH_PRE_HOOKED.load(std::sync::atomic::Ordering::Acquire),
+            "hook:player_death_pre",
+        );
+        death_explosion.require(unsafe { s2sdk::__s2sdk_SetEventString }.is_some(), "import:SetEventString");
+        capabilities.death_explosion = death_explosion.record("death_explosion", &mut capability_reasons);
         let mut source_damage = crate::capability::Probe::default();
         source_damage.require(events.damage, "hook:entity_damage");
         capabilities.weapon_damage = source_damage.clone().record("weapon_damage", &mut capability_reasons);
@@ -705,9 +407,9 @@ impl Runtime {
         capabilities.energy_shield = combat.clone().record("energy_shield", &mut capability_reasons);
         capabilities.combat_protection = combat.record("combat_protection", &mut capability_reasons);
         let bomb_capabilities = crate::bombs::capabilities(
-            events.bombs,
-            events.bomb_plant_tracking,
-            events.moving_blast,
+            events.bombs.clone(),
+            events.bomb_plant_tracking.clone(),
+            events.moving_blast.clone(),
             events.round_prestart,
             &mut capability_reasons,
         );
@@ -735,6 +437,11 @@ impl Runtime {
         );
         push.require(events.weapon_fire, "event:weapon_fire");
         capabilities.self_push = push.record("self_push", &mut capability_reasons);
+        capabilities.wall_hang = wall_hang_capability(&mut capability_reasons);
+        capabilities.grapple = false;
+        if config.as_ref().is_ok_and(|config| mode_configured(config, |mode| mode.grapple.is_some())) {
+            capability_reasons.push("grapple:[waiting for a live pawn and the shared use-target observer]".into());
+        }
         let mut model_scale = crate::capability::Probe::default();
         crate::capability::imports!(model_scale; __s2sdk_GetEntityModelScale, __s2sdk_SetEntityModelScale);
         model_scale.record("model_scale", &mut capability_reasons);
@@ -790,6 +497,20 @@ impl Runtime {
         afterburn.schema("CBaseEntity", "m_hEffectEntity");
         afterburn.schema("CEntityFlame", "m_hEntAttached");
         capabilities.afterburn = afterburn.record("afterburn", &mut capability_reasons);
+        composed::probe(&events, &mut capabilities, &mut capability_reasons);
+        let regions = regions::probe(&events, &mut capabilities, &mut capability_reasons);
+        shooting::probe(&events, &mut capabilities, &mut capability_reasons);
+        proximity::probe(&events, &mut capabilities, &mut capability_reasons);
+        let he_guidance_probe_ready = capabilities.he_guidance;
+        capabilities.he_guidance = false;
+        if he_guidance_probe_ready
+            && config
+                .as_ref()
+                .is_ok_and(|config| mode_configured(config, |mode| mode.he_guidance.is_some()))
+        {
+            capability_reasons.push("he_guidance:[waiting for entity spawn listener registration]".into());
+        }
+        teamkill::probe(&events, &mut capabilities, &mut capability_reasons);
         log(&format!(
             "capabilities={capabilities:?} capability_reasons={}",
             capability_reasons.join(";")
@@ -819,12 +540,9 @@ impl Runtime {
             third_person_map_detach_pending: false,
             equipment: Vec::new(),
             parameters: Parameters::default(),
-            healthshot_parameters: Parameters::default(),
-            healthshot_hooks_ready: false,
-            healthshot_override_active: false,
-            healthshot_faulted: false,
-            healthshot_purchases: HashMap::new(),
+            healthshot: healthshot::State::default(),
             ground_reverse: crate::ground_reverse::GroundReverse::default(),
+            air_strafe: crate::autostrafe::AirStrafe::default(),
             night_vision: crate::night_vision::NightVision::default(),
             ghost: crate::effects::GhostRuntime::default(),
             team_names: Parameters::default(),
@@ -837,312 +555,130 @@ impl Runtime {
             team_match: None,
             periodic_movement: None,
             money_income: None,
-            respawns: Vec::new(),
-            round_respawns: Vec::new(),
-            low_health_finishes: Vec::new(),
+            respawning: respawn::State::default(),
             bombs: crate::bombs::Bombs::default(),
             projectiles: crate::projectiles::Projectiles::default(),
             hostage_rescue: crate::compat::hostage_rescue::State::new(),
             chickens: crate::chicken_adapter::ChickenAdapter::default(),
-            chicken_entities: crate::chicken_entities::Chickens::default(),
-            chicken_ready,
-            chicken_follow_block_support: events.chicken_follow_block_support,
-            chicken_use_ready: false,
-            chicken_use_buttons: HashMap::new(),
-            chicken_spawn_round: None,
-            pending_chicken_blast_kills: HashMap::new(),
-            chicken_cleanup: Vec::new(),
-            chicken_purchases: HashMap::new(),
+            ordinary_chickens: chickens::State::new(chicken_ready, events.chicken_follow_block_support),
+            use_target_hook_ready: false,
+            grapple_bomb_use_ready: events.grapple_bomb_use,
+            use_target_hook_requested: false,
+            use_target_probe_retry_at: 0.0,
+            grapple: grapple::State::default(),
+            he_guidance_spawn_listener_available: events.spawn_listener_available,
+            he_guidance_spawn_listener_requested: false,
+            he_guidance_spawn_listener_ready: false,
+            he_guidance_probe_ready,
+            composed: crate::runtime::composed::State::default(),
+            regions,
+            shooting: crate::runtime::shooting::State::default(),
+            proximity: crate::runtime::proximity::State::default(),
+            teamkills: crate::runtime::teamkill::State::default(),
             afterburns: crate::afterburn::Afterburns::default(),
-            afterburn_cleanup: Vec::new(),
             impacts: Vec::new(),
             chicken_impacts: Vec::new(),
-            suicide_feedback: crate::suicide::FeedbackEntities::default(),
-            suicide_feedback_cleanup: Vec::new(),
-            combat: HashMap::new(),
-            reflections: Vec::new(),
-            delayed_damage: Vec::new(),
-            random_heals: Vec::new(),
-            native_self_damage_shots: HashMap::new(),
+            combat: combat::State::default(),
             suicides: crate::suicide::Suicides::default(),
-            c4_assigned: false,
+            death_explosives: suicide::DeathExplosions::default(),
             engine_actions: Vec::new(),
             equipment_in_flight: 0,
             settling_loadouts: Vec::new(),
             prestart_context: None,
             warmup_active: false,
             warmup_activation_pending: false,
+            warmup_round_faulted: false,
             round_transition_waiting: false,
-            duck_speed: HashMap::new(),
-            weapon_inventory: HashMap::new(),
-            model_scales: HashMap::new(),
-            model_scale_restore_pending: HashSet::new(),
+            public_properties: public_properties::State::default(),
         })
     }
 
-    pub(crate) fn healthshot_configured(&self) -> bool {
-        self.controller.config().is_some_and(|config| config.healthshot.is_some())
-    }
-
-    pub(crate) fn chicken_use_configured(&self) -> bool {
+    fn he_guidance_configured(&self) -> bool {
         self.controller
             .config()
-            .is_some_and(|config| config.chicken.is_some_and(|chicken| chicken.eating.enabled))
+            .is_some_and(|config| mode_configured(config, |mode| mode.he_guidance.is_some()))
     }
 
-    pub(crate) fn chicken_follow_block_supported(&self) -> bool {
-        self.chicken_follow_block_support
+    pub(crate) fn take_he_guidance_spawn_listener_request(&mut self) -> bool {
+        let requested = self.he_guidance_configured() && self.he_guidance_spawn_listener_available && !self.he_guidance_spawn_listener_requested;
+        self.he_guidance_spawn_listener_requested |= requested;
+        requested
     }
 
-    /// The native veto applies to every configured FunRounds chicken round, even when eating is disabled.
-    pub(crate) fn chicken_follow_block_desired(&self) -> bool {
-        self.controller.enabled()
-            && self.faults.recovery != Recovery::Stopped
-            && self.controller.config().is_some_and(|config| config.chicken.is_some())
+    pub(crate) fn he_guidance_spawn_listener_ready(&mut self) {
+        self.he_guidance_spawn_listener_ready = true;
+        if !self.he_guidance_probe_ready || !self.faults.enable_he_guidance() {
+            return;
+        }
+        self.capability_reasons
+            .retain(|reason| !reason.starts_with("he_guidance:[waiting for entity spawn listener registration]"));
+        self.controller.set_capabilities(self.faults.capabilities());
+        log("HE guidance capability became available after the entity spawn listener was registered");
+    }
+
+    pub(crate) fn sync_he_guidance_spawn_epoch(&self) {
+        crate::publish_he_guidance_spawn_active(self.he_guidance_active());
+    }
+
+    fn he_guidance_active(&self) -> bool {
+        self.he_guidance_spawn_listener_ready
+            && self.classic_round()
+            && active_combat_phase(self.controller.phase())
+            && self.faults.capabilities().he_guidance
+            && self.controller.current_mode().is_some_and(|mode| mode.he_guidance.is_some())
+    }
+
+    pub(crate) fn take_interaction_hook_requests(&mut self) -> (bool, bool) {
+        self.bind_pending_warmup_spawns();
+        let healthshot = self.take_healthshot_hook_request();
+        let chicken = self.wants_use_target_hook()
+            && !self.use_target_hook_requested
+            && s2sdk::GetGameTime() >= self.use_target_probe_retry_at
+            && self.use_target_probe_ready();
+        self.use_target_hook_requested |= chicken;
+        (healthshot, chicken)
+    }
+
+    fn bind_pending_warmup_spawns(&mut self) {
+        if !self.warmup_active || self.controller.phase() != Phase::Idle || !self.grapple_configured() {
+            return;
+        }
+
+        for slot in 0..s2sdk::GetMaxClients() {
+            let Some(expected) = self.players.pending_identity(slot) else { continue };
+            let Some(player) = LivePlayer::resolve(slot) else { continue };
+            if !self.players.validates_connection(expected)
+                || self.controllers.get(&slot) != Some(&player.controller_handle)
+                || player.pawn_controller() != Some(player.controller_handle)
+            {
+                continue;
+            }
+
+            self.players.bind_spawn(expected, player.pawn_handle as u32);
+        }
     }
 
     pub(crate) fn chicken_use_hook_ready(&mut self) {
-        self.chicken_use_ready = true;
+        self.use_target_hook_ready = true;
+        self.grapple_use_hook_ready();
     }
 
     pub(crate) fn chicken_use_hook_failure(&mut self, reason: impl Into<String>) {
-        self.chicken_use_ready = false;
+        self.use_target_hook_ready = false;
         let reason = reason.into();
-        self.capability_reasons.push(format!("chicken_eating:[{reason}]"));
-        log(&format!("chicken eating capability unavailable: {reason}"));
-    }
-
-    pub(crate) fn observe_chicken_use_target(&mut self, pawn_handle: i32, target_handle: i32, in_use: bool) {
-        let Some(player) = LivePlayer::resolve_pawn_owner(pawn_handle) else {
-            return;
-        };
-        if LivePlayer::resolve(player.slot) != Some(player) || self.controllers.get(&player.slot) != Some(&player.controller_handle) {
-            return;
+        if self.chicken_use_configured() {
+            self.capability_reasons.push(format!("chicken_eating:[{reason}]"));
+            log(&format!("chicken eating capability unavailable: {reason}"));
         }
-        let Some(identity) = self
-            .players
-            .identity(player.slot)
-            .filter(|identity| identity.pawn_handle == pawn_handle as u32)
-        else {
-            return;
-        };
-        if !in_use {
-            use_button_rising_edge(&mut self.chicken_use_buttons, identity, false);
-            return;
-        }
-        if !self.chicken_use_ready
-            || !self.chicken_ready
-            || !self.ordinary_chickens_enabled()
-            || !self.controller.enabled()
-            || !matches!(self.controller.phase(), Phase::Preparing | Phase::Running | Phase::Warmup)
-            || !s2sdk::IsValidEntHandle(target_handle)
-            || s2sdk::GetEntityClassname(target_handle).as_str() != "chicken"
-            || !self.chicken_entities.owns(target_handle, self.controller.generation())
-        {
-            return;
-        }
-        let Some(config) = self.controller.config().and_then(|config| config.chicken) else {
-            return;
-        };
-        let Some(mode) = self.controller.current_mode() else { return };
-        if !config.eating.enabled_for_mode(mode.chicken_eating) {
-            return;
-        }
-        let Some(task) = self.combat_task(player) else { return };
-        let current_health = s2sdk::GetClientHealth(player.slot);
-        let Some(base_health) = self.chickens.base_health(task).ok() else {
-            return;
-        };
-        // A selector may report no target before finding a chicken during the same press.
-        // Only a valid consumable target spends this press; releases are polled independently.
-        if self
-            .chicken_use_buttons
-            .get(&identity.slot)
-            .is_some_and(|(old, down)| *old == identity && *down)
-            || !self.chicken_entities.mark_consumed(target_handle, task.round)
-        {
-            return;
-        }
-        let now = f64::from(s2sdk::GetGameTime());
-        let outcome = match self.chickens.consume(task, current_health, base_health, now, config, &mut self.rng) {
-            Ok(outcome) => outcome,
-            Err(_) => {
-                self.chicken_entities.release_consumed(target_handle, task.round);
-                return;
-            }
-        };
-        use_button_rising_edge(&mut self.chicken_use_buttons, identity, true);
-        self.engine_actions.push(EngineAction::ChickenEat {
-            task,
-            player,
-            chicken: target_handle,
-            outcome,
-        });
-    }
-
-    pub(crate) fn finish_chicken_use(&mut self, round: RoundGeneration, chicken: i32) {
-        self.chicken_entities.remove_chicken(chicken, round);
-        self.restore_model_scale(chicken);
-        if self.chicken_entities.is_empty() {
-            crate::CHICKEN_DAMAGE_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+        if self.grapple_configured() {
+            self.grapple_use_hook_failure(reason);
         }
     }
 
-    fn release_chicken_use_buttons(&mut self) {
-        // The native target selector is not called on every released-input frame.
-        // Button state 0 is current down state; transition masks must not keep the latch held.
-        self.chicken_use_buttons.retain(|slot, (identity, _)| {
-            self.players.identity(*slot) == Some(*identity)
-                && LivePlayer::resolve(*slot).is_some_and(|player| player.pawn_handle as u32 == identity.pawn_handle)
-                && s2sdk::GetClientButtons(*slot, 0) & (1 << 5) != 0
-        });
-    }
-
-    pub(crate) fn healthshot_hook_ready(&mut self) {
-        self.healthshot_hooks_ready = true;
-    }
-
-    pub(crate) fn healthshot_hook_failure(&mut self, reason: impl Into<String>) {
-        self.healthshot_hooks_ready = false;
-        self.healthshot_faulted = true;
-        let reason = reason.into();
-        self.faults.exclude(Mechanism::Healthshot, reason.clone());
-        self.controller.set_capabilities(self.faults.capabilities());
-        self.capability_reasons.push(format!("healthshot:[{reason}]"));
-        log(&format!("healthshot capability disabled: {reason}"));
-    }
-
-    fn healthshot_active(&self) -> bool {
-        self.healthshot_hooks_ready
-            && !self.healthshot_faulted
-            && self.controller.enabled()
-            && self.controller.config().is_some_and(|config| config.healthshot.is_some())
-            && self.faults.capabilities().healthshot
-    }
-
-    fn sync_healthshot_override(&mut self) -> Result<(), Fault> {
-        let wanted = self.healthshot_active();
-        if healthshot_override_settled(wanted, self.healthshot_override_active, self.healthshot_parameters.is_restored()) {
-            return Ok(());
-        }
-        self.healthshot_parameters.set_healthshot_override(wanted)?;
-        self.healthshot_override_active = wanted;
-        if !wanted {
-            self.healthshot_purchases.clear();
-            self.engine_actions
-                .retain(|action| !matches!(action, EngineAction::HealthshotPurchase { .. }));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn reject_healthshot_use(&self, pawn_handle: i32, weapon_handle: i32) -> bool {
-        if !self.healthshot_active() || !self.healthshot_override_active {
-            return false;
-        }
-        let Some(player) = LivePlayer::resolve_pawn_owner(pawn_handle) else {
-            return true;
-        };
-        if LivePlayer::resolve(player.slot) != Some(player)
-            || !s2sdk::IsValidEntHandle(weapon_handle)
-            || s2sdk::GetEntityClassname(weapon_handle).as_str() != "weapon_healthshot"
-            || !s2sdk::GetClientWeapons(player.slot).iter().any(|handle| *handle == weapon_handle)
-        {
-            return true;
-        }
-        let Some(task) = self.combat_task(player) else { return true };
-        let Some(base_health) = self.chickens.base_health(task).ok() else {
-            return true;
-        };
-        let Some(config) = self.controller.config().and_then(|config| config.healthshot) else {
-            return false;
-        };
-        matches!(
-            funrounds_core::use_healthshot(config, s2sdk::GetClientHealth(player.slot), base_health),
-            funrounds_core::HealthshotOutcome::NotConsumed
-        )
-    }
-
-    pub(crate) fn queue_healthshot_use(&mut self, pawn_handle: i32, weapon_handle: i32) {
-        if !self.healthshot_active() || !self.healthshot_override_active {
-            return;
-        }
-        let Some(player) = LivePlayer::resolve_pawn_owner(pawn_handle) else {
-            return;
-        };
-        if LivePlayer::resolve(player.slot) != Some(player)
-            || !s2sdk::IsValidEntHandle(weapon_handle)
-            || s2sdk::GetEntityClassname(weapon_handle).as_str() != "weapon_healthshot"
-            || !s2sdk::GetClientWeapons(player.slot).iter().any(|handle| *handle == weapon_handle)
-        {
-            return;
-        }
-        let Some(task) = self.combat_task(player) else { return };
-        let Some(base_health) = self.chickens.base_health(task).ok() else {
-            return;
-        };
-        let Some(config) = self.controller.config().and_then(|config| config.healthshot) else {
-            return;
-        };
-        if matches!(
-            funrounds_core::use_healthshot(config, s2sdk::GetClientHealth(player.slot), base_health),
-            funrounds_core::HealthshotOutcome::Applied { .. }
-        ) {
-            self.engine_actions.push(EngineAction::HealthshotUse {
-                task,
-                player,
-                base_health,
-                config,
-            });
-        }
-    }
-
-    fn request_healthshot(&mut self, slot: i32) -> Result<String, String> {
-        if !self.healthshot_active() || !self.healthshot_override_active || !active_combat_phase(self.controller.phase()) {
-            return Err(self.text(slot, "healthshot.unavailable", &[]));
-        }
-        let player = LivePlayer::resolve(slot).ok_or(self.text(slot, "player.alive_required", &[]))?;
-        if !matches!(s2sdk::GetClientTeam(slot) as i32, 2 | 3) {
-            return Err(self.text(slot, "healthshot.team_required", &[]));
-        }
-        if Self::owns_healthshot(player) {
-            return Err(self.text(slot, "healthshot.already_owned", &[]));
-        }
-        let task = self.combat_task(player).ok_or(self.text(slot, "player.life_pending", &[]))?;
-        if self.healthshot_purchases.contains_key(&slot) {
-            return Err(self.text(slot, "healthshot.pending", &[]));
-        }
-        let price = self
-            .controller
-            .config()
-            .ok_or(self.text(slot, "config.unavailable", &[]))?
-            .prices
-            .healthshot_cash;
-        self.healthshot_purchases.insert(slot, task);
-        self.engine_actions.push(EngineAction::HealthshotPurchase { task, player, price });
-        Ok(self.text(slot, "healthshot.request", &[("price", &price.to_string())]))
-    }
-
-    fn owns_healthshot(player: LivePlayer) -> bool {
-        s2sdk::GetClientWeapons(player.slot)
-            .iter()
-            .copied()
-            .any(|handle| s2sdk::IsValidEntHandle(handle) && s2sdk::GetEntityClassname(handle).as_str() == "weapon_healthshot")
-    }
-
-    pub(crate) fn healthshot_buyer_current(&self, task: PlayerTask, player: LivePlayer) -> bool {
-        self.healthshot_active()
-            && self.healthshot_override_active
-            && active_combat_phase(self.controller.phase())
-            && self.healthshot_purchases.get(&player.slot) == Some(&task)
-            && self.players.validates(task, self.controller.generation(), player.pawn_handle as u32)
-            && self.controllers.get(&player.slot) == Some(&player.controller_handle)
-            && LivePlayer::resolve(player.slot) == Some(player)
-    }
-
-    pub(crate) fn finish_healthshot_purchase(&mut self, task: PlayerTask) {
-        if self.healthshot_purchases.get(&task.player.slot) == Some(&task) {
-            self.healthshot_purchases.remove(&task.player.slot);
-        }
+    pub(crate) fn chicken_use_hook_deferred(&mut self) {
+        self.use_target_hook_requested = false;
+        let now = s2sdk::GetGameTime();
+        self.use_target_probe_retry_at = if now.is_finite() { now + 1.0 } else { 0.0 };
     }
 
     pub fn on_game_thread(&self) -> bool {
@@ -1156,13 +692,6 @@ impl Runtime {
     pub fn restore_preferences(&mut self, preferences: crate::preferences::Preferences) {
         assert!(self.preferences.is_none(), "player preferences already attached");
         self.preferences = Some(preferences);
-    }
-
-    pub fn headshots(&self) -> Headshots {
-        if self.controller.phase() == Phase::Idle {
-            return Headshots::Normal;
-        }
-        self.controller.current_mode().map_or(Headshots::Normal, |mode| mode.headshots)
     }
 
     pub fn projectile_damage(&mut self, damage: &mut crate::damage::Damage) -> Option<(f32, bool)> {
@@ -1297,6 +826,26 @@ impl Runtime {
         self.effects_ready && self.controller.enabled()
     }
 
+    fn air_strafe_active(&self) -> bool {
+        self.classic_enabled() && active_combat_phase(self.controller.phase()) && self.controller.current_mode().is_some_and(|mode| mode.autostrafe)
+    }
+
+    pub(crate) fn air_strafe_allowed(&self, slot: i32, pawn: i32, controller: i32) -> bool {
+        if !self.on_game_thread() || !self.air_strafe_active() {
+            return false;
+        }
+        let player = LivePlayer {
+            slot,
+            controller_handle: controller,
+            pawn_handle: pawn,
+        };
+        let Some(task) = self.combat_task(player) else { return false };
+        !self
+            .effects
+            .get(&slot)
+            .is_some_and(|effect| effect.identity == task.player && effect.round == task.round && effect.temporary_movement_owner().is_some())
+    }
+
     pub fn chat_commands_enabled(&self) -> bool {
         self.controller.enabled()
     }
@@ -1367,54 +916,6 @@ impl Runtime {
             .status(self.controller.hostage_rescue_compat_enabled(), self.classic_round())
     }
 
-    pub fn classic_damage_scale(&self, damage: &crate::damage::Damage, players: &game::DamagePlayers) -> Option<f32> {
-        if !self.classic_round() {
-            return Some(1.0);
-        }
-        let damage_type = damage.damage_type;
-        let game::DamagePlayers { victim, attacker } = *players;
-        let self_damage = victim.is_some() && victim == attacker;
-        let mode = self.controller.current_mode()?;
-        let self_damage_allowed = matches!(mode.self_damage, Some(SelfDamage::Native { amount }) if amount > 0.0)
-            || matches!(mode.self_damage, Some(SelfDamage::MissPenalty))
-                && victim.is_some_and(|player| mode65_self_damage(damage, player.pawn_handle, s2sdk::GetClientHealth(player.slot)));
-        let attacker_health = if !mode.health_damage {
-            None
-        } else {
-            attacker
-                .filter(|player| {
-                    LivePlayer::resolve(player.slot) == Some(*player)
-                        && self.controllers.get(&player.slot) == Some(&player.controller_handle)
-                        && self.effects.get(&player.slot).is_some_and(|effect| {
-                            Some(effect.identity) == self.players.identity(player.slot)
-                                && effect.identity.pawn_handle == player.pawn_handle as u32
-                                && !effect.has_pending_loadout()
-                        })
-                })
-                .map(|player| (s2sdk::GetClientHealth(player.slot), self.effects[&player.slot].attributes.health))
-        };
-        let suicide_scale = if players.victim.is_some_and(|victim| self.suicides.active(victim)) {
-            5.0
-        } else {
-            1.0
-        };
-        let common = suicide_scale
-            * mode
-                .health_curve
-                .damage_scale(attacker_health, self_damage, damage_type & 32 != 0, self_damage_allowed)?;
-        let weapon = (damage.weapon != -1 && s2sdk::IsValidEntHandle(damage.weapon))
-            .then(|| s2sdk::GetEntityClassname(damage.weapon).to_string())
-            .or_else(|| damage.weapon_class.clone());
-        Some(
-            common
-                * funrounds_core::weapon_damage_scale(
-                    mode,
-                    weapon.as_deref().map(crate::damage::weapon_scale_class),
-                    attacker.is_some() && !self_damage && damage_type & 32 == 0,
-                ),
-        )
-    }
-
     fn combat_task(&self, player: LivePlayer) -> Option<PlayerTask> {
         let identity = self.players.identity(player.slot)?;
         (identity.pawn_handle == player.pawn_handle as u32 && self.controllers.get(&player.slot) == Some(&player.controller_handle)).then_some(
@@ -1426,7 +927,9 @@ impl Runtime {
     }
 
     fn clear_chicken_life(&mut self, identity: PlayerIdentity) {
-        self.clear_pending_chicken_blast_for_life(identity);
+        self.clear_region_player_life(identity.slot);
+        self.clear_composed_life(identity);
+        self.ordinary_chickens.clear_pending_chicken_blast_for_life(identity);
         self.chickens.clear_life(PlayerTask {
             round: self.controller.generation(),
             player: identity,
@@ -1435,128 +938,6 @@ impl Runtime {
             round: self.controller.generation(),
             player: identity,
         });
-    }
-
-    fn afterburn_settings(&self) -> Option<funrounds_core::AfterburnSettings> {
-        (self.classic_enabled() && active_combat_phase(self.controller.phase()) && self.faults.capabilities().afterburn)
-            .then(|| self.controller.current_mode().and_then(|mode| mode.afterburn))
-            .flatten()
-    }
-
-    pub(crate) fn afterburn_action_valid(&self, task: PlayerTask, player: LivePlayer) -> bool {
-        self.afterburn_settings().is_some()
-            && self.players.validates(task, self.controller.generation(), player.pawn_handle as u32)
-            && LivePlayer::resolve(player.slot) == Some(player)
-            && self.controllers.get(&player.slot) == Some(&player.controller_handle)
-            && self.afterburns.entries().iter().any(|(current, current_player, deadline)| {
-                *current == task && *current_player == player && *deadline > f64::from(s2sdk::GetGameTime())
-            })
-    }
-
-    pub(crate) fn begin_afterburn_ignite(&mut self, task: PlayerTask, player: LivePlayer, now: f64) -> Option<f32> {
-        self.afterburn_action_valid(task, player)
-            .then(|| self.afterburns.begin_ignite(task, player, now))
-            .flatten()
-    }
-
-    pub(crate) fn afterburn_attachment_seen(&mut self, task: PlayerTask, player: LivePlayer, now: f64, attached: Option<i32>) {
-        let _ = self.afterburns.observe_attachment(task, player, now, attached);
-        self.afterburn_cleanup.extend(self.afterburns.take_removals());
-    }
-
-    pub(crate) fn record_afterburn_flame(&mut self, task: PlayerTask, player: LivePlayer, flame: i32, now: f64) -> bool {
-        self.afterburn_action_valid(task, player) && self.afterburns.record_flame(task, player, flame, now)
-    }
-
-    pub(crate) fn afterburn_ignition_failed(&mut self, message: impl Into<String>) {
-        self.handle_fault(Fault::mechanism(Mechanism::Afterburn, message));
-    }
-
-    pub(crate) fn take_afterburn_cleanup(&mut self) -> Vec<i32> {
-        self.afterburn_cleanup.extend(self.afterburns.take_removals());
-        std::mem::take(&mut self.afterburn_cleanup)
-    }
-
-    pub(crate) fn queue_afterburn_ground_tick(&mut self, damage: &crate::damage::Damage, players: &game::DamagePlayers) {
-        if damage.inflictor == -1 || !s2sdk::IsValidEntHandle(damage.inflictor) {
-            return;
-        }
-        let (Some(settings), Some(player)) = (self.afterburn_settings(), players.victim) else {
-            return;
-        };
-        let Some(task) = self.combat_task(player) else { return };
-        let now = f64::from(s2sdk::GetGameTime());
-        if crate::afterburn::genuine_ground_burn(
-            damage.skip_plugin_rules,
-            damage.damage_type,
-            s2sdk::GetEntityClassname(damage.inflictor).as_str(),
-        ) && self.afterburns.refresh(task, player, now, settings.duration_seconds)
-            && self.afterburns.queue_ignite(task, player)
-        {
-            self.engine_actions.push(EngineAction::AfterburnIgnite { task, player });
-        }
-    }
-
-    pub(crate) fn afterburn_flame_damage(&self, damage: &crate::damage::Damage, players: &game::DamagePlayers) -> Option<f32> {
-        if damage.amount <= 0.0
-            || !damage.amount.is_finite()
-            || damage.inflictor == -1
-            || !s2sdk::IsValidEntHandle(damage.inflictor)
-            || !crate::afterburn::flame_tick_damage(
-                damage.skip_plugin_rules,
-                damage.damage_type,
-                s2sdk::GetEntityClassname(damage.inflictor).as_str(),
-            )
-        {
-            return None;
-        }
-        let (Some(settings), Some(player)) = (self.afterburn_settings(), players.victim) else {
-            return None;
-        };
-        let task = self.combat_task(player)?;
-        self.afterburns
-            .owns_flame(task, player, damage.inflictor)
-            .then(|| crate::afterburn::flame_attached_to(player, damage.inflictor))
-            .filter(|attached| *attached)
-            .map(|_| settings.tick_damage(s2sdk::GetClientHealth(player.slot)))
-    }
-
-    fn update_afterburns(&mut self, now: f64) {
-        self.afterburns.clear_round(self.controller.generation());
-        let entries = self.afterburns.entries();
-        for (task, player, _) in entries {
-            if self.afterburn_settings().is_none()
-                || !self.players.validates(task, self.controller.generation(), player.pawn_handle as u32)
-                || LivePlayer::resolve(player.slot) != Some(player)
-                || self.controllers.get(&player.slot) != Some(&player.controller_handle)
-            {
-                self.afterburns.clear_life(task);
-                continue;
-            }
-            let attached = crate::afterburn::attached_effect(player);
-            if self.afterburns.observe_attachment(task, player, now, attached) {
-                self.engine_actions.push(EngineAction::AfterburnIgnite { task, player });
-            }
-        }
-        self.afterburn_cleanup.extend(self.afterburns.take_removals());
-    }
-
-    fn update_chicken_digestion(&mut self, now: f64) {
-        self.chickens.retain_round(self.controller.generation());
-        let Some(config) = self.controller.config().and_then(|config| config.chicken) else {
-            return;
-        };
-        if !now.is_finite() || now < 0.0 {
-            return;
-        }
-        for slot in 0..s2sdk::GetMaxClients() {
-            let Some(player) = LivePlayer::resolve(slot) else { continue };
-            let Some(task) = self.combat_task(player) else { continue };
-            let digestion_needed = !config.eating.enabled || matches!(self.chickens.undigested(task), Ok(count) if count > 0);
-            if digestion_needed {
-                let _ = self.chickens.digest_due(task, now, config);
-            }
-        }
     }
 
     pub fn take_equipment_effect(&mut self, action: &EngineAction) -> Result<Option<PreparedEquipmentEffect>, Fault> {
@@ -1592,6 +973,7 @@ impl Runtime {
                 }
                 let attributes = self
                     .combat
+                    .lives
                     .get(&player.slot)
                     .filter(|(life_task, _)| life_task == task)
                     .map(|(_, life)| life.attributes())
@@ -1762,269 +1144,6 @@ impl Runtime {
         }
     }
 
-    pub fn combat_protected(&self, players: &game::DamagePlayers) -> bool {
-        players.victim.and_then(|player| self.combat_task(player)).is_some_and(|task| {
-            self.combat
-                .get(&task.player.slot)
-                .is_some_and(|(expected, life)| *expected == task && life.protected(s2sdk::GetGameTime()))
-        })
-    }
-
-    pub fn record_native_player_hit(&mut self, damage: &crate::damage::Damage, players: &game::DamagePlayers) {
-        // The native classifier covers bullets, buckshot and Zeus shock damage.
-        if matches!(damage.weapon_kind, 1 | 3)
-            && !damage.skip_plugin_rules
-            && damage.amount.is_finite()
-            && damage.amount > 0.0
-            && let (Some(victim), Some(attacker)) = (players.victim, players.attacker)
-            && victim != attacker
-            && self.combat_task(victim).is_some()
-        {
-            self.mark_native_shot_hit(attacker, damage);
-        }
-    }
-
-    pub fn suppress_hit_native_self_damage(&mut self, damage: &crate::damage::Damage, players: &game::DamagePlayers) -> bool {
-        let (Some(victim), Some(attacker)) = (players.victim, players.attacker) else {
-            return false;
-        };
-        if victim != attacker
-            || !native_self_damage_signature(damage, victim)
-            || !active_combat_phase(self.controller.phase())
-            || !self
-                .controller
-                .current_mode()
-                .is_some_and(|mode| matches!(mode.self_damage, Some(SelfDamage::Native { amount }) if amount > 0.0))
-        {
-            return false;
-        }
-        let Some(task) = self.combat_task(victim) else { return false };
-        if self.players.identity(victim.slot) != Some(task.player) || LivePlayer::resolve(victim.slot) != Some(victim) {
-            return false;
-        }
-        let tick = s2sdk::GetGameTickCount();
-        let matches = self
-            .native_self_damage_shots
-            .get(&victim.slot)
-            .is_some_and(|shot| shot.task == task && shot.player == victim && shot.tick == tick);
-        if !matches {
-            return false;
-        }
-        self.native_self_damage_shots
-            .remove(&victim.slot)
-            .is_some_and(|shot| shot.player_hit && weapon_identity_is_current(victim, &shot.weapon))
-    }
-
-    fn mark_native_shot_hit(&mut self, player: LivePlayer, damage: &crate::damage::Damage) {
-        let Some(task) = self.combat_task(player) else { return };
-        let tick = s2sdk::GetGameTickCount();
-        let Some(shot) = self.native_self_damage_shots.get_mut(&player.slot) else {
-            return;
-        };
-        if weapon_identity_is_current(player, &shot.weapon) {
-            shot.mark_player_hit(task, player, tick, damage);
-        }
-    }
-
-    pub fn combat_damage(
-        &mut self,
-        damage: &crate::damage::Damage,
-        players: &game::DamagePlayers,
-        common_scale: f32,
-        allow_reflection: bool,
-    ) -> bool {
-        let Some(victim) = players.victim else { return false };
-        let Some(task) = self.combat_task(victim) else { return false };
-        let Some((expected, life)) = self.combat.get_mut(&victim.slot).filter(|(expected, _)| *expected == task) else {
-            return false;
-        };
-        let Some(mode) = self.controller.current_mode() else { return false };
-        if players.attacker.is_some_and(|attacker| s2sdk::GetClientTeam(attacker.slot) as i32 == 1) {
-            return true;
-        }
-        let eligible = players.attacker.is_some_and(|attacker| attacker != victim) && damage.damage_type & 32 == 0;
-        let allowed_self =
-            players.attacker == Some(victim) && self_damage_allowed(mode, damage, victim.pawn_handle, s2sdk::GetClientHealth(victim.slot));
-        let knife = damage.weapon_kind == 2
-            || damage
-                .weapon_class
-                .as_deref()
-                .map(crate::damage::weapon_scale_class)
-                .is_some_and(|class| matches!(class, "weapon_knife" | "weapon_knife_t"))
-            || damage.weapon != -1
-                && s2sdk::IsValidEntHandle(damage.weapon)
-                && matches!(s2sdk::GetEntityClassname(damage.weapon).as_str(), "weapon_knife" | "weapon_knife_t");
-        let incoming = damage.amount * common_scale;
-        if !incoming.is_finite() {
-            return true;
-        }
-        let (blocked, reflected) = funrounds_core::combat_hit(mode, life, eligible, allowed_self, knife, incoming);
-        let suppress_lifesteal = mode.lifesteal;
-        let source = *expected;
-        let hud = life.armor_hud();
-        // Record the HP path, not the post-hit shield: the breaking hit is fully absorbed.
-        if numeric_self_damage_enters_health(allowed_self, blocked, incoming) && !self.low_health_finishes.contains(&task) {
-            self.low_health_finishes.push(task);
-        }
-        if let Some(armor) = hud
-            && let Err(error) = sync_shield_hud(victim, armor)
-        {
-            self.handle_fault(error);
-            return true;
-        }
-        if let Some(amount) = reflected.filter(|_| allow_reflection)
-            && let Some(attacker) = players.attacker
-            && let Some(target) = self.combat_task(attacker)
-        {
-            self.reflections.push(crate::damage::Reflection {
-                target,
-                source,
-                target_live: attacker,
-                source_live: victim,
-                inflictor: damage.inflictor,
-                weapon: damage.weapon,
-                weapon_class: damage.weapon_class.clone(),
-                amount,
-                damage_type: damage.damage_type,
-                tick: s2sdk::GetGameTickCount(),
-                suppress_lifesteal,
-            });
-        }
-        blocked
-    }
-
-    pub fn prepare_delayed_damage_with_heal(
-        &self,
-        damage: &crate::damage::Damage,
-        players: &game::DamagePlayers,
-        amount: f32,
-        headshot: bool,
-        random_heal: i32,
-    ) -> Option<crate::damage::DelayedDamage> {
-        let mode = self.controller.current_mode()?;
-        if !active_combat_phase(self.controller.phase()) || !mode.delayed_damage {
-            return None;
-        }
-        let (target, source) = (players.victim?, players.attacker?);
-        if s2sdk::GetClientTeam(source.slot) as i32 == 1
-            || !crate::damage::delayed_damage_eligible(target.slot, source.slot, damage.damage_type, amount)
-        {
-            return None;
-        }
-        let target_task = self.combat_task(target)?;
-        if self.controllers.get(&source.slot) != Some(&source.controller_handle) {
-            return None;
-        }
-        let source_task = self
-            .players
-            .damage_source_task(source.slot, self.controller.generation(), source.pawn_handle as u32)?;
-        let now = s2sdk::GetGameTime();
-        if !now.is_finite() {
-            return None;
-        }
-        let mut hit = crate::damage::DelayedDamage::new(
-            target_task,
-            source_task,
-            target,
-            source,
-            damage,
-            crate::damage::DamageOutcome { amount, headshot },
-            now,
-        );
-        hit.set_random_heal(random_heal);
-        Some(hit)
-    }
-
-    pub fn defer_damage(&mut self, hit: crate::damage::DelayedDamage) {
-        self.delayed_damage.push(hit);
-    }
-
-    pub fn random_damage_roll(
-        &mut self,
-        damage: &crate::damage::Damage,
-        players: &game::DamagePlayers,
-        amount: f32,
-    ) -> Option<funrounds_core::RandomDamage> {
-        let mode = self.controller.current_mode()?;
-        if !active_combat_phase(self.controller.phase()) || !mode.random_damage || damage.damage_type & crate::damage::DMG_FALL != 0 {
-            return None;
-        }
-        let (victim, attacker) = (players.victim?, players.attacker?);
-        if victim == attacker
-            || self.combat_task(victim).is_none()
-            || self.combat_task(attacker).is_none()
-            || crate::damage::current_damage_frame_token().filter(|token| *token != 0).is_none()
-        {
-            return None;
-        }
-        funrounds_core::random_damage(amount, s2sdk::GetClientHealth(victim.slot), &mut self.rng)
-    }
-
-    pub fn queue_random_heal(&mut self, players: &game::DamagePlayers, amount: i32) -> Result<(), Fault> {
-        if amount <= 0 {
-            return Ok(());
-        }
-        let (Some(target_live), Some(source_live)) = (players.victim, players.attacker) else {
-            return Ok(());
-        };
-        let (Some(target), Some(source)) = (self.combat_task(target_live), self.combat_task(source_live)) else {
-            return Ok(());
-        };
-        let Some(frame_token) = crate::damage::current_damage_frame_token().filter(|token| *token != 0) else {
-            return Err(Fault::mechanism(
-                Mechanism::RandomDamage,
-                "player damage frame token unavailable before random heal settlement",
-            ));
-        };
-        self.random_heals.push(RandomHealReceipt {
-            target,
-            source,
-            target_live,
-            source_live,
-            frame_token,
-            amount,
-        });
-        Ok(())
-    }
-
-    fn settle_random_heal(&mut self, victim: i32, attacker: i32, event: usize) -> Option<i32> {
-        if s2sdk::GetEventInt(event, &Str::from_str("dmg_health")) <= 0 {
-            return None;
-        }
-        let receipt = if let Some(receipt) = crate::damage::internal_random_heal_hurt(victim, attacker) {
-            Some(receipt)
-        } else {
-            let token = crate::damage::current_damage_frame_token().filter(|token| *token != 0)?;
-            let index = self
-                .random_heals
-                .iter()
-                .position(|receipt| receipt.target.player.slot == victim && receipt.source.player.slot == attacker && receipt.frame_token == token)?;
-            Some(self.random_heals.remove(index))
-        };
-        let receipt = receipt?;
-        if !self.controller.current_mode().is_some_and(|mode| mode.random_damage)
-            || receipt.amount <= 0
-            || receipt.target.round != self.controller.generation()
-            || receipt.source.round != self.controller.generation()
-            || !self
-                .players
-                .validates_damage_source(receipt.target, self.controller.generation(), receipt.target_live.pawn_handle as u32)
-            || !self
-                .players
-                .validates(receipt.source, self.controller.generation(), receipt.source_live.pawn_handle as u32)
-            || LivePlayer::resolve_present(receipt.target_live.slot) != Some(receipt.target_live)
-            || LivePlayer::resolve(receipt.source_live.slot) != Some(receipt.source_live)
-            || crate::damage::current_damage_frame_token() != Some(receipt.frame_token)
-        {
-            return None;
-        }
-        if let Err(error) = Effect::random_damage_heal(receipt.source_live, receipt.amount) {
-            self.handle_fault(Fault::mechanism(Mechanism::RandomDamage, error));
-            return None;
-        }
-        Some(attacker)
-    }
-
     fn refresh_translucent(&mut self) {
         let generation = self.controller.generation();
         let mut failure = None;
@@ -2092,44 +1211,6 @@ impl Runtime {
             return;
         }
         if let Err(error) = self.ghost.sync_identification(&breath_sources) {
-            self.handle_fault(error);
-        }
-    }
-
-    fn refresh_combat(&mut self) {
-        if self.controller.current_mode().is_none() {
-            return;
-        }
-        let now = s2sdk::GetGameTime();
-        let mut failure = None;
-        for (task, life) in self.combat.values_mut() {
-            let Some(player) = LivePlayer::resolve(task.player.slot) else { continue };
-            if !self.players.validates(*task, self.controller.generation(), player.pawn_handle as u32)
-                || !self
-                    .effects
-                    .get(&player.slot)
-                    .is_some_and(|effect| effect.identity == task.player && !effect.has_pending_loadout())
-            {
-                continue;
-            }
-            let health = s2sdk::GetClientHealth(player.slot);
-            if let Some(next) = life.recharge(now, health)
-                && next != health
-            {
-                s2sdk::SetClientHealth(player.slot, next);
-                if s2sdk::GetClientHealth(player.slot) != next {
-                    failure = Some(Fault::mechanism(Mechanism::EnergyShield, "shield health conversion write failed"));
-                    break;
-                }
-            }
-            if let Some(armor) = life.armor_hud()
-                && let Err(error) = sync_shield_hud(player, armor)
-            {
-                failure = Some(error);
-                break;
-            }
-        }
-        if let Some(error) = failure {
             self.handle_fault(error);
         }
     }
@@ -2257,6 +1338,80 @@ impl Runtime {
         }
     }
 
+    fn wall_hang_active(&self) -> bool {
+        active_combat_phase(self.controller.phase())
+            && self.faults.capabilities().wall_hang
+            && self.controller.current_mode().is_some_and(|mode| mode.wall_hang)
+    }
+
+    fn refresh_movement(&mut self) {
+        let enabled = self.wall_hang_active();
+        let movement_requested = enabled || self.grapple_mode_active();
+        let generation = self.controller.generation();
+        let mut failure = None;
+        for effect in self.effects.values_mut() {
+            let slot = effect.identity.slot;
+            if effect.has_pending_loadout() || Some(effect.identity) != self.players.identity(slot) {
+                continue;
+            }
+            let Some(player) = LivePlayer::resolve(slot) else { continue };
+            if self.controllers.get(&slot) != Some(&player.controller_handle) || effect.identity.pawn_handle != player.pawn_handle as u32 {
+                continue;
+            }
+            let result = if self.suicides.active(player) && (movement_requested || effect.temporary_movement_owner().is_some()) {
+                effect.interrupt_temporary_movement()
+            } else {
+                effect.update_wall_hang(enabled)
+            };
+            if let Err(error) = result
+                && error.scope != Scope::Cancelled
+            {
+                failure = Some(error.context(format!("wall hang slot={slot} round={generation:?}")));
+                break;
+            }
+        }
+        if let Some(error) = failure {
+            self.handle_fault(error);
+        }
+    }
+
+    fn refresh_wall_hang_capability(&mut self) {
+        if self.faults.capabilities().wall_hang || self.faults.recovery == Recovery::Stopped {
+            return;
+        }
+        let mut reasons = Vec::new();
+        if !wall_hang_capability(&mut reasons) || !self.faults.enable_wall_hang() {
+            return;
+        }
+        self.capability_reasons.retain(|reason| !reason.starts_with("wall_hang:"));
+        self.controller.set_capabilities(self.faults.capabilities());
+        log("wall_hang capability became available after the map movement receiver initialized");
+    }
+
+    pub(crate) fn interrupt_movement_for_impulse(&mut self, player: LivePlayer) -> Result<(), Fault> {
+        if let Some(identity) = self
+            .players
+            .identity(player.slot)
+            .filter(|identity| identity.pawn_handle == player.pawn_handle as u32)
+        {
+            self.cancel_grapple(identity, grapple::StopReason::Impulse);
+        }
+        let movement_requested = self.wall_hang_active() || self.grapple_mode_active();
+        let Some(effect) = self.effects.get_mut(&player.slot).filter(|effect| {
+            !effect.has_pending_loadout()
+                && effect.identity.pawn_handle == player.pawn_handle as u32
+                && Some(effect.identity) == self.players.identity(player.slot)
+                && self.controllers.get(&player.slot) == Some(&player.controller_handle)
+                && effect.round == self.controller.generation()
+        }) else {
+            return Ok(());
+        };
+        if effect.temporary_movement_owner().is_none() && !movement_requested {
+            return Ok(());
+        }
+        effect.interrupt_temporary_movement()
+    }
+
     fn send_welcomes(&mut self) {
         if !self.classic_enabled() {
             self.welcomes.clear();
@@ -2283,6 +1438,14 @@ impl Runtime {
 
     pub fn action_valid(&self, action: &EngineAction) -> bool {
         match action {
+            EngineAction::Composed(action) => self.composed_action_valid(action),
+            EngineAction::Shooting(action) => self.shooting_action_valid(action),
+            EngineAction::Proximity(action) => self.proximity_action_valid(*action),
+            EngineAction::HeGuidance(action) => self.he_guidance_action_valid(*action),
+            EngineAction::HeGuidanceFuseRestore(action) => self.he_guidance_fuse_restore_action_valid(*action),
+            EngineAction::Grapple(action) => self.grapple_action_valid(action),
+            EngineAction::Shockwave(action) => self.shockwave_action_valid(*action),
+            EngineAction::Teamkill(action) => self.teamkill_action_valid(*action),
             EngineAction::Rollback(task, player) => {
                 self.players.identity(player.slot) == Some(task.player)
                     && LivePlayer::resolve(player.slot) == Some(*player)
@@ -2315,89 +1478,8 @@ impl Runtime {
                     && LivePlayer::resolve(player.slot) == Some(*player)
                     && self.controllers.get(&player.slot) == Some(&player.controller_handle)
             }
-            EngineAction::GrantC4(task, player) => {
-                self.classic_round()
-                    && !self
-                        .effects
-                        .get(&player.slot)
-                        .is_some_and(|effect| effect.identity == task.player && effect.round == task.round && effect.has_pending_loadout())
-                    && self.players.validates(*task, self.controller.generation(), player.pawn_handle as u32)
-                    && LivePlayer::resolve(player.slot) == Some(*player)
-                    && self.controllers.get(&player.slot) == Some(&player.controller_handle)
-            }
-            EngineAction::RemoveC4(task, player, _) => {
-                self.classic_round()
-                    && self.players.validates(*task, self.controller.generation(), player.pawn_handle as u32)
-                    && LivePlayer::resolve(player.slot) == Some(*player)
-                    && self.controllers.get(&player.slot) == Some(&player.controller_handle)
-            }
-            EngineAction::Suicide(action) => match action {
-                crate::suicide::Action::Purchase { start, .. } => {
-                    self.c4_purchase_enabled(*start)
-                        && self
-                            .players
-                            .validates(action.task(), self.controller.generation(), action.player().pawn_handle as u32)
-                        && LivePlayer::resolve(action.player().slot) == Some(action.player())
-                }
-                crate::suicide::Action::Finish {
-                    after_round_end: true,
-                    task,
-                    player,
-                    ..
-                } => round_end_finish_valid(
-                    self.classic_enabled(),
-                    self.controller.phase(),
-                    *task,
-                    *player,
-                    self.players.identity(player.slot),
-                    LivePlayer::resolve(player.slot),
-                ),
-                _ => {
-                    self.suicide_enabled()
-                        && self
-                            .players
-                            .validates(action.task(), self.controller.generation(), action.player().pawn_handle as u32)
-                        && LivePlayer::resolve(action.player().slot) == Some(action.player())
-                }
-            },
-            EngineAction::DelayedDamage(hit) => {
-                self.classic_round()
-                    && active_combat_phase(self.controller.phase())
-                    && self.controller.current_mode().is_some_and(|mode| {
-                        mode.delayed_damage
-                            && delayed_damage_protection_valid(
-                                mode.spawn_protection || mode.kill_protection,
-                                hit.target,
-                                self.combat
-                                    .get(&hit.target.player.slot)
-                                    .map(|(task, life)| (*task, life.protected(s2sdk::GetGameTime()))),
-                            )
-                    })
-                    && hit.validates_players(
-                        self.controller.generation(),
-                        &self.players,
-                        LivePlayer::resolve(hit.target.player.slot),
-                        LivePlayer::resolve_present(hit.source.player.slot),
-                    )
-                    && hit.native_handles(s2sdk::IsValidEntHandle).is_some()
-            }
-            EngineAction::Reflection(hit) => {
-                self.classic_round()
-                    && self.controller.current_mode().is_some_and(|mode| mode.reflect_damage.is_some())
-                    && LivePlayer::resolve(hit.target.player.slot) == Some(hit.target_live)
-                    && LivePlayer::resolve_present(hit.source.player.slot) == Some(hit.source_live)
-                    && self
-                        .players
-                        .validates(hit.target, self.controller.generation(), hit.target_live.pawn_handle as u32)
-                    && self
-                        .players
-                        .validates_damage_source(hit.source, self.controller.generation(), hit.source_live.pawn_handle as u32)
-                    && self
-                        .combat
-                        .get(&hit.target.player.slot)
-                        .is_some_and(|(task, life)| *task == hit.target && !life.protected(s2sdk::GetGameTime()))
-                    && hit.native_handles(s2sdk::IsValidEntHandle).is_some()
-            }
+            EngineAction::Suicide(action) => self.suicide_action_current(action),
+            EngineAction::Combat(action) => self.combat_action_current(action),
             EngineAction::CenterDisplay { generation, .. } => {
                 center_display_action_valid(*generation == self.controller.generation(), self.controller.phase(), self.effects_ready)
             }
@@ -2423,62 +1505,13 @@ impl Runtime {
                     && self.controllers.get(&action.player.slot) == Some(&action.player.controller_handle)
                     && LivePlayer::resolve(action.player.slot) == Some(action.player)
                     && crate::touch::owns_rescue_zone(action.trigger)
-                    && s2sdk::GetClientTeam(action.player.slot) as i32 >= 2
-                    && s2sdk::GetClientTeam(action.player.slot) as i32 <= 3
+                    && matches!(s2sdk::GetClientTeam(action.player.slot) as i32, 2 | 3)
                     && crate::compat::hostage_rescue::eligible_hostage(action.trigger, action.player) == Some(action.hostage)
             }
             EngineAction::Bomb(action) => self.bombs.action_valid(*action, self.controller.generation(), &self.players),
-            EngineAction::ChickenSpawn { round, .. } => {
-                self.chicken_ready
-                    && self.ordinary_chickens_enabled()
-                    && self.controller.generation() == *round
-                    && matches!(self.controller.phase(), Phase::Preparing | Phase::Running | Phase::Warmup)
-            }
-            EngineAction::ChickenBlast { round, chicken, .. } => {
-                self.chicken_ready
-                    && self.ordinary_chickens_enabled()
-                    && self.controller.generation() == *round
-                    && matches!(self.controller.phase(), Phase::Preparing | Phase::Running | Phase::Warmup)
-                    && self.chicken_entities.owns(*chicken, *round)
-            }
-            EngineAction::ChickenRemove(_) => true,
-            EngineAction::SuicideFeedbackRemove(_) => true,
-            EngineAction::AfterburnIgnite { task, player } => self.afterburn_action_valid(*task, *player),
-            EngineAction::AfterburnRemove(_) => true,
-            EngineAction::ChickenPurchase { task, player, .. } => {
-                self.chicken_ready
-                    && self.ordinary_chickens_enabled()
-                    && self.classic_enabled()
-                    && active_combat_phase(self.controller.phase())
-                    && self.chicken_purchases.get(&task.player.slot) == Some(task)
-                    && self.players.validates(*task, self.controller.generation(), player.pawn_handle as u32)
-                    && LivePlayer::resolve(player.slot) == Some(*player)
-                    && self.controllers.get(&player.slot) == Some(&player.controller_handle)
-            }
-            EngineAction::ChickenEat { task, player, chicken, .. } => {
-                self.chicken_use_ready
-                    && self.chicken_ready
-                    && self.ordinary_chickens_enabled()
-                    && self.controller.enabled()
-                    && matches!(self.controller.phase(), Phase::Preparing | Phase::Running | Phase::Warmup)
-                    && self.controller.current_mode().is_some_and(|mode| {
-                        self.controller
-                            .config()
-                            .and_then(|config| config.chicken)
-                            .is_some_and(|config| config.eating.enabled_for_mode(mode.chicken_eating))
-                    })
-                    && self.players.validates(*task, self.controller.generation(), player.pawn_handle as u32)
-                    && LivePlayer::resolve(player.slot) == Some(*player)
-                    && self.controllers.get(&player.slot) == Some(&player.controller_handle)
-                    && self.chicken_entities.owns(*chicken, task.round)
-            }
-            EngineAction::HealthshotUse { task, player, .. } => {
-                self.healthshot_active()
-                    && self.players.validates(*task, self.controller.generation(), player.pawn_handle as u32)
-                    && LivePlayer::resolve(player.slot) == Some(*player)
-                    && self.controllers.get(&player.slot) == Some(&player.controller_handle)
-            }
-            EngineAction::HealthshotPurchase { task, player, .. } => self.healthshot_buyer_current(*task, *player) && !Self::owns_healthshot(*player),
+            EngineAction::Chicken(action) => self.chickens_action_current(action),
+            EngineAction::Afterburn(action) => self.afterburn_action_current(action),
+            EngineAction::Healthshot(action) => self.healthshot_action_current(action),
             EngineAction::Equipment(action) => {
                 self.refills.current(*action)
                     && match action {
@@ -2500,71 +1533,11 @@ impl Runtime {
                     }
             }
             EngineAction::ProjectileImpact(_) => true,
-            EngineAction::Respawn(task, player, team) => {
-                respawn_window_open(
-                    self.controller.phase(),
-                    self.team_match.as_ref().map(|game| game.remaining(s2sdk::GetGameTime())),
-                ) && self.players.validates_respawn(*task, self.controller.generation())
-                    && respawn_target_valid(
-                        *player,
-                        LivePlayer::resolve_present(player.slot),
-                        *team,
-                        s2sdk::GetClientTeam(player.slot) as i32,
-                        LivePlayer::resolve(player.slot).is_some(),
-                    )
-            }
-            EngineAction::RoundRespawn(task, player, team) => {
-                round_respawn_target_valid(
-                    self.controller.current_mode().is_some_and(|mode| mode.round_respawn == RoundRespawn::All),
-                    self.controller.phase(),
-                    *player,
-                    LivePlayer::resolve_present(task.player.slot),
-                    *team,
-                    s2sdk::GetClientTeam(task.player.slot) as i32,
-                ) && round_respawn_task_valid(&self.players, *task, self.controller.generation(), *player)
-                    && respawn_window_open(
-                        self.controller.phase(),
-                        self.team_match.as_ref().map(|game| game.remaining(s2sdk::GetGameTime())),
-                    )
-            }
-            EngineAction::LowHealthFinish(task, player, _) => {
-                self.controller.phase() != Phase::Idle
-                    && self.controller.current_mode().is_some_and(|mode| mode.self_damage_finish_enabled())
-                    && self.players.validates(*task, self.controller.generation(), player.pawn_handle as u32)
-                    && LivePlayer::resolve(player.slot) == Some(*player)
-                    && funrounds_core::low_health_finish(s2sdk::GetClientHealth(player.slot))
-            }
+            EngineAction::Respawn(action) => self.respawn_action_current(action),
             EngineAction::EndRound(round, _) => {
                 self.controller.phase() == Phase::Running && self.controller.generation() == *round && self.team_match.is_some()
             }
         }
-    }
-
-    pub fn defer_pending_loadout_c4_grant(&mut self, task: PlayerTask, player: LivePlayer) -> bool {
-        let pending = self.effects.get(&player.slot).is_some_and(|effect| {
-            effect.identity == task.player
-                && effect.round == task.round
-                && effect.has_pending_loadout()
-                && effect
-                    .pending_loadout_confirmation()
-                    .is_some_and(|pending| pending.team == s2sdk::GetClientTeam(player.slot) as i32)
-        });
-        if !pending
-            || !self.classic_round()
-            || !self.players.validates(task, self.controller.generation(), player.pawn_handle as u32)
-            || LivePlayer::resolve(player.slot) != Some(player)
-            || self.controllers.get(&player.slot) != Some(&player.controller_handle)
-        {
-            return false;
-        }
-        if !self
-            .engine_actions
-            .iter()
-            .any(|queued| matches!(queued, EngineAction::GrantC4(queued_task, queued_player) if *queued_task == task && *queued_player == player))
-        {
-            self.engine_actions.push(EngineAction::GrantC4(task, player));
-        }
-        true
     }
 
     pub fn cancel_bomb_action(&mut self, action: crate::bombs::Action) {
@@ -2618,6 +1591,23 @@ impl Runtime {
             self.handle_fault(error);
         }
         self.restore_completed_native_bomb_scales();
+        if let Some((bomb, chicken)) = self.bombs.take_chicken_model_scale_candidate()
+            && self.controller.enabled()
+            && let Err(error) = self.public_properties.scale_chicken_bomb(bomb, chicken, &mut self.rng)
+        {
+            self.handle_fault(error);
+        }
+    }
+
+    pub(crate) fn prepare_bomb_action_scales(&mut self, action: crate::bombs::Action) -> Result<(), Fault> {
+        if let Some(chicken) = action.cleanup_chicken() {
+            // Restore the parent while the C4 is still attached. Detaching preserves
+            // world scale, so restoring afterwards would leave a scaled C4 behind.
+            if !self.public_properties.restore_model_scale(chicken) {
+                return Err(Fault::global("chicken/C4 group scale restoration pending before detach"));
+            }
+        }
+        Ok(())
     }
 
     pub fn prepare_carrier_disconnect(&mut self, slot: i32) -> Option<crate::bombs::Action> {
@@ -2654,6 +1644,9 @@ impl Runtime {
             self.prestarted_round = None;
             return;
         }
+        self.on_region_map_ready();
+        self.refresh_wall_hang_capability();
+        self.refresh_grapple_capability();
         let key = self.controller.round_key(tick as u64);
         let ready_for_prestart_selection = self.effects_ready
             || (self.faults.recovery == Recovery::Ready
@@ -2680,279 +1673,9 @@ impl Runtime {
         self.bombs.take_explosion(self.controller.generation())
     }
 
-    fn update_duck_speed(&mut self) {
-        if !self.controller.enabled() {
-            return;
-        }
-        let players = (0..s2sdk::GetMaxClients())
-            .filter_map(|slot| {
-                let player = LivePlayer::resolve_present(slot)?;
-                duck_speed_update_candidate(player, LivePlayer::resolve(slot), s2sdk::GetClientTeam(slot) as i32).map(|speed| (player, speed))
-            })
-            .collect::<Vec<_>>();
-        let current_handles = players
-            .iter()
-            .map(|(player, _)| player.pawn_handle)
-            .collect::<std::collections::HashSet<_>>();
-        for (player, current) in players {
-            if let Some(value) = update_owned_minimum(&mut self.duck_speed, player.pawn_handle, current, 8.0)
-                && !set_duck_speed_for_handle(player.pawn_handle, value)
-            {
-                log(&format!("failed to set crouch speed for pawn {}", player.pawn_handle));
-            }
-        }
-        let stale = self
-            .duck_speed
-            .keys()
-            .copied()
-            .filter(|handle| !current_handles.contains(handle))
-            .collect::<Vec<_>>();
-        for handle in stale {
-            let Some(owner) = self.duck_speed.get(&handle).copied() else { continue };
-            if release_duck_speed(handle, owner) {
-                self.duck_speed.remove(&handle);
-            }
-        }
-    }
-
-    fn restore_duck_speed(&mut self) {
-        let entries = self.duck_speed.iter().map(|(handle, owner)| (*handle, *owner)).collect::<Vec<_>>();
-        for (handle, owner) in entries {
-            if release_duck_speed(handle, owner) {
-                self.duck_speed.remove(&handle);
-            }
-        }
-    }
-
-    fn weapon_inventory_player_is_current(&self, player: LivePlayer) -> bool {
-        let live_identity_matches = self
-            .players
-            .identity(player.slot)
-            .is_some_and(|identity| identity.pawn_handle == player.pawn_handle as u32)
-            || self.weapon_inventory.get(&player.slot).is_some_and(|previous| {
-                previous.player == player
-                    && self.players.validates_damage_source(
-                        PlayerTask {
-                            round: self.controller.generation(),
-                            player: previous.identity,
-                        },
-                        self.controller.generation(),
-                        player.pawn_handle as u32,
-                    )
-            });
-        live_identity_matches
-            && LivePlayer::resolve_present(player.slot) == Some(player)
-            && player.pawn_controller() == Some(player.controller_handle)
-    }
-
-    fn weapon_services_for_inventory(&self, player: LivePlayer) -> Option<usize> {
-        if !self.weapon_inventory_player_is_current(player) {
-            return None;
-        }
-        let class = Str::from_str("CBasePlayerPawn");
-        let field = Str::from_str("m_pWeaponServices");
-        if s2sdk::GetSchemaOffset(&class, &field) < 0 {
-            return None;
-        }
-        let pawn = s2sdk::EntHandleToEntPointer(player.pawn_handle);
-        if pawn == 0 || s2sdk::EntPointerToEntHandle(pawn) != player.pawn_handle {
-            return None;
-        }
-        let services = s2sdk::GetEntSchema2(pawn, &class, &field, 0) as usize;
-        (services != 0 && self.weapon_inventory_player_is_current(player)).then_some(services)
-    }
-
-    fn read_client_weapon_inventory(&self, player: LivePlayer) -> Option<Vec<i32>> {
-        let services = self.weapon_services_for_inventory(player)?;
-        let weapons = s2sdk::GetClientWeapons(player.slot).iter().copied().collect();
-        (self.weapon_services_for_inventory(player) == Some(services)).then_some(weapons)
-    }
-
-    fn refresh_weapon_inventory(&mut self) {
-        let mut inventories = HashMap::new();
-        for slot in 0..s2sdk::GetMaxClients() {
-            let Some(player) = LivePlayer::resolve_present(slot) else { continue };
-            if !self.weapon_inventory_player_is_current(player) {
-                continue;
-            }
-            let Some(weapons) = self.read_client_weapon_inventory(player) else {
-                // A live pawn without readable weapon services has no inventory
-                // observation. Keep only its matching previous snapshot so an
-                // unready tick cannot be mistaken for a genuine empty inventory.
-                if let Some(previous) = self.weapon_inventory.get(&slot).filter(|previous| previous.player == player).cloned() {
-                    inventories.insert(slot, previous);
-                }
-                continue;
-            };
-            let weapons = weapons
-                .iter()
-                .filter(|handle| s2sdk::IsValidEntHandle(**handle) && s2sdk::GetEntityOwner(**handle) == player.pawn_handle)
-                .copied()
-                .map(|handle| (handle, s2sdk::GetEntityClassname(handle).to_string()))
-                .collect();
-            let identity = self
-                .players
-                .identity(player.slot)
-                .or_else(|| self.weapon_inventory.get(&player.slot).map(|previous| previous.identity));
-            let Some(identity) = identity else { continue };
-            inventories.insert(player.slot, WeaponInventory { player, identity, weapons });
-        }
-        // CS2 has no weapon_drop game event. Reconcile complete handles against the
-        // preceding inventory and the engine owner, so deletion/consumption/transfer
-        // is never mistaken for a world drop.
-        let mut dropped = Vec::new();
-        if self.controller.enabled() && Self::model_scale_imports_available() {
-            for (slot, previous) in &self.weapon_inventory {
-                let Some(current) = inventories.get_mut(slot).filter(|current| current.player == previous.player) else {
-                    continue;
-                };
-                for (handle, classname) in &previous.weapons {
-                    if current.weapons.contains_key(handle)
-                        || !s2sdk::IsValidEntHandle(*handle)
-                        || s2sdk::GetEntityClassname(*handle).as_str() != classname
-                    {
-                        continue;
-                    }
-                    match s2sdk::GetEntityOwner(*handle) {
-                        -1 => dropped.push(*handle),
-                        owner if owner == previous.player.pawn_handle => {
-                            // Inventory removal can precede ownership release during a callback.
-                            current.weapons.insert(*handle, classname.clone());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        self.weapon_inventory = inventories;
-        self.model_scales.retain(|handle, _| s2sdk::IsValidEntHandle(*handle));
-        self.model_scale_restore_pending.retain(|handle| self.model_scales.contains_key(handle));
-        for handle in dropped {
-            self.randomize_model_scale(handle);
-        }
-    }
-
-    fn randomize_model_scale(&mut self, handle: i32) {
-        if self.model_scales.contains_key(&handle) {
-            return;
-        }
-        let Some(previous) = Self::entity_model_scale(handle) else { return };
-        let installed = self.random_model_scale();
-        if Self::set_entity_model_scale(handle, installed) {
-            self.model_scales.insert(handle, OwnedFloat { previous, installed });
-        }
-    }
-
-    fn entity_model_scale(handle: i32) -> Option<f32> {
-        if !Self::model_scale_imports_available() || !s2sdk::IsValidEntHandle(handle) {
-            return None;
-        }
-        let pointer = s2sdk::EntHandleToEntPointer(handle);
-        if pointer == 0 || s2sdk::EntPointerToEntHandle(pointer) != handle {
-            return None;
-        }
-        let scale = s2sdk::GetEntityModelScale(handle);
-        scale.is_finite().then_some(scale)
-    }
-
-    fn set_entity_model_scale(handle: i32, value: f32) -> bool {
-        if !Self::model_scale_imports_available() || !s2sdk::IsValidEntHandle(handle) || !value.is_finite() {
-            return false;
-        }
-        let pointer = s2sdk::EntHandleToEntPointer(handle);
-        if pointer == 0 || s2sdk::EntPointerToEntHandle(pointer) != handle {
-            return false;
-        }
-        s2sdk::SetEntityModelScale(handle, value);
-        Self::entity_model_scale(handle).is_some_and(|actual| (actual - value).abs() <= 0.0001)
-    }
-
-    fn model_scale_imports_available() -> bool {
-        let mut probe = crate::capability::Probe::default();
-        crate::capability::imports!(probe; __s2sdk_GetEntityModelScale, __s2sdk_SetEntityModelScale);
-        probe.available()
-    }
-
-    fn random_model_scale(&mut self) -> f32 {
-        match self.rng.random_range(1..=5) {
-            5 => self.rng.random_range(3.0..=15.0),
-            4 => self.rng.random_range(0.5..=0.75),
-            _ => self.rng.random_range(0.75..=3.0),
-        }
-    }
-
-    fn item_pickup(&mut self, slot: i32, event: usize) {
-        let Some(player) = LivePlayer::resolve_present(slot) else { return };
-        let Some(weapons) = self.read_client_weapon_inventory(player) else {
-            return;
-        };
-        let item = s2sdk::GetEventString(event, &Str::from_str("item")).to_string();
-        for handle in weapons {
-            if !self.model_scales.contains_key(&handle) {
-                continue;
-            }
-            if !s2sdk::IsValidEntHandle(handle)
-                || s2sdk::GetEntityOwner(handle) != player.pawn_handle
-                || !matches_weapon_item(s2sdk::GetEntityClassname(handle).as_str(), &item)
-            {
-                continue;
-            }
-            self.restore_model_scale(handle);
-        }
-    }
-
-    fn restore_picked_up_weapon_scales(&mut self) {
-        let picked_up = self
-            .model_scales
-            .keys()
-            .filter_map(|handle| {
-                let player_owns_it = self
-                    .weapon_inventory
-                    .values()
-                    .any(|inventory| inventory.weapons.contains_key(handle) && s2sdk::GetEntityOwner(*handle) == inventory.player.pawn_handle);
-                player_owns_it.then_some(*handle)
-            })
-            .collect::<Vec<_>>();
-        for handle in picked_up {
-            self.restore_model_scale(handle);
-        }
-    }
-
-    fn restore_model_scale(&mut self, handle: i32) {
-        let Some(owner) = self.model_scales.get(&handle).copied() else {
-            self.model_scale_restore_pending.remove(&handle);
-            return;
-        };
-        if release_model_scale(handle, owner) {
-            self.model_scales.remove(&handle);
-            self.model_scale_restore_pending.remove(&handle);
-        } else {
-            self.model_scale_restore_pending.insert(handle);
-        }
-    }
-
-    fn restore_model_scales(&mut self) {
-        let entries = self.model_scales.iter().map(|(handle, owner)| (*handle, *owner)).collect::<Vec<_>>();
-        for (handle, owner) in entries {
-            if release_model_scale(handle, owner) {
-                self.model_scales.remove(&handle);
-                self.model_scale_restore_pending.remove(&handle);
-            } else {
-                self.model_scale_restore_pending.insert(handle);
-            }
-        }
-    }
-
-    fn retry_model_scale_restores(&mut self) {
-        let handles = self.model_scale_restore_pending.iter().copied().collect::<Vec<_>>();
-        for handle in handles {
-            self.restore_model_scale(handle);
-        }
-    }
-
     fn restore_completed_native_bomb_scales(&mut self) {
         for handle in self.bombs.take_native_model_scale_restores() {
-            self.restore_model_scale(handle);
+            self.public_properties.restore_model_scale(handle);
         }
     }
 
@@ -2981,336 +1704,8 @@ impl Runtime {
         self.bombs.blocks_native_explosion(inflictor)
     }
 
-    pub fn take_chicken_cleanup(&mut self) -> Vec<i32> {
-        std::mem::take(&mut self.chicken_cleanup)
-    }
-
-    pub fn finish_chicken_purchase(&mut self, task: PlayerTask) {
-        if self.chicken_purchases.get(&task.player.slot) == Some(&task) {
-            self.chicken_purchases.remove(&task.player.slot);
-        }
-    }
-
-    fn cancel_chicken_purchase(&mut self, slot: i32) {
-        clear_chicken_purchase_state(slot, &mut self.chicken_purchases, &mut self.engine_actions);
-    }
-
-    pub(crate) fn chicken_risk_finish_current(&self, task: PlayerTask, player: LivePlayer) -> bool {
-        // round_end advances the round generation and removes the chicken. The
-        // synchronous risk-blast continuation retains only this exact live eater.
-        self.classic_enabled()
-            && self.players.identity(player.slot) == Some(task.player)
-            && self.controllers.get(&player.slot) == Some(&player.controller_handle)
-            && LivePlayer::resolve(player.slot) == Some(player)
-    }
-
-    pub fn chicken_buyer_identity_current(&self, task: PlayerTask, player: LivePlayer) -> bool {
-        self.on_game_thread()
-            && self.players.validates_connection(task.player)
-            && self.controllers.get(&player.slot) == Some(&player.controller_handle)
-            && LivePlayer::resolve_present(player.slot) == Some(player)
-    }
-
-    fn ordinary_chickens_enabled(&self) -> bool {
-        self.controller.config().is_some_and(|config| config.chicken.is_some())
-            && self.controller.current_mode().is_some_and(|mode| mode.ordinary_chickens)
-    }
-
-    fn cleanup_ordinary_chickens(&mut self) {
-        self.chickens.clear_eating();
-        self.chicken_use_buttons.clear();
-        self.chicken_purchases.clear();
-        self.pending_chicken_blast_kills.clear();
-        self.engine_actions.retain(|action| {
-            !matches!(
-                action,
-                EngineAction::ChickenSpawn { .. }
-                    | EngineAction::ChickenBlast { .. }
-                    | EngineAction::ChickenPurchase { .. }
-                    | EngineAction::ChickenEat { .. }
-            )
-        });
-        let chickens = self.chicken_entities.clear();
-        for handle in &chickens {
-            self.restore_model_scale(*handle);
-        }
-        self.chicken_cleanup.extend(chickens);
-        self.chicken_spawn_round = None;
-        crate::CHICKEN_DAMAGE_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
-    }
-
-    fn clear_chicken_round_work(&mut self) {
-        self.chickens.clear_eating();
-        self.chicken_use_buttons.clear();
-        self.chicken_purchases.clear();
-        self.pending_chicken_blast_kills.clear();
-        self.engine_actions.retain(|action| {
-            !matches!(
-                action,
-                EngineAction::ChickenSpawn { .. }
-                    | EngineAction::ChickenBlast { .. }
-                    | EngineAction::ChickenPurchase { .. }
-                    | EngineAction::ChickenEat { .. }
-            )
-        });
-        self.chicken_spawn_round = None;
-    }
-
-    fn advance_chicken_round(&mut self, round: RoundGeneration) {
-        self.advance_chicken_round_if_alive(round, |handle| {
-            if !s2sdk::IsValidEntHandle(handle) || s2sdk::GetEntityClassname(handle).as_str() != "chicken" {
-                return false;
-            }
-            crate::chicken_entities::health(handle).is_some_and(|(health, life_state)| health > 0 && life_state == 0)
-        });
-    }
-
-    fn advance_chicken_round_if_alive(&mut self, round: RoundGeneration, alive: impl FnMut(i32) -> bool) {
-        self.pending_chicken_blast_kills.retain(|_, pending| pending.round == round);
-        let stale = self.chicken_entities.advance_round(round, alive);
-        for handle in stale {
-            self.restore_model_scale(handle);
-            self.chicken_cleanup.push(handle);
-        }
-        crate::CHICKEN_DAMAGE_ACTIVE.store(!self.chicken_entities.is_empty(), std::sync::atomic::Ordering::Release);
-    }
-
-    pub fn track_chicken(&mut self, round: RoundGeneration, handle: i32) -> bool {
-        if !self.chicken_ready
-            || !self.ordinary_chickens_enabled()
-            || self.controller.generation() != round
-            || !matches!(self.controller.phase(), Phase::Preparing | Phase::Running | Phase::Warmup)
-            || !self.chicken_entities.track(handle, round)
-        {
-            return false;
-        }
-        self.randomize_model_scale(handle);
-        crate::CHICKEN_DAMAGE_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
-        true
-    }
-
-    pub fn track_chicken_explosion(&mut self, round: RoundGeneration, handle: i32, source: i32) -> bool {
-        self.ordinary_chickens_enabled()
-            && self.controller.generation() == round
-            && matches!(self.controller.phase(), Phase::Preparing | Phase::Running | Phase::Warmup)
-            && self.chicken_entities.track_explosion(handle, round, source)
-    }
-
-    pub fn finish_chicken_explosion(&mut self, round: RoundGeneration, handle: i32) {
-        self.chicken_entities.remove_explosion(handle, round);
-    }
-
-    pub fn chicken_blast_damage(&self, damage: &crate::damage::Damage) -> bool {
-        let round = self.controller.generation();
-        [damage.inflictor, damage.attacker]
-            .into_iter()
-            .any(|handle| self.chicken_entities.is_chicken_explosion(handle, round))
-    }
-
-    pub(crate) fn observe_chicken_blast_player_damage(&mut self, damage: &crate::damage::Damage, players: &game::DamagePlayers) {
-        let Some(victim) = players.victim else { return };
-        let Some(victim_identity) = self
-            .players
-            .identity(victim.slot)
-            .filter(|identity| identity.pawn_handle == victim.pawn_handle as u32)
-        else {
-            self.pending_chicken_blast_kills.remove(&victim.slot);
-            return;
-        };
-        let round = self.controller.generation();
-        if !self.classic_round()
-            || !active_combat_phase(self.controller.phase())
-            || !self.controller.current_mode().is_some_and(|mode| mode.kill_loadout)
-            || !self.chicken_blast_damage(damage)
-        {
-            self.pending_chicken_blast_kills.remove(&victim.slot);
-            return;
-        }
-        let Some(source) = self
-            .chicken_entities
-            .blast_kill_weapon_source(&[damage.inflictor, damage.attacker, damage.weapon], round)
-        else {
-            self.pending_chicken_blast_kills.remove(&victim.slot);
-            return;
-        };
-        if !chicken_weapon_source_is_current(&source, &self.players, &self.controllers) {
-            self.pending_chicken_blast_kills.remove(&victim.slot);
-            return;
-        }
-        self.pending_chicken_blast_kills.insert(
-            victim.slot,
-            PendingChickenBlastKill {
-                round,
-                victim: victim_identity,
-                tick: s2sdk::GetGameTickCount(),
-                damage_frame_token: crate::damage::current_damage_frame_token().filter(|token| *token != 0),
-                source,
-            },
-        );
-    }
-
-    fn take_chicken_blast_kill_weapon(&mut self, victim_slot: i32, attacker_slot: i32) -> Option<crate::chicken_entities::KillWeaponSource> {
-        let pending = self.pending_chicken_blast_kills.remove(&victim_slot)?;
-        let victim = self.players.identity(victim_slot)?;
-        let attacker = self.players.identity(attacker_slot)?;
-        let frame = crate::damage::current_damage_frame_token().filter(|token| *token != 0);
-        if pending.matches(self.controller.generation(), victim, attacker, s2sdk::GetGameTickCount(), frame)
-            && attacker_slot == pending.source.attacker.slot
-            && chicken_weapon_source_is_current(&pending.source, &self.players, &self.controllers)
-        {
-            Some(pending.source)
-        } else {
-            None
-        }
-    }
-
-    fn clear_pending_chicken_blast_for_life(&mut self, identity: PlayerIdentity) {
-        self.pending_chicken_blast_kills
-            .retain(|slot, pending| *slot != identity.slot && pending.victim != identity && pending.source.attacker != identity);
-    }
-
-    fn clear_pending_chicken_blast_for_slot(&mut self, slot: i32) {
-        self.pending_chicken_blast_kills
-            .retain(|victim, pending| *victim != slot && pending.source.attacker.slot != slot);
-    }
-
-    pub fn chicken_damage_blocked(&mut self, damage: crate::chicken_entities::EntityDamageSource) -> bool {
-        let round = self.controller.generation();
-        let Some(config) = self.controller.config().and_then(|config| config.chicken) else {
-            return false;
-        };
-        let blocked = self.chicken_entities.damage_blocked(damage, round, config.damage_chain);
-        if !blocked {
-            let players = &self.players;
-            let controllers = &self.controllers;
-            self.chicken_entities
-                .record_lethal_attacker(damage, round, || capture_chicken_damage_weapon_source(damage, players, controllers));
-        }
-        blocked
-    }
-
-    fn queue_chicken_population(&mut self) {
-        if !self.chicken_ready || !self.classic_enabled() || !matches!(self.controller.phase(), Phase::Preparing | Phase::Running | Phase::Warmup) {
-            return;
-        }
-        if !self.ordinary_chickens_enabled() {
-            self.cleanup_ordinary_chickens();
-            return;
-        }
-        if self.chicken_spawn_round == Some(self.controller.generation()) {
-            return;
-        }
-        let Some(config) = self.controller.config().and_then(|config| config.chicken) else {
-            return;
-        };
-        let mut effective_players = 0_u32;
-        let mut positions = Vec::new();
-        for slot in 0..s2sdk::GetMaxClients() {
-            if !s2sdk::IsClientInGame(slot) || !matches!(s2sdk::GetClientTeam(slot) as i32, 2 | 3) {
-                continue;
-            }
-            effective_players = effective_players.saturating_add(1);
-            if let Some(player) = LivePlayer::resolve(slot) {
-                let origin = s2sdk::GetEntityAbsOrigin(player.pawn_handle);
-                if origin.x.is_finite() && origin.y.is_finite() && origin.z.is_finite() {
-                    positions.push(origin);
-                }
-            }
-        }
-        if positions.is_empty() {
-            return;
-        }
-        let round = self.controller.generation();
-        let count = config.spawn.target_count(effective_players);
-        let owned = self.chicken_entities.owned_handles(round);
-        let maximum = config.spawn.maximum_population(count);
-        if owned.len() as u64 > u64::from(maximum) {
-            let excess = (owned.len() as u64 - u64::from(maximum)) as usize;
-            for handle in owned.into_iter().take(excess) {
-                if self.chicken_entities.remove_chicken(handle, round) {
-                    self.restore_model_scale(handle);
-                    self.chicken_cleanup.push(handle);
-                }
-            }
-            self.chicken_spawn_round = Some(round);
-            crate::CHICKEN_DAMAGE_ACTIVE.store(!self.chicken_entities.is_empty(), std::sync::atomic::Ordering::Release);
-            log(&format!("chicken population trim round={round:?} maximum={maximum} removed={excess}"));
-            return;
-        }
-        let refill_threshold = config.spawn.refill_threshold(count);
-        if owned.len() >= refill_threshold as usize {
-            self.chicken_spawn_round = Some(round);
-            return;
-        }
-        for index in 0..count {
-            let player_origin = positions[index as usize % positions.len()];
-            let turn = index as f32 * 2.399_963_1;
-            let ring = (index as usize / positions.len()) as f32;
-            let distance = 64.0 + ring * 24.0;
-            self.engine_actions.push(EngineAction::ChickenSpawn {
-                round,
-                origin: plugify::Vec3 {
-                    x: player_origin.x + turn.cos() * distance,
-                    y: player_origin.y + turn.sin() * distance,
-                    z: player_origin.z + 4.0,
-                },
-            });
-        }
-        self.chicken_spawn_round = Some(round);
-        log(&format!(
-            "chicken spawn plan round={round:?} count={count} effective_players={effective_players}"
-        ));
-    }
-
-    fn poll_chickens(&mut self) -> Vec<EngineAction> {
-        if !self.chicken_ready || !matches!(self.controller.phase(), Phase::Preparing | Phase::Running | Phase::Warmup) {
-            return Vec::new();
-        }
-        if !self.ordinary_chickens_enabled() {
-            self.cleanup_ordinary_chickens();
-            return Vec::new();
-        }
-        let round = self.controller.generation();
-        let Some(config) = self.controller.config().and_then(|config| config.chicken) else {
-            return Vec::new();
-        };
-        let mut actions = Vec::new();
-        for handle in self.chicken_entities.owned_handles(round) {
-            let Some((health, life_state)) = crate::chicken_entities::health(handle) else {
-                // Removal without a readable dead state is not a kill and must not blast.
-                self.chicken_entities.remove_chicken(handle, round);
-                self.restore_model_scale(handle);
-                continue;
-            };
-            let attacker = self.chicken_entities.killer(handle, round);
-            if (health <= 0 || life_state == 2)
-                && let Some(origin) = crate::chicken_entities::position(handle)
-                && self.chicken_entities.mark_dead(handle, round)
-                && let Some(config) = self.chicken_entities.take_blast_config(handle, round, config.kill_blast)
-            {
-                actions.push(EngineAction::ChickenBlast {
-                    round,
-                    chicken: handle,
-                    attacker,
-                    origin,
-                    config,
-                });
-            }
-        }
-        if self.chicken_entities.is_empty() {
-            crate::CHICKEN_DAMAGE_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
-        }
-        actions
-    }
-
-    pub fn update(&mut self) -> Vec<EngineAction> {
-        if let Err(error) = self.sync_healthshot_override() {
-            self.healthshot_faulted = true;
-            let message = error.to_string();
-            self.faults.exclude(Mechanism::Healthshot, message.clone());
-            self.controller.set_capabilities(self.faults.capabilities());
-            log(&format!("healthshot capability disabled: {message}"));
-        }
+    pub(crate) fn update_with_spawned_entities(&mut self, spawned_entities: Vec<proximity::SpawnObservation>) -> Vec<EngineAction> {
+        self.update_healthshot();
         if let Some(failures) = self.preferences.as_mut().map(crate::preferences::Preferences::check_worker) {
             for (account_id, error) in failures {
                 log(&format!(
@@ -3334,50 +1729,46 @@ impl Runtime {
             self.handle_fault(error);
         }
         self.apply_pending_takeovers(tick);
+        let air_strafe = tick >= 0 && self.air_strafe_active();
+        if let Err(error) = self.air_strafe.apply(air_strafe) {
+            self.handle_fault(error);
+        }
         self.release_chicken_use_buttons();
-        self.native_self_damage_shots.retain(|slot, shot| {
-            shot.tick == tick && self.players.identity(*slot) == Some(shot.task.player) && LivePlayer::resolve(*slot) == Some(shot.player)
-        });
-        let frame = crate::damage::current_damage_frame_token().filter(|token| *token != 0);
-        self.random_heals.retain(|receipt| Some(receipt.frame_token) == frame);
-        let round = self.controller.generation();
-        let players = &self.players;
-        self.pending_chicken_blast_kills.retain(|slot, pending| {
-            pending.tick == tick
-                && pending.round == round
-                && players.identity(*slot) == Some(pending.victim)
-                && players.identity(pending.source.attacker.slot) == Some(pending.source.attacker)
-        });
+        self.combat.expire_combat_receipts(tick, &self.players);
+        self.ordinary_chickens
+            .expire_chicken_blast_kills(tick, self.controller.generation(), &self.players);
         self.recover_incomplete_effects();
         let warmup = game::warmup();
         self.sync_warmup(warmup, tick, None);
-        self.update_duck_speed();
-        self.refresh_weapon_inventory();
-        self.restore_picked_up_weapon_scales();
-        self.retry_model_scale_restores();
+        self.arm_death_explosives();
+        self.public_properties
+            .update(self.controller.enabled(), &self.players, self.controller.generation(), &mut self.rng);
         if self.warmup_active && self.controller.phase() == Phase::Warmup && !self.warmup_activation_pending && self.effects_ready && tick >= 0 {
             self.reconcile_warmup_players(tick);
         }
         let now = s2sdk::GetGameTime();
+        self.update_proximity_with_spawned_entities(tick, &spawned_entities);
+        self.update_teamkills();
+        self.settle_shooting(tick);
+        self.update_composed(f64::from(now), tick);
         self.update_afterburns(f64::from(now));
         let center_display = self.send_pending_center(tick);
         let mut actions = self
             .take_afterburn_cleanup()
             .into_iter()
-            .map(EngineAction::AfterburnRemove)
+            .map(|handle| EngineAction::Afterburn(afterburn::Action::Remove(handle)))
             .collect::<Vec<_>>();
+        self.suicides.feedback.expire(now);
         actions.extend(
-            self.suicide_feedback
-                .take_expired(now)
+            self.take_suicide_feedback_cleanup()
                 .into_iter()
-                .map(EngineAction::SuicideFeedbackRemove),
+                .map(|handle| EngineAction::Suicide(suicide::Action::RemoveFeedback(handle))),
         );
         actions.extend(
-            std::mem::take(&mut self.suicide_feedback_cleanup)
+            self.take_chicken_cleanup()
                 .into_iter()
-                .map(EngineAction::SuicideFeedbackRemove),
+                .map(|handle| EngineAction::Chicken(chickens::Action::Remove(handle))),
         );
-        actions.extend(self.take_chicken_cleanup().into_iter().map(EngineAction::ChickenRemove));
         actions.extend(std::mem::take(&mut self.engine_actions));
         actions.extend(self.poll_chickens());
         self.queue_chicken_population();
@@ -3393,6 +1784,9 @@ impl Runtime {
         self.refresh_classic(None);
         self.refresh_view();
         self.refresh_periodic_movement();
+        self.refresh_movement();
+        self.observe_grapple_buttons(tick);
+        actions.extend(std::mem::take(&mut self.engine_actions));
         self.update_money_income();
         self.send_welcomes();
         let bomb_settings = self.controller.current_mode().and_then(|mode| mode.bomb.as_ref());
@@ -3409,7 +1803,7 @@ impl Runtime {
             && bomb_update.is_ok()
             && self.controller.enabled()
         {
-            self.randomize_model_scale(handle);
+            self.public_properties.randomize_model_scale(handle, &mut self.rng);
         }
         if let Err(error) = bomb_update {
             self.handle_fault(error);
@@ -3418,21 +1812,9 @@ impl Runtime {
         actions.extend(self.take_equipment_cleanup().into_iter().map(EngineAction::Equipment));
         actions.extend(std::mem::take(&mut self.impacts).into_iter().map(EngineAction::ProjectileImpact));
         actions.extend(self.bombs.take_actions().into_iter().map(EngineAction::Bomb));
-        for hit in std::mem::take(&mut self.reflections) {
-            if tick > hit.tick {
-                actions.push(EngineAction::Reflection(hit));
-            } else {
-                self.reflections.push(hit);
-            }
-        }
+        self.combat.collect_reflections(tick, &mut actions);
         self.update_chicken_digestion(f64::from(now));
-        for hit in std::mem::take(&mut self.delayed_damage) {
-            if hit.is_due(now) {
-                actions.push(EngineAction::DelayedDamage(hit));
-            } else {
-                self.delayed_damage.push(hit);
-            }
-        }
+        self.combat.collect_delayed_damage(now, &mut actions);
         if active_combat_phase(self.controller.phase()) {
             if self.controller.current_mode().is_some_and(|mode| mode.dodgeball) {
                 let touches = self.projectiles.discover_decoys(now, self.controller.generation(), &self.players);
@@ -3464,65 +1846,10 @@ impl Runtime {
                 "team.finished",
                 &[("t", &result.scores[0].to_string()), ("ct", &result.scores[1].to_string())],
             );
-            self.respawns.clear();
-            self.round_respawns.clear();
+            self.respawning.clear_respawns();
             actions.push(EngineAction::EndRound(self.controller.generation(), reason));
         }
-        for (task, player, team, due) in std::mem::take(&mut self.respawns) {
-            if !self.players.validates_respawn(task, self.controller.generation())
-                || !respawn_window_open(self.controller.phase(), self.team_match.as_ref().map(|game| game.remaining(now)))
-                || !respawn_target_valid(
-                    player,
-                    LivePlayer::resolve_present(task.player.slot),
-                    team,
-                    s2sdk::GetClientTeam(task.player.slot) as i32,
-                    LivePlayer::resolve(task.player.slot).is_some(),
-                )
-            {
-                continue;
-            }
-            if now < due {
-                self.respawns.push((task, player, team, due));
-            } else {
-                log(&format!("respawn slot={} team={team}", task.player.slot));
-                actions.push(EngineAction::Respawn(task, player, team));
-            }
-        }
-        for (task, player, team, due) in std::mem::take(&mut self.round_respawns) {
-            let all_respawn = self.controller.current_mode().is_some_and(|mode| mode.round_respawn == RoundRespawn::All);
-            if !round_respawn_task_valid(&self.players, task, self.controller.generation(), player)
-                || !respawn_window_open(self.controller.phase(), self.team_match.as_ref().map(|game| game.remaining(now)))
-                || !round_respawn_target_valid(
-                    all_respawn,
-                    self.controller.phase(),
-                    player,
-                    LivePlayer::resolve_present(task.player.slot),
-                    team,
-                    s2sdk::GetClientTeam(task.player.slot) as i32,
-                )
-            {
-                continue;
-            }
-            if now < due {
-                self.round_respawns.push((task, player, team, due));
-            } else {
-                log(&format!("round respawn slot={} team={team}", task.player.slot));
-                actions.push(EngineAction::RoundRespawn(task, player, team));
-            }
-        }
-        for task in std::mem::take(&mut self.low_health_finishes) {
-            if let Some(player) = LivePlayer::resolve(task.player.slot)
-                && self.players.validates(task, self.controller.generation(), player.pawn_handle as u32)
-                && self.controller.current_mode().is_some_and(|mode| mode.self_damage_finish_enabled())
-                && funrounds_core::low_health_finish(s2sdk::GetClientHealth(player.slot))
-            {
-                actions.push(EngineAction::LowHealthFinish(
-                    task,
-                    player,
-                    self.controller.current_mode().is_some_and(|mode| mode.native_self_damage_enabled()),
-                ));
-            }
-        }
+        self.collect_respawn_actions(now, &mut actions);
         actions
     }
 
@@ -3573,14 +1900,17 @@ impl Runtime {
 
     fn start_periodic_movement(&mut self) {
         self.periodic_movement = None;
-        if !self
+        let Some((speed, gravity)) = self
             .controller
             .current_mode()
-            .is_some_and(|mode| mode.periodic_speed || mode.periodic_gravity)
-        {
+            .map(|mode| (mode.periodic_speed.clone(), mode.periodic_gravity.clone()))
+        else {
+            return;
+        };
+        if speed.is_none() && gravity.is_none() {
             return;
         }
-        match funrounds_core::PeriodicMovement::start(s2sdk::GetGameTime()) {
+        match funrounds_core::PeriodicMovement::start(s2sdk::GetGameTime(), speed, gravity) {
             Ok(movement) => self.periodic_movement = Some((self.controller.generation(), movement)),
             Err(error) => self.handle_fault(Fault::mechanism(Mechanism::PeriodicMovement, error)),
         }
@@ -3614,26 +1944,23 @@ impl Runtime {
                 self.record_fault(Fault::global(error));
             }
             discard_map_effects(&mut self.effects, &mut self.retired_effects);
-            self.model_scales.clear();
-            self.model_scale_restore_pending.clear();
-            self.chicken_entities.discard_map_state();
-            self.chicken_cleanup.clear();
+            self.public_properties.discard_map_state();
+            self.ordinary_chickens.discard_map_state();
             self.bombs.discard_map_state();
             self.projectiles.discard_map_state();
+            self.clear_regions_map();
             self.afterburns.discard_map_state();
+            self.composed = composed::State::default();
             self.night_vision.discard_map_state();
             self.ghost.discard_map_state();
-            self.suicide_feedback.discard_map_state();
-            self.suicide_feedback_cleanup.clear();
-            self.afterburn_cleanup.clear();
+            self.suicides.discard_map_state();
+
             self.refills.discard_map_state();
             self.impacts.clear();
-            self.suicides.entries.clear();
-            self.suicides.pending.clear();
-            self.suicides.buying.clear();
             self.pending_takeovers.clear();
             self.players.clear();
             self.controllers.clear();
+            self.discard_grapple_map_state();
             self.welcomes.clear();
             self.preferences.as_mut().expect("preferences active").clear_sessions();
             self.last_name = None;
@@ -3645,6 +1972,7 @@ impl Runtime {
             self.prestarted_round = None;
             self.warmup_active = false;
             self.warmup_activation_pending = false;
+            self.warmup_round_faulted = false;
         }
         self.sync_warmup(game::warmup(), tick, spawn_slot);
         tick
@@ -3652,6 +1980,9 @@ impl Runtime {
 
     fn sync_warmup(&mut self, state: Option<bool>, tick: i32, spawn_slot: Option<i32>) {
         if state != Some(true) {
+            if state == Some(false) {
+                self.warmup_round_faulted = false;
+            }
             if self.warmup_active {
                 self.warmup_active = false;
                 self.warmup_activation_pending = false;
@@ -3672,6 +2003,30 @@ impl Runtime {
                 self.finish_recovery();
             }
             return;
+        }
+
+        if self.warmup_round_faulted {
+            return;
+        }
+
+        if self.controller.phase() == Phase::Idle && self.controller.enabled() && self.effects_ready && tick >= 0 {
+            let warmup = self
+                .controller
+                .config()
+                .and_then(|config| config.warmup.as_ref())
+                .filter(|warmup| warmup.enabled);
+            let wall_hang = warmup.is_some_and(|warmup| warmup.mode.wall_hang);
+            let grapple = warmup.is_some_and(|warmup| warmup.mode.grapple.is_some());
+            let trampoline = warmup.is_some_and(|warmup| warmup.mode.trampoline);
+            if trampoline {
+                self.on_region_map_ready();
+            }
+            if wall_hang {
+                self.refresh_wall_hang_capability();
+            }
+            if grapple {
+                self.refresh_grapple_capability();
+            }
         }
 
         if !self.warmup_active {
@@ -3805,6 +2160,22 @@ impl Runtime {
         warmup_spawn_needed(identity, player, effect_applied, loadout_pending)
     }
 
+    fn bind_pending_spawn(&mut self, task: PlayerTask, player: LivePlayer) -> Option<PlayerIdentity> {
+        let identity = self.players.bind_spawn(task.player, player.pawn_handle as u32)?;
+        let base_health = self.chickens.base_health(task).ok();
+        self.chickens.clear_life(task);
+        if let Some((combat_task, _)) = self.combat.lives.get_mut(&player.slot)
+            && *combat_task == task
+        {
+            combat_task.player = identity;
+        }
+        if let Some(base_health) = base_health {
+            self.chickens.observe_life(PlayerTask { player: identity, ..task }, base_health);
+        }
+        self.death_explosives.bind_candidate(task.player, identity);
+        Some(identity)
+    }
+
     fn apply_pending(&mut self, tick: i32) -> Vec<EngineAction> {
         let mut actions = Vec::new();
         let pending = std::mem::take(&mut self.pending);
@@ -3832,20 +2203,10 @@ impl Runtime {
                 continue;
             }
             if task.player.pawn_handle == u32::MAX {
-                let Some(identity) = self.players.bind_spawn(task.player, player.pawn_handle as u32) else {
+                let Some(identity) = self.bind_pending_spawn(task, player) else {
                     continue;
                 };
-                let base_health = self.chickens.base_health(task).ok();
-                self.chickens.clear_life(task);
-                if let Some((combat_task, _)) = self.combat.get_mut(&player.slot)
-                    && *combat_task == task
-                {
-                    combat_task.player = identity;
-                }
                 task.player = identity;
-                if let Some(base_health) = base_health {
-                    self.chickens.observe_life(task, base_health);
-                }
             }
             if !self.players.validates(task, self.controller.generation(), player.pawn_handle as u32) {
                 self.cancel_pending(action);
@@ -4008,6 +2369,9 @@ impl Runtime {
         if self.controller.is_new_round(key) {
             self.cleanup_before_new_round(key);
             self.finish_round_transition_recovery();
+            if !warmup {
+                self.on_region_map_ready();
+            }
         }
         self.select_round(key, warmup, self.effects_ready)
     }
@@ -4021,14 +2385,20 @@ impl Runtime {
     pub fn event(&mut self, name: &str, event: usize) {
         let spawn_slot = (name == "player_spawn").then(|| s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid")));
         self.observe_tick(Some(name), spawn_slot);
+        if matches!(name, "smokegrenade_detonate" | "smokegrenade_expired") {
+            self.on_region_event(name, event);
+        }
         if name != "item_pickup" {
-            self.refresh_weapon_inventory();
+            self.public_properties
+                .refresh_inventory(self.controller.enabled(), &self.players, self.controller.generation(), &mut self.rng);
         }
         match name {
             "item_pickup" => {
                 let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
-                self.item_pickup(slot, event);
-                self.refresh_weapon_inventory();
+                self.public_properties
+                    .item_pickup(slot, event, &self.players, self.controller.generation());
+                self.public_properties
+                    .refresh_inventory(self.controller.enabled(), &self.players, self.controller.generation(), &mut self.rng);
             }
             "round_prestart" => {
                 self.prestart_context = None;
@@ -4062,6 +2432,8 @@ impl Runtime {
             }
             "bomb_exploded" => self.bombs.capture_explosion(self.controller.generation()),
             "bomb_beginplant" | "bomb_begindefuse" => {
+                let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                self.stop_grapple_for_bomb_use(slot, name == "bomb_begindefuse");
                 let Some(mode) = self.controller.current_mode() else { return };
                 if !active_combat_phase(self.controller.phase()) {
                     return;
@@ -4085,7 +2457,7 @@ impl Runtime {
                     }
                 } else if let Some(task) = task {
                     if has_bomb_timing && let Err(error) = self.bombs.begin_defuse(task, s2sdk::GetEventBool(event, &Str::from_str("haskit"))) {
-                        self.handle_fault(error);
+                        self.handle_fault(Fault::mechanism(Mechanism::BombTiming, error));
                         return;
                     }
                     if quick_defuse_available
@@ -4100,23 +2472,32 @@ impl Runtime {
                 }
             }
             "bomb_abortplant" => {
+                let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                self.finish_grapple_bomb_use(slot);
                 if let Err(error) = self.bombs.abort_plant() {
-                    self.handle_fault(error);
+                    self.handle_fault(Fault::mechanism(Mechanism::BombTiming, error));
                 }
             }
             "bomb_abortdefuse" => {
+                let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                self.finish_grapple_bomb_use(slot);
                 self.bombs.abort_quick_defuse();
                 if let Err(error) = self.bombs.abort_defuse() {
-                    self.handle_fault(error);
+                    self.handle_fault(Fault::mechanism(Mechanism::BombTiming, error));
                 }
             }
+            "bomb_defused" => {
+                let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                self.finish_grapple_bomb_use(slot);
+            }
             "bomb_planted" => {
+                let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                self.finish_grapple_bomb_use(slot);
                 if active_combat_phase(self.controller.phase())
                     && let Some(mode) = self.controller.current_mode()
                 {
                     let kind = mode.bomb.as_ref().map_or(funrounds_core::BombKind::Native, |settings| settings.kind);
                     let round = self.controller.generation();
-                    let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
                     let task = self.players.identity(slot).map(|player| PlayerTask { player, round });
                     let team = if slot >= 0 && s2sdk::IsClientInGame(slot) {
                         s2sdk::GetClientTeam(slot) as i32
@@ -4266,6 +2647,7 @@ impl Runtime {
                 if let Some(round) = self.round {
                     let started = self.controller.freeze_end(round);
                     if started {
+                        self.start_death_explosives();
                         self.queue_c4_assignment();
                         self.start_money_income();
                         self.start_periodic_movement();
@@ -4311,6 +2693,21 @@ impl Runtime {
                 };
                 let route = grenade_thrown_route(self.controller.current_mode(), kind);
                 let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                if kind == Some(equipment::GrenadeKind::Smoke) {
+                    self.record_smoke_throw(slot);
+                }
+                if matches!(
+                    kind,
+                    Some(
+                        equipment::GrenadeKind::He
+                            | equipment::GrenadeKind::Molotov
+                            | equipment::GrenadeKind::Incendiary
+                            | equipment::GrenadeKind::Decoy
+                    )
+                ) {
+                    self.record_regeneration_combat(slot);
+                }
+                self.observe_proximity_throw(slot, kind);
                 if route.track_dodgeball_decoy
                     && let Some(identity) = self.players.identity(slot)
                 {
@@ -4348,14 +2745,19 @@ impl Runtime {
                     }
                 }
             }
+            "bullet_impact" => self.bullet_impact(event),
             "weapon_fire" => {
                 let weapon = s2sdk::GetEventString(event, &Str::from_str("weapon")).to_string();
                 let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
-                if matches!(weapon.as_str(), "knife" | "knife_t" | "weapon_knife" | "weapon_knife_t")
-                    && active_combat_phase(self.controller.phase())
-                    && self.controller.current_mode().is_some_and(|mode| mode.throwing_knives)
-                {
-                    self.native_self_damage_shots.remove(&slot);
+                // Empty clicks use weapon_fire_on_empty, not this native event.
+                let firearm = crate::effects::firearm_event(&weapon);
+                let knife = crate::projectiles::knife_fire_event(&weapon);
+                if firearm || knife {
+                    self.record_regeneration_combat(slot);
+                }
+                self.capture_shot(slot, &weapon);
+                if knife && active_combat_phase(self.controller.phase()) && self.controller.current_mode().is_some_and(|mode| mode.throwing_knives) {
+                    self.combat.native_self_damage_shots.remove(&slot);
                     if let Some(player) = self.players.identity(slot) {
                         self.projectiles.schedule_knife(
                             PlayerTask {
@@ -4367,37 +2769,18 @@ impl Runtime {
                     }
                     return;
                 }
-                if !crate::effects::firearm_event(&weapon) {
-                    self.native_self_damage_shots.remove(&slot);
+                if !firearm {
+                    self.combat.native_self_damage_shots.remove(&slot);
                     return;
                 }
                 let Some(player) = LivePlayer::resolve(slot) else {
-                    self.native_self_damage_shots.remove(&slot);
+                    self.combat.native_self_damage_shots.remove(&slot);
                     return;
                 };
-                let Some(mode) = self.controller.current_mode() else {
-                    self.native_self_damage_shots.remove(&slot);
-                    return;
-                };
+                self.queue_weapon_on_fire(player, &weapon);
+                self.capture_native_self_damage_shot(player, &weapon);
+                let Some(mode) = self.controller.current_mode() else { return };
                 let identity = self.players.identity(slot);
-                if active_combat_phase(self.controller.phase())
-                    && matches!(mode.self_damage, Some(SelfDamage::Native { amount }) if amount > 0.0)
-                    && let Some(task) = self.combat_task(player)
-                    && let Some(weapon) = fired_weapon(player, &weapon)
-                {
-                    self.native_self_damage_shots.insert(
-                        slot,
-                        NativeSelfDamageShot {
-                            task,
-                            player,
-                            tick: s2sdk::GetGameTickCount(),
-                            weapon,
-                            player_hit: false,
-                        },
-                    );
-                } else {
-                    self.native_self_damage_shots.remove(&slot);
-                }
                 let knock = self
                     .preferences
                     .as_mut()
@@ -4408,7 +2791,7 @@ impl Runtime {
                     && matches!(self.controller.phase(), Phase::Running | Phase::Warmup)
                     && knock.permits(s2sdk::GetClientFlags(slot))
                     && self.controllers.get(&slot) == Some(&player.controller_handle)
-                    && let Some(effect) = self.effects.get(&slot).filter(|effect| {
+                    && let Some(effect) = self.effects.get_mut(&slot).filter(|effect| {
                         Some(effect.identity) == identity && effect.identity.pawn_handle == player.pawn_handle as u32 && !effect.has_pending_loadout()
                     })
                     && let Err(error) = effect.self_push(player, &weapon)
@@ -4424,9 +2807,7 @@ impl Runtime {
                         player,
                         round: self.controller.generation(),
                     };
-                    if !self.low_health_finishes.contains(&task) {
-                        self.low_health_finishes.push(task);
-                    }
+                    self.respawning.queue_finish(task);
                 }
                 let diagnostics = self.diagnostics();
                 let no_recoil = mode.no_recoil;
@@ -4475,14 +2856,18 @@ impl Runtime {
             "player_death" => {
                 let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
                 let attacker = s2sdk::GetEventPlayerSlot(event, &Str::from_str("attacker"));
+                let punishment = self.is_teamkill_punishment(slot);
+                if !punishment {
+                    self.count_teamkill(slot, attacker);
+                }
+                self.forget_teamkill(slot);
                 let chicken_weapon_source = self.take_chicken_blast_kill_weapon(slot, attacker);
                 self.bombs.abandon_quick_defuse_player(slot);
                 if let Some(identity) = self.players.identity(slot) {
                     self.clear_chicken_life(identity);
                 }
-                self.cancel_chicken_purchase(slot);
-                self.native_self_damage_shots.remove(&slot);
-                self.pending_takeovers.retain(|pending| pending.slot != slot);
+                self.ordinary_chickens.cancel_purchase(slot, &mut self.engine_actions);
+                self.combat.native_self_damage_shots.remove(&slot);
                 self.projectiles
                     .retire_player(slot, self.players.identity(slot).map(|player| player.pawn_handle));
                 if self.diagnostics() && self.controller.current_mode().is_some_and(|mode| mode.headshots == Headshots::Only) {
@@ -4492,12 +2877,12 @@ impl Runtime {
                         s2sdk::GetEventBool(event, &Str::from_str("headshot"))
                     ));
                 }
-                if active_combat_phase(self.controller.phase()) {
+                if !punishment && active_combat_phase(self.controller.phase()) {
                     if self.controller.current_mode().is_some_and(|mode| mode.kill_protection)
                         && let Some(player) = LivePlayer::resolve(attacker)
                         && !s2sdk::IsFakeClient(attacker)
                         && let Some(task) = self.combat_task(player)
-                        && let Some((expected, life)) = self.combat.get_mut(&attacker)
+                        && let Some((expected, life)) = self.combat.lives.get_mut(&attacker)
                         && *expected == task
                     {
                         life.protect(s2sdk::GetGameTime());
@@ -4509,7 +2894,8 @@ impl Runtime {
                         chicken_weapon_source,
                     );
                 }
-                if self.controller.phase() == Phase::Running
+                if !punishment
+                    && self.controller.phase() == Phase::Running
                     && attacker >= 0
                     && slot >= 0
                     && let Some(game) = self.team_match.as_mut()
@@ -4525,10 +2911,10 @@ impl Runtime {
                 if let Err(error) = self.suicides.forget(slot) {
                     self.record_fault(Fault::global(error));
                 }
-                self.players.death(slot);
-                self.round_respawns.retain(|(task, ..)| task.player.slot != slot);
-                self.combat.remove(&slot);
-                self.delayed_damage.retain(|hit| hit.target.player.slot != slot);
+                self.track_player_death(slot);
+                self.pending_takeovers.retain(|pending| pending.slot != slot);
+                self.respawning.cancel_round_respawn(slot);
+                self.combat.remove_life(slot);
                 self.refills.cancel_player(slot);
                 self.retire_effect(slot);
                 self.pending.retain(|(task, _, _)| task.player.slot != slot);
@@ -4538,10 +2924,26 @@ impl Runtime {
                     self.queue_respawn(slot, respawn.delay_seconds);
                 }
             }
+            "player_blind" => {
+                let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                self.queue_long_flash(slot, event);
+            }
             "player_hurt" => {
                 let victim = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
                 let attacker = s2sdk::GetEventPlayerSlot(event, &Str::from_str("attacker"));
                 let weapon = s2sdk::GetEventString(event, &Str::from_str("weapon")).to_string();
+                let health_damage = s2sdk::GetEventInt(event, &Str::from_str("dmg_health"));
+                let armor_damage = s2sdk::GetEventInt(event, &Str::from_str("dmg_armor"));
+                if (health_damage > 0 || armor_damage > 0)
+                    && let Some(player) = LivePlayer::resolve(victim)
+                    && self.controllers.get(&victim) == Some(&player.controller_handle)
+                    && let Err(error) = self.interrupt_movement_for_impulse(player)
+                {
+                    self.handle_fault(error.context("received damage interrupted temporary movement"));
+                }
+                if health_damage > 0 || armor_damage > 0 {
+                    self.record_regeneration_combat(victim);
+                }
                 if self.diagnostics()
                     && self.controller.current_mode().is_some_and(|mode| {
                         mode.lifesteal
@@ -4592,36 +2994,29 @@ impl Runtime {
             }
             "player_team" => {
                 let slot = s2sdk::GetEventPlayerSlot(event, &Str::from_str("userid"));
+                self.death_explosives.forget(slot);
+                self.forget_teamkill(slot);
                 self.bombs.abandon_quick_defuse_player(slot);
                 if let Some(identity) = self.players.identity(slot) {
                     self.clear_chicken_life(identity);
                 }
-                self.cancel_chicken_purchase(slot);
-                self.native_self_damage_shots.remove(&slot);
+                self.ordinary_chickens.cancel_purchase(slot, &mut self.engine_actions);
+                self.combat.forget_player(slot);
                 self.pending_takeovers.retain(|pending| pending.slot != slot);
                 if let Err(error) = self.suicides.forget(slot) {
                     self.handle_fault(Fault::global(error));
                 }
                 self.players.death(slot);
-                self.combat.remove(&slot);
-                self.reflections
-                    .retain(|hit| hit.target.player.slot != slot && hit.source.player.slot != slot);
-                self.delayed_damage
-                    .retain(|hit| hit.target.player.slot != slot && hit.source.player.slot != slot);
-                self.random_heals
-                    .retain(|hit| hit.target.player.slot != slot && hit.source.player.slot != slot);
                 self.refills.cancel_player(slot);
                 self.pending.retain(|(task, ..)| task.player.slot != slot);
                 self.retire_effect(slot);
-                self.respawns.retain(|(task, _, _, _)| task.player.slot != slot);
-                self.round_respawns.retain(|(task, ..)| task.player.slot != slot);
+                self.respawning.cancel_player_respawns(slot);
             }
             _ => {}
         }
     }
 
-    pub(crate) fn handle_fault(&mut self, fault: impl Into<Fault>) {
-        let fault = fault.into();
+    pub(crate) fn handle_fault(&mut self, fault: Fault) {
         if fault.scope == Scope::Cancelled {
             log(&format!("action cancelled: {fault}"));
             return;
@@ -4637,9 +3032,15 @@ impl Runtime {
             crate::legacy_textmsg::set_enabled(false);
         }
         let changed = self.faults.record(&fault);
-        self.prestarted_round = None;
+        if fault.scope != Scope::Round {
+            self.prestarted_round = None;
+        }
         self.controller.set_capabilities(self.faults.capabilities());
-        if let Some(round) = self.round {
+        if fault.scope == Scope::Round {
+            self.warmup_round_faulted = self.warmup_active;
+            self.warmup_activation_pending = false;
+            self.controller.clear_active_round();
+        } else if let Some(round) = self.round {
             self.controller.end_round(round);
         }
         self.effects_ready = false;
@@ -4658,23 +3059,13 @@ impl Runtime {
     fn cleanup_complete_without_bombs(&self) -> bool {
         self.cleanup_complete_except_prestart_parameters_and_bombs()
             && self.parameters.is_restored()
-            // Healthshot ConVars are configuration-scoped; an in-sync active override is not unfinished round cleanup.
-            && healthshot_override_settled(
-                self.healthshot_active(),
-                self.healthshot_override_active,
-                self.healthshot_parameters.is_restored(),
-            )
+            && self.healthshot.settled(self.healthshot_active())
     }
 
     fn cleanup_complete_for_round_transition_without_bombs(&self) -> bool {
         self.cleanup_complete_for_round_transition_except_prestart_parameters_and_bombs()
             && self.parameters.is_restored()
-            // Healthshot ConVars are configuration-scoped; an in-sync active override is not unfinished round cleanup.
-            && healthshot_override_settled(
-                self.healthshot_active(),
-                self.healthshot_override_active,
-                self.healthshot_parameters.is_restored(),
-            )
+            && self.healthshot.settled(self.healthshot_active())
     }
 
     fn cleanup_complete_except_prestart_parameters_and_bombs(&self) -> bool {
@@ -4695,21 +3086,18 @@ impl Runtime {
 
     fn cleanup_complete_except_pending_and_prestart_parameters_and_bombs_with_round_lifetime(&self, round_transition: bool) -> bool {
         !self.third_person_map_detach_pending
+            && self.grapple.is_clean()
             && self.ground_reverse.is_clean()
+            && self.air_strafe.is_clean()
             && self.ghost.is_clean()
             && self.night_vision.is_clean()
-            && public_property_cleanup_complete(self.controller.enabled(), self.duck_speed.is_empty(), self.model_scales.is_empty())
+            && self.public_properties.cleanup_complete(self.controller.enabled())
             && self.equipment_in_flight == 0
-            && self.suicides.entries.is_empty()
-            && self.suicides.pending.is_empty()
-            && self.suicides.buying.is_empty()
-            && (self.chicken_entities.is_empty() || (round_transition && self.chicken_entities.has_only_active_chickens()))
-            && self.chicken_cleanup.is_empty()
-            && (self.suicide_feedback.is_empty() || (round_transition && self.suicide_feedback.has_only_unexpired(s2sdk::GetGameTime())))
-            && self.suicide_feedback_cleanup.is_empty()
+            && self.suicides.cleanup_complete(round_transition, s2sdk::GetGameTime())
+            && !self.has_guidance_fuse_recovery()
+            && self.ordinary_chickens.cleanup_complete(round_transition)
+            && self.composed.is_clean()
             && self.afterburns.is_clean()
-            && self.afterburn_cleanup.is_empty()
-            && self.suicides.ff.is_restored()
             && self.effects.is_empty()
             && self.retired_effects.is_empty()
             && self.team_names.is_restored()
@@ -4738,7 +3126,7 @@ impl Runtime {
     fn finish_recovery(&mut self) {
         let complete = self.cleanup_complete();
         if self.faults.finish_cleanup(complete) {
-            log("owned cleanup complete; quarantined capabilities remain excluded; waiting for a new round");
+            log("owned cleanup complete; waiting for a new round with available capabilities");
         }
         self.effects_ready = complete && self.faults.recovery == Recovery::Ready;
     }
@@ -4748,7 +3136,7 @@ impl Runtime {
             && self.bombs.is_clean()
             && !crate::CHICKEN_FOLLOW_BLOCK_CLEANUP_PENDING.load(std::sync::atomic::Ordering::Acquire);
         if self.faults.finish_cleanup(complete) {
-            log("owned cleanup complete; quarantined capabilities remain excluded; waiting for a new round");
+            log("owned cleanup complete; waiting for a new round with available capabilities");
         }
         self.effects_ready = complete && self.faults.recovery == Recovery::Ready;
     }
@@ -4758,8 +3146,7 @@ impl Runtime {
             let waiting = self.cleanup_after_round_start_wait();
             self.restore_team_names();
             if !self.controller.enabled() {
-                self.restore_duck_speed();
-                self.restore_model_scales();
+                self.public_properties.restore_all();
             }
             if waiting {
                 self.finish_round_transition_recovery();
@@ -4767,42 +3154,6 @@ impl Runtime {
                 self.finish_recovery();
             }
         }
-    }
-
-    fn lifesteal(&mut self, event: usize, attacker: i32, victim: i32) -> Option<i32> {
-        if self.controller.phase() == Phase::Idle || !self.controller.current_mode().is_some_and(|mode| mode.lifesteal) {
-            return None;
-        }
-        let player = LivePlayer::resolve(attacker);
-        if !lifesteal_eligible(attacker, victim, player.is_some()) {
-            return None;
-        }
-        let player = player.expect("eligible attacker is alive");
-        if !self.effects.get(&attacker).is_some_and(|effect| {
-            Some(effect.identity) == self.players.identity(attacker)
-                && effect.identity.pawn_handle == player.pawn_handle as u32
-                && !effect.has_pending_loadout()
-        }) || self.controllers.get(&attacker) != Some(&player.controller_handle)
-        {
-            return None;
-        }
-        let health = s2sdk::GetEventInt(event, &Str::from_str("dmg_health"));
-        let armor = s2sdk::GetEventInt(event, &Str::from_str("dmg_armor"));
-        let energy_shield = self.controller.current_mode().is_some_and(|mode| mode.energy_shield);
-        let effect = self.effects.get_mut(&attacker)?;
-        if let Err(error) = effect.lifesteal(player, health, armor, energy_shield) {
-            self.handle_fault(error);
-            return None;
-        }
-        if self.diagnostics() {
-            log(&format!(
-                "lifesteal slot={attacker} dmg_health={health} dmg_armor={armor} health={} armor={} helmet={:?}",
-                s2sdk::GetClientHealth(attacker),
-                s2sdk::GetClientArmor(attacker),
-                player.helmet()
-            ));
-        }
-        Some(attacker)
     }
 
     fn kill_loadout(&mut self, attacker: i32, victim: i32, event_weapon: &str, chicken_source: Option<crate::chicken_entities::KillWeaponSource>) {
@@ -4832,7 +3183,7 @@ impl Runtime {
         let tracked = tracked_upgrade_weapon(effect, player).map(|target| target.handle);
         let chicken_fallback = chicken_source
             .filter(|source| source.attacker.slot == attacker && self.players.identity(attacker) == Some(source.attacker))
-            .filter(|source| chicken_weapon_source_is_current(source, &self.players, &self.controllers))
+            .filter(|source| chickens::chicken_weapon_source_is_current(source, &self.players, &self.controllers))
             .filter(|source| crate::effects::equipment::kill_loadout_source_weapon(&source.classname))
             .map(|source| KillWeaponTarget {
                 attacker: source.attacker,
@@ -4866,24 +3217,19 @@ impl Runtime {
         self.players.spawn(slot, tick as u64, pawn);
         let identity = self.players.identity(slot).or_else(|| self.players.pending_identity(slot));
         if previous != identity {
+            self.death_explosives.spawned(slot, identity, &self.players);
             if let Some(previous) = previous {
                 self.clear_chicken_life(previous);
             }
-            self.chicken_use_buttons.remove(&slot);
-            self.healthshot_purchases.remove(&slot);
-            self.engine_actions
-                .retain(|action| !matches!(action, EngineAction::HealthshotPurchase { task, .. } if task.player.slot == slot));
-            self.cancel_chicken_purchase(slot);
-            self.round_respawns.retain(|(task, ..)| task.player.slot != slot);
-            self.native_self_damage_shots.remove(&slot);
-            self.suicides.entries.remove(&slot);
-            self.suicides.buying.remove(&slot);
-            self.suicides.pending.retain(|action| action.task().player.slot != slot);
+            self.ordinary_chickens.forget_input(slot);
+            self.healthshot.cancel_purchase(slot, &mut self.engine_actions);
+            self.ordinary_chickens.cancel_purchase(slot, &mut self.engine_actions);
+            self.respawning.cancel_round_respawn(slot);
+            self.combat.cancel_spawn_work(slot);
+            self.suicides.discard_life(slot);
             self.refills.cancel_player(slot);
             self.retire_effect(slot);
             self.pending.retain(|(task, _, _)| task.player.slot != slot);
-            self.delayed_damage
-                .retain(|hit| hit.target.player.slot != slot && hit.source.player.slot != slot);
         }
         if apply_effects
             && self.controller.phase() != Phase::Idle
@@ -4894,8 +3240,9 @@ impl Runtime {
                     player: identity,
                     round: self.controller.generation(),
                 };
-                if !self.combat.get(&slot).is_some_and(|(expected, _)| *expected == task) {
+                if !self.combat.lives.get(&slot).is_some_and(|(expected, _)| *expected == task) {
                     self.combat
+                        .lives
                         .insert(slot, (task, funrounds_core::CombatLife::new(mode, s2sdk::GetGameTime(), &mut self.rng)));
                 }
             }
@@ -4912,6 +3259,7 @@ impl Runtime {
             // Loadout writes happen on a later tick; the engine may still report the old HP.
             let base_health = self
                 .combat
+                .lives
                 .get(&slot)
                 .filter(|(expected, _)| *expected == task)
                 .map_or_else(|| s2sdk::GetClientHealth(slot), |(_, life)| i32::from(life.attributes().health));
@@ -4970,14 +3318,17 @@ impl Runtime {
         });
     }
 
+    fn takeover_current(&self, takeover: PendingTakeover) -> bool {
+        takeover.round == self.controller.generation()
+            && self.controllers.get(&takeover.slot) == Some(&takeover.controller_handle)
+            && s2sdk::PlayerSlotToEntHandle(takeover.slot) == takeover.controller_handle
+            && self.players.connection_identity(takeover.slot) == Some(takeover.expected)
+    }
+
     fn apply_pending_takeovers(&mut self, tick: i32) {
         let pending = std::mem::take(&mut self.pending_takeovers);
         for takeover in pending {
-            if takeover.round != self.controller.generation()
-                || self.controllers.get(&takeover.slot) != Some(&takeover.controller_handle)
-                || s2sdk::PlayerSlotToEntHandle(takeover.slot) != takeover.controller_handle
-                || self.players.connection_identity(takeover.slot) != Some(takeover.expected)
-            {
+            if !self.takeover_current(takeover) {
                 continue;
             }
             if tick <= takeover.event_tick {
@@ -4994,13 +3345,13 @@ impl Runtime {
             let Some(identity) = self.players.takeover_identity(takeover.expected, player.pawn_handle as u32) else {
                 continue;
             };
+            self.cancel_grapple_player(takeover.slot);
             let task = PlayerTask {
                 player: identity,
                 round: takeover.round,
             };
             let mut owners = self.tracked_pawn_owners(player.pawn_handle as u32);
             owners.sort_unstable();
-            owners.dedup();
             let effect_sources = owners
                 .iter()
                 .copied()
@@ -5009,17 +3360,6 @@ impl Runtime {
                         effect.round == takeover.round
                             && effect.identity.pawn_handle == player.pawn_handle as u32
                             && self.players.identity(effect.identity.slot) == Some(effect.identity)
-                    })
-                })
-                .collect::<Vec<_>>();
-            let combat_sources = owners
-                .iter()
-                .copied()
-                .filter(|slot| {
-                    self.combat.get(slot).is_some_and(|(task, _)| {
-                        task.round == takeover.round
-                            && task.player.pawn_handle == player.pawn_handle as u32
-                            && self.players.identity(task.player.slot) == Some(task.player)
                     })
                 })
                 .collect::<Vec<_>>();
@@ -5105,33 +3445,19 @@ impl Runtime {
                 }
             }
 
-            let combat_source = combat_sources
-                .iter()
-                .copied()
-                .find(|slot| *slot == takeover.slot)
-                .or_else(|| combat_sources.first().copied());
-            let source_combat = combat_source.and_then(|source| self.combat.remove(&source));
-            for source in combat_sources {
-                if Some(source) != combat_source {
-                    self.combat.remove(&source);
-                }
-            }
-            if combat_source != Some(takeover.slot) {
-                self.combat.remove(&takeover.slot);
-            }
-            if let Some((old_task, life)) = source_combat
-                && old_task.round == takeover.round
-                && old_task.player.pawn_handle == identity.pawn_handle
-                && combat_source.is_some_and(|source| self.players.identity(source) == Some(old_task.player))
-            {
-                self.combat.insert(takeover.slot, (task, life));
-            }
+            self.combat.takeover(&owners, task, &self.players);
+            let armed = self.death_explosives.takeover(&owners, task, &self.players);
 
             if self.players.takeover(takeover.expected, player.pawn_handle as u32) != Some(identity) {
                 failures.push(Fault::global("player identity changed while applying bot_takeover"));
             } else {
+                if armed {
+                    self.say(takeover.slot, "death_explosion.armed", &[]);
+                }
                 self.chickens.takeover_pawn(task);
                 self.afterburns.takeover_pawn(task, player);
+                self.takeover_composed(task, player);
+                self.takeover_trampoline(&owners, task.player);
             }
             for (slot, mut effect) in retired {
                 match effect.restore_retired_state(&mut self.refills) {
@@ -5167,7 +3493,9 @@ impl Runtime {
         slots.push(target);
         slots.sort_unstable();
         slots.dedup();
-        self.native_self_damage_shots.retain(|slot, _| !slots.contains(slot));
+        self.takeover_teamkills(&slots, takeover_task, takeover_player);
+        self.takeover_shockwave_targets(&slots, takeover_task);
+        self.combat.cancel_actions_for(&slots);
         let mut pending = std::mem::take(&mut self.pending);
         pending.retain(|(task, _, action)| {
             if slots.contains(&task.player.slot) {
@@ -5178,70 +3506,32 @@ impl Runtime {
             }
         });
         self.pending = pending;
-        self.reflections
-            .retain(|hit| !slots.contains(&hit.target.player.slot) && !slots.contains(&hit.source.player.slot));
-        self.delayed_damage
-            .retain(|hit| !slots.contains(&hit.target.player.slot) && !slots.contains(&hit.source.player.slot));
-        self.random_heals
-            .retain(|receipt| !slots.contains(&receipt.target.player.slot) && !slots.contains(&receipt.source.player.slot));
         self.impacts
             .retain(|impact| !slots.contains(&impact.task.player.slot) && !slots.contains(&impact.victim_task.player.slot));
-        self.low_health_finishes.retain(|task| !slots.contains(&task.player.slot));
-        self.respawns.retain(|(task, ..)| !slots.contains(&task.player.slot));
-        self.round_respawns.retain(|(task, ..)| !slots.contains(&task.player.slot));
-        self.chicken_purchases.retain(|slot, _| !slots.contains(slot));
+        self.respawning.cancel_slots(&slots);
+        self.ordinary_chickens.cancel_purchases_for_slots(&slots);
+        self.healthshot.cancel_purchases_for_slots(&slots);
         self.engine_actions.retain_mut(|action| match action {
+            EngineAction::Composed(action) => !slots.contains(&action.task().player.slot),
+            EngineAction::Shooting(action) => !action.involves(&slots),
+            EngineAction::Proximity(action) => !action.involves(&slots),
+            EngineAction::HeGuidance(action) => !action.involves(&slots),
+            EngineAction::HeGuidanceFuseRestore(..) => true,
+            EngineAction::Grapple(grapple::Action::Acquire { task, .. } | grapple::Action::Pull { task, .. }) => !slots.contains(&task.player.slot),
+            EngineAction::Grapple(grapple::Action::RemoveBeam { .. }) => true,
+            EngineAction::Shockwave(action) => !action.involves(&slots),
+            EngineAction::Teamkill(action) => !action.involves(&slots),
             EngineAction::Rollback(task, _)
             | EngineAction::Loadout(task, _, _)
             | EngineAction::SettleLoadout(task, _, _)
             | EngineAction::Upgrade(task, _, _)
-            | EngineAction::ThirdPerson(task, _)
-            | EngineAction::GrantC4(task, _)
-            | EngineAction::RemoveC4(task, _, _)
-            | EngineAction::Respawn(task, _, _)
-            | EngineAction::RoundRespawn(task, _, _)
-            | EngineAction::LowHealthFinish(task, _, _)
-            | EngineAction::HealthshotUse { task, .. }
-            | EngineAction::HealthshotPurchase { task, .. }
-            | EngineAction::AfterburnIgnite { task, .. }
-            | EngineAction::ChickenEat { task, .. } => !slots.contains(&task.player.slot),
-            EngineAction::ChickenPurchase { task, .. } => !slots.contains(&task.player.slot),
-            EngineAction::Suicide(suicide) => {
-                let old = suicide.task();
-                if !slots.contains(&old.player.slot) {
-                    return true;
-                }
-                if matches!(suicide, crate::suicide::Action::Purchase { .. })
-                    || suicide_source != Some(old.player.slot)
-                    || old.round != takeover_task.round
-                    || old.player.pawn_handle != pawn
-                {
-                    return false;
-                }
-                match suicide {
-                    crate::suicide::Action::Start { task: queued, owned } => {
-                        *queued = takeover_task;
-                        owned.player = takeover_player;
-                        true
-                    }
-                    crate::suicide::Action::Blast {
-                        task: queued,
-                        player: queued_player,
-                    }
-                    | crate::suicide::Action::Finish {
-                        task: queued,
-                        player: queued_player,
-                        ..
-                    } => {
-                        *queued = takeover_task;
-                        *queued_player = takeover_player;
-                        true
-                    }
-                    crate::suicide::Action::Purchase { .. } => false,
-                }
-            }
-            EngineAction::Reflection(hit) => !slots.contains(&hit.target.player.slot) && !slots.contains(&hit.source.player.slot),
-            EngineAction::DelayedDamage(hit) => !slots.contains(&hit.target.player.slot) && !slots.contains(&hit.source.player.slot),
+            | EngineAction::ThirdPerson(task, _) => !slots.contains(&task.player.slot),
+            EngineAction::Chicken(action) => !action.involves(&slots),
+            EngineAction::Healthshot(action) => !action.involves(&slots),
+            EngineAction::Afterburn(action) => !action.involves(&slots),
+            EngineAction::Respawn(action) => !action.involves(&slots),
+            EngineAction::Suicide(action) => action.retain_for_takeover(&slots, suicide_source, takeover_task, takeover_player),
+            EngineAction::Combat(action) => !action.involves(&slots),
             EngineAction::ProjectileImpact(impact) => !slots.contains(&impact.task.player.slot) && !slots.contains(&impact.victim_task.player.slot),
             EngineAction::Projectile(action) => match action.kind {
                 crate::projectiles::ActionKind::SpawnKnife { task, .. } => !slots.contains(&task.player.slot),
@@ -5251,11 +3541,6 @@ impl Runtime {
             EngineAction::Equipment(equipment::Action::Refill(refill)) => !slots.contains(&refill.task.player.slot),
             EngineAction::Equipment(equipment::Action::Remove { .. })
             | EngineAction::Bomb(_)
-            | EngineAction::ChickenSpawn { .. }
-            | EngineAction::ChickenBlast { .. }
-            | EngineAction::ChickenRemove(_)
-            | EngineAction::SuicideFeedbackRemove(_)
-            | EngineAction::AfterburnRemove(_)
             | EngineAction::EndRound(_, _)
             | EngineAction::CenterDisplay { .. } => true,
         });
@@ -5280,133 +3565,27 @@ impl Runtime {
         }
     }
 
-    fn queue_respawn(&mut self, slot: i32, delay: f32) {
-        if self.controller.phase() == Phase::Idle || LivePlayer::resolve(slot).is_some() {
-            return;
-        }
-        self.connect(slot);
-        let Some(player) = LivePlayer::resolve_present(slot) else { return };
-        let team = s2sdk::GetClientTeam(slot) as i32;
-        if !matches!(team, 2 | 3) {
-            return;
-        }
-        let Some(task) = self.players.respawn_task(slot, self.controller.generation()) else {
-            return;
-        };
-        if !self.respawns.iter().any(|(pending, ..)| *pending == task) {
-            self.respawns.push((task, player, team, s2sdk::GetGameTime() + delay));
-        }
-    }
-
-    fn queue_round_respawn(&mut self, slot: i32, tick: i32, delay: f32) {
-        if self.controller.phase() == Phase::Idle || !self.controller.current_mode().is_some_and(|mode| mode.round_respawn == RoundRespawn::All) {
-            return;
-        }
-        let team = s2sdk::GetClientTeam(slot) as i32;
-        if !matches!(team, 2 | 3) {
-            return;
-        }
-        self.connect(slot);
-        let Some(player) = LivePlayer::resolve_present(slot) else { return };
-        if LivePlayer::resolve(slot).is_some()
-            && self
-                .players
-                .identity(slot)
-                .is_none_or(|identity| identity.pawn_handle != player.pawn_handle as u32)
-        {
-            // Register an alive player's current life without applying effects; its real spawn follows ForceRespawnClient.
-            self.spawn(slot, tick, false);
-        }
-        let Some(task) = round_respawn_task(&self.players, self.controller.generation(), player) else {
-            return;
-        };
-        if self.controllers.get(&slot) != Some(&player.controller_handle) {
-            return;
-        }
-        let now = s2sdk::GetGameTime();
-        if !now.is_finite() || !delay.is_finite() || delay < 0.0 {
-            return;
-        }
-        if !self.round_respawns.iter().any(|(pending, ..)| *pending == task) {
-            self.round_respawns.push((task, player, team, now + delay));
-        }
-    }
-
-    fn queue_c4_assignment(&mut self) {
-        if !active_combat_phase(self.controller.phase())
-            || self.c4_assigned
-            || self.equipment_in_flight > 0
-            || self.pending.iter().any(|(_, _, action)| *action == PendingAction::Loadout)
-            || !self.settling_loadouts.is_empty()
-            || self.effects.values().any(Effect::has_pending_loadout)
-        {
-            return;
-        }
-        let Some(count) = self.controller.current_mode().and_then(|mode| mode.c4_count) else {
-            return;
-        };
-        let count = usize::from(count);
-        let phase = self.controller.phase();
-        let mut players = Vec::new();
-        let mut candidates = Vec::new();
-        for slot in 0..s2sdk::GetMaxClients() {
-            let Some(player) = LivePlayer::resolve(slot) else { continue };
-            let Some(task) = self.combat_task(player) else { continue };
-            let native = s2sdk::GetClientWeapons(slot)
-                .iter()
-                .copied()
-                .filter(|handle| crate::suicide::real_c4(player, *handle) && !self.bombs.excludes_suicide_c4(player, *handle))
-                .collect();
-            players.push((task, player, native));
-            if s2sdk::GetClientTeam(slot) as i32 == 2 {
-                candidates.push((task, player));
-            }
-        }
-        if phase == Phase::Warmup && count > 0 && candidates.is_empty() {
-            return;
-        }
-        self.c4_assigned = true;
-        self.engine_actions.extend(
-            players
-                .into_iter()
-                .map(|(task, player, native)| EngineAction::RemoveC4(task, player, native)),
-        );
-        candidates.shuffle(&mut self.rng);
-        self.engine_actions.extend(
-            candidates
-                .into_iter()
-                .take(count)
-                .map(|(task, player)| EngineAction::GrantC4(task, player)),
-        );
-    }
-
     fn forget_player(&mut self, slot: i32) {
-        self.clear_pending_chicken_blast_for_slot(slot);
+        self.death_explosives.forget(slot);
+        self.clear_region_player_life(slot);
+        self.forget_teamkill(slot);
+        self.ordinary_chickens.clear_pending_chicken_blast_for_slot(slot);
         if let Some(identity) = self.players.identity(slot) {
+            self.clear_composed_life(identity);
             self.afterburns.clear_life(PlayerTask {
                 round: self.controller.generation(),
                 player: identity,
             });
-            self.afterburn_cleanup.extend(self.afterburns.take_removals());
         }
-        self.cancel_chicken_purchase(slot);
-        self.healthshot_purchases.remove(&slot);
-        self.engine_actions
-            .retain(|action| !matches!(action, EngineAction::HealthshotPurchase { task, .. } if task.player.slot == slot));
+        self.ordinary_chickens.cancel_purchase(slot, &mut self.engine_actions);
+        self.healthshot.cancel_purchase(slot, &mut self.engine_actions);
         self.chickens.clear_slot(slot);
-        self.chicken_use_buttons.remove(&slot);
-        self.native_self_damage_shots.remove(&slot);
+        self.ordinary_chickens.forget_input(slot);
+        self.combat.forget_player(slot);
         self.pending_takeovers.retain(|pending| pending.slot != slot);
         if let Err(error) = self.suicides.forget(slot) {
             self.record_fault(Fault::global(error));
         }
-        self.combat.remove(&slot);
-        self.delayed_damage
-            .retain(|hit| hit.target.player.slot != slot && hit.source.player.slot != slot);
-        self.random_heals
-            .retain(|receipt| receipt.target.player.slot != slot && receipt.source.player.slot != slot);
-        self.reflections
-            .retain(|hit| hit.target.player.slot != slot && hit.source.player.slot != slot);
         self.refills.cancel_player(slot);
         self.projectiles
             .retire_player(slot, self.players.identity(slot).map(|player| player.pawn_handle));
@@ -5418,11 +3597,11 @@ impl Runtime {
         }
         self.welcomes.retain(|(identity, _)| identity.slot != slot);
         self.pending.retain(|(task, _, _)| task.player.slot != slot);
-        self.respawns.retain(|(task, _, _, _)| task.player.slot != slot);
-        self.round_respawns.retain(|(task, ..)| task.player.slot != slot);
+        self.respawning.cancel_player_respawns(slot);
     }
 
     fn retire_effect(&mut self, slot: i32) {
+        self.cancel_grapple_player(slot);
         if let Err(error) = self.night_vision.remove_player(slot) {
             self.record_fault(Fault::global(error));
         }
@@ -5431,9 +3610,9 @@ impl Runtime {
         }
         let has_pending_loadout = self.effects.get(&slot).is_some_and(Effect::has_pending_loadout);
         if has_pending_loadout && self.controller.current_mode().is_some_and(|mode| mode.c4_count.is_some()) {
-            self.c4_assigned = false;
+            self.suicides.c4_assigned = false;
             self.engine_actions
-                .retain(|action| !matches!(action, EngineAction::GrantC4(task, _) if task.player.slot == slot));
+                .retain(|action| !matches!(action, EngineAction::Suicide(suicide::Action::GrantC4(task, _)) if task.player.slot == slot));
         }
         let Some(effect) = self.effects.remove(&slot) else { return };
         let index = self.retired_effects.len();
@@ -5479,25 +3658,33 @@ impl Runtime {
     }
 
     fn cleanup_effects_with_round_lifetime(&mut self, round_end: bool, round_transition: bool) {
+        self.cancel_all_grapples(grapple::StopReason::RoundEnded);
         self.settling_loadouts.clear();
         if let Err(error) = self.retry_third_person_map_detach() {
             self.record_fault(Fault::global(error));
         }
-        self.weapon_inventory.clear();
+        self.public_properties.clear_round_inventory();
         if let Err(error) = self.night_vision.cleanup_all() {
             self.record_fault(Fault::global(error));
         }
         if round_transition {
             self.clear_chicken_round_work();
             self.advance_chicken_round(self.controller.generation());
-            self.suicide_feedback_cleanup
-                .extend(self.suicide_feedback.take_expired(s2sdk::GetGameTime()));
+            self.suicides.feedback.expire(s2sdk::GetGameTime());
         } else {
             self.cleanup_ordinary_chickens();
         }
-        self.healthshot_purchases.clear();
+        self.healthshot.clear_round();
+        self.clear_regions_round();
+        self.cleanup_composed();
+        self.shooting = shooting::State::default();
+        self.stop_he_guidance_for_cleanup();
+        self.teamkills = teamkill::State::default();
         self.afterburns.clear_all();
-        self.afterburn_cleanup.extend(self.afterburns.take_removals());
+
+        if let Err(error) = self.air_strafe.apply(false) {
+            self.record_fault(error);
+        }
         if let Err(error) = self.ground_reverse.apply(None) {
             self.record_fault(error);
         }
@@ -5514,13 +3701,9 @@ impl Runtime {
             self.record_fault(Fault::global(error));
         }
         if !round_transition {
-            self.suicide_feedback_cleanup.extend(self.suicide_feedback.take_all());
+            self.suicides.feedback.clear();
         }
-        self.native_self_damage_shots.clear();
         self.combat.clear();
-        self.reflections.clear();
-        self.delayed_damage.clear();
-        self.random_heals.clear();
         self.center_display = None;
         self.refills.cancel_all();
         self.impacts.clear();
@@ -5530,11 +3713,13 @@ impl Runtime {
         self.team_match = None;
         self.periodic_movement = None;
         self.money_income = None;
-        self.c4_assigned = false;
-        self.engine_actions.clear();
-        self.respawns.clear();
-        self.round_respawns.clear();
-        self.low_health_finishes.clear();
+        self.suicides.c4_assigned = false;
+        self.death_explosives = suicide::DeathExplosions::default();
+        self.engine_actions.retain(|action| {
+            matches!(action, EngineAction::HeGuidanceFuseRestore(_))
+                || (round_end && matches!(action, EngineAction::Suicide(suicide::Action::DeathBlast(_))))
+        });
+        self.respawning.clear();
         let bomb_cleanup = if round_end {
             self.bombs.cleanup_after_round_end(self.controller.generation())
         } else {
@@ -5574,321 +3759,27 @@ impl Runtime {
     }
     pub fn shutdown(&mut self) -> Result<(), String> {
         // Native hook cleanup runs before Runtime shutdown, so a configured healthshot override is no longer wanted.
-        self.healthshot_hooks_ready = false;
+        self.healthshot.stop_hooks();
         self.ground_reverse.retry_cleanup();
-        self.restore_duck_speed();
-        self.restore_model_scales();
+        self.air_strafe.retry_cleanup();
+        self.public_properties.restore_all();
         self.welcomes.clear();
         self.bombs.acknowledge_shutdown_removals();
         self.cleanup_effects(false);
         self.restore_team_names();
-        if let Err(error) = self.healthshot_parameters.set_healthshot_override(false) {
+        if let Err(error) = self.healthshot.restore() {
             self.record_fault(error);
         }
-        self.healthshot_override_active = false;
-        if self.cleanup_complete() && self.duck_speed.is_empty() && self.model_scales.is_empty() {
+        if self.cleanup_complete() && self.public_properties.is_restored() {
             Ok(())
         } else {
             Err("owned properties or ConVars remain unrestored; snapshots retained for shutdown retry".into())
         }
     }
 
-    pub fn track_suicide_feedback(&mut self, handle: i32, now: f32) -> bool {
-        (now + crate::suicide::FEEDBACK_LIFETIME).is_finite() && self.suicide_feedback.track(handle, now + crate::suicide::FEEDBACK_LIFETIME)
-    }
-
-    pub fn take_suicide_feedback_cleanup(&mut self) -> Vec<i32> {
-        std::mem::take(&mut self.suicide_feedback_cleanup)
-    }
-
     fn restore_team_names(&mut self) {
         if let Err(error) = self.team_names.restore() {
             self.record_fault(Fault::global(error));
-        }
-    }
-
-    fn suicide_enabled(&self) -> bool {
-        self.classic_enabled() && active_combat_phase(self.controller.phase()) && self.controller.current_mode().is_some_and(|mode| mode.suicide)
-    }
-
-    fn c4_purchase_enabled(&self, start: bool) -> bool {
-        self.classic_enabled()
-            && active_combat_phase(self.controller.phase())
-            && self
-                .controller
-                .current_mode()
-                .is_some_and(|mode| if start { mode.suicide } else { mode.c4_buy })
-    }
-
-    fn qualifying_c4(&self, player: LivePlayer) -> Option<i32> {
-        s2sdk::GetClientWeapons(player.slot)
-            .iter()
-            .copied()
-            .find(|weapon| crate::suicide::real_c4(player, *weapon) && !self.bombs.excludes_suicide_c4(player, *weapon))
-    }
-
-    fn request_chicken(&mut self, slot: i32) -> Result<String, String> {
-        if !self.chicken_ready || !self.classic_enabled() || !active_combat_phase(self.controller.phase()) || !self.ordinary_chickens_enabled() {
-            return Err(self.text(slot, "chicken.unavailable", &[]));
-        }
-        let player = LivePlayer::resolve(slot).ok_or(self.text(slot, "player.alive_required", &[]))?;
-        if !matches!(s2sdk::GetClientTeam(slot) as i32, 2 | 3) {
-            return Err(self.text(slot, "chicken.team_required", &[]));
-        }
-        let task = self.combat_task(player).ok_or(self.text(slot, "player.life_pending", &[]))?;
-        if self.chicken_purchases.contains_key(&slot) {
-            return Err(self.text(slot, "chicken.pending", &[]));
-        }
-        let config = self.controller.config().ok_or(self.text(slot, "config.unavailable", &[]))?;
-        let price = config.prices.chicken_cash;
-        let player_origin = s2sdk::GetEntityAbsOrigin(player.pawn_handle);
-        if !player_origin.x.is_finite() || !player_origin.y.is_finite() || !player_origin.z.is_finite() {
-            return Err(self.text(slot, "chicken.position_invalid", &[]));
-        }
-        self.chicken_purchases.insert(slot, task);
-        self.engine_actions.push(EngineAction::ChickenPurchase {
-            task,
-            player,
-            price,
-            origin: plugify::Vec3 {
-                x: player_origin.x + 64.0,
-                y: player_origin.y,
-                z: player_origin.z + 4.0,
-            },
-        });
-        Ok(self.text(slot, "chicken.request", &[("price", &price.to_string())]))
-    }
-
-    fn request_suicide(&mut self, slot: i32, start: bool) -> Result<String, String> {
-        if !self.c4_purchase_enabled(start) {
-            return Err(self.text(slot, "c4.unavailable", &[]));
-        }
-        let player = LivePlayer::resolve(slot).ok_or(self.text(slot, "player.alive_required", &[]))?;
-        let task = self.combat_task(player).ok_or(self.text(slot, "player.life_pending", &[]))?;
-        if self.suicides.buying.get(&slot) == Some(&task) {
-            return Err(self.text(slot, "c4.pending", &[]));
-        }
-        if self.suicides.active(player) {
-            return Err(self.text(slot, "suicide.started", &[]));
-        }
-        if let Some(c4) = self.qualifying_c4(player) {
-            if self.suicide_enabled() {
-                self.suicides.qualify(task, player, c4);
-            }
-            if start {
-                self.suicides.begin(slot, s2sdk::GetGameTickCount(), s2sdk::GetGameTime())?;
-            }
-            return Ok(if self.suicide_enabled() {
-                self.text(slot, "c4.owned_suicide", &[])
-            } else {
-                self.text(slot, "c4.owned", &[])
-            });
-        }
-        if self.suicides.pending.iter().any(|action| action.task() == task) {
-            return Err(self.text(slot, "c4.pending", &[]));
-        }
-        if s2sdk::GetClientTeam(slot) as i32 != 2 {
-            return Err(self.text(slot, "c4.t_required", &[]));
-        }
-        let price = self.controller.config().map_or(10_000, |config| config.prices.c4_cash);
-        self.suicides.buying.insert(slot, task);
-        self.suicides
-            .pending
-            .push(crate::suicide::Action::Purchase { task, player, start, price });
-        Ok(self.text(slot, "c4.request", &[("price", &price.to_string())]))
-    }
-
-    fn update_suicides(&mut self, tick: i32) -> Vec<EngineAction> {
-        if !self.suicide_enabled() {
-            let mut due = Vec::new();
-            for action in std::mem::take(&mut self.suicides.pending) {
-                match action {
-                    crate::suicide::Action::Purchase { .. } => due.push(EngineAction::Suicide(action)),
-                    crate::suicide::Action::Finish {
-                        after_round_end: true,
-                        tick: queued,
-                        ..
-                    } if self.action_valid(&EngineAction::Suicide(action)) => {
-                        if round_end_finish_due(tick, queued) {
-                            due.push(EngineAction::Suicide(action));
-                        } else {
-                            self.suicides.pending.push(action);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            return due;
-        }
-        let now = s2sdk::GetGameTime();
-        let mut failures = Vec::new();
-        for slot in 0..s2sdk::GetMaxClients() {
-            let Some(player) = LivePlayer::resolve(slot) else { continue };
-            let Some(task) = self.combat_task(player) else { continue };
-            if let Some(entry) = self.suicides.entries.get(&slot)
-                && entry.task != task
-            {
-                // A new life may reuse the same pawn; its fresh properties are not ours.
-                self.suicides.entries.remove(&slot);
-            }
-            if let Some(c4) = self.qualifying_c4(player) {
-                self.suicides.qualify(task, player, c4);
-            }
-            let Some(entry) = self.suicides.entries.get_mut(&slot) else { continue };
-            if let Some(sequence) = entry.sequence.as_mut() {
-                if sequence.take_due(tick, now) {
-                    self.suicides.pending.push(crate::suicide::Action::Blast { task, player });
-                }
-            } else if !crate::suicide::real_c4(player, entry.c4) {
-                self.suicides.entries.remove(&slot);
-            } else {
-                let look = crate::funrounds_native::GetLookAtWeaponButtonState(player.pawn_handle);
-                let edge = look == 1 && !entry.look_down;
-                entry.look_down = look == 1;
-                if edge
-                    && s2sdk::GetClientActiveWeapon(slot) == entry.c4
-                    && let Err(error) = self.suicides.begin(slot, tick, now)
-                {
-                    failures.push(error);
-                }
-            }
-        }
-        if let Some(error) = failures.pop() {
-            self.handle_fault(Fault::mechanism(Mechanism::Suicide, error));
-        }
-        let pending = std::mem::take(&mut self.suicides.pending);
-        let mut due = Vec::new();
-        for action in pending {
-            if matches!(action, crate::suicide::Action::Finish { tick: queued, .. } if tick <= queued) {
-                self.suicides.pending.push(action);
-            } else {
-                due.push(EngineAction::Suicide(action));
-            }
-        }
-        due
-    }
-
-    pub fn blocks_suicide_pickup(&self, pawn: i32, controller: i32) -> bool {
-        self.suicide_enabled()
-            && self.suicides.entries.values().any(|entry| {
-                entry.player.pawn_handle == pawn
-                    && entry.player.controller_handle == controller
-                    && entry.sequence.is_some()
-                    && self.combat_task(entry.player) == Some(entry.task)
-            })
-    }
-
-    pub fn existing_suicide_c4(&self, player: LivePlayer) -> Option<i32> {
-        self.qualifying_c4(player)
-    }
-
-    pub fn suicide_buyer_current(&self, action: crate::suicide::Action) -> bool {
-        self.on_game_thread()
-            && self.players.validates_connection(action.task().player)
-            && self.controllers.get(&action.player().slot) == Some(&action.player().controller_handle)
-    }
-
-    pub fn finish_suicide_purchase(&mut self, action: crate::suicide::Action, result: Result<i32, crate::cash::PurchaseError>) {
-        let crate::suicide::Action::Purchase { task, player, start, .. } = action else {
-            return;
-        };
-        if self.suicides.buying.get(&player.slot) == Some(&task) {
-            self.suicides.buying.remove(&player.slot);
-        }
-        if !self.action_valid(&EngineAction::Suicide(action)) {
-            return;
-        }
-        let message = match result {
-            Ok(c4) => {
-                if self.suicide_enabled() {
-                    self.suicides.qualify(task, player, c4);
-                }
-                if start && let Err(error) = self.suicides.begin(player.slot, s2sdk::GetGameTickCount(), s2sdk::GetGameTime()) {
-                    self.handle_fault(Fault::mechanism(Mechanism::Suicide, error));
-                }
-                crate::i18n::Message::new(if start {
-                    "c4.purchased_start"
-                } else if self.suicide_enabled() {
-                    "c4.purchased_inspect"
-                } else {
-                    "c4.purchased"
-                })
-            }
-            Err(error) => self.purchase_error(player.slot, error),
-        };
-        crate::i18n::send_chat(player.slot, &self.message(player.slot, message));
-    }
-
-    pub fn prepare_suicide_blast(&mut self, action: crate::suicide::Action) -> Result<Vec<(PlayerTask, LivePlayer, f32)>, Fault> {
-        let source = action.player();
-        let origin = s2sdk::GetEntityAbsOrigin(source.pawn_handle);
-        let tick = s2sdk::GetGameTickCount();
-        let self_amount = s2sdk::GetClientHealth(source.slot) as f32 * 10.0;
-        self.suicides.pending.push(crate::suicide::Action::Finish {
-            task: action.task(),
-            player: source,
-            amount: self_amount,
-            tick,
-            after_round_end: false,
-        });
-        let mut targets = Vec::new();
-        for slot in 0..s2sdk::GetMaxClients() {
-            let Some(player) = LivePlayer::resolve(slot).filter(|player| *player != source) else {
-                continue;
-            };
-            let Some(task) = self.combat_task(player) else { continue };
-            let position = s2sdk::GetEntityAbsOrigin(player.pawn_handle);
-            let distance = ((origin.x - position.x).powi(2) + (origin.y - position.y).powi(2) + (origin.z - position.z).powi(2)).sqrt();
-            let amount = funrounds_core::suicide_blast_damage(s2sdk::GetClientHealth(slot), distance);
-            if amount <= 0.0 {
-                continue;
-            }
-            if let Some(sequence) = self.suicides.entries.get_mut(&slot).and_then(|entry| entry.sequence.as_mut()) {
-                sequence.chain_next_tick(tick);
-                continue;
-            }
-            targets.push((task, player, amount));
-        }
-        for name in [
-            "mp_friendlyfire",
-            "ff_damage_reduction_bullets",
-            "ff_damage_reduction_grenade",
-            "ff_damage_reduction_other",
-        ] {
-            self.suicides.ff.set_number(name, 1.0)?;
-        }
-        Ok(targets)
-    }
-
-    pub fn prepare_suicide_finish(&self, action: crate::suicide::Action) -> Option<f32> {
-        let crate::suicide::Action::Finish { player, amount, .. } = action else {
-            return None;
-        };
-        if !self.action_valid(&EngineAction::Suicide(action)) {
-            return None;
-        }
-        lethal_suicide_finish_amount(amount, s2sdk::GetClientHealth(player.slot))
-    }
-
-    pub fn suicide_target_valid(&self, task: PlayerTask, player: LivePlayer) -> bool {
-        self.suicide_enabled() && self.combat_task(player) == Some(task) && LivePlayer::resolve(player.slot) == Some(player)
-    }
-
-    fn suicide_hurt(&mut self, event: usize, victim: i32, attacker: i32) {
-        if !crate::damage::internal_suicide_hurt(victim, attacker) {
-            return;
-        }
-        let Some(player) = LivePlayer::resolve_present(victim) else { return };
-        let Some(task) = self.combat_task(player) else { return };
-        if let Some((expected, life)) = self.combat.get_mut(&victim).filter(|(expected, _)| *expected == task) {
-            let _ = expected;
-            life.lose_native_armor(s2sdk::GetEventInt(event, &Str::from_str("dmg_armor")));
-        }
-    }
-
-    pub fn finish_suicide_blast(&mut self) {
-        if let Err(error) = self.suicides.ff.restore() {
-            self.handle_fault(Fault::global(error));
         }
     }
 
@@ -5977,7 +3868,7 @@ impl Runtime {
                 );
                 let (hostage_rescue_available, hostage_rescue_reason) = self.hostage_rescue_status();
                 let details = format!(
-                    "config={}\ncapabilities={:?}\nexcluded={}\ncapability_reasons={}\nhostage_rescue_compat_enabled={}\nhostage_rescue_compat_available={}\nhostage_rescue_compat_reason={}",
+                    "config={}\ncapabilities={:?}\nexcluded={}\ncapability_reasons={}\nhostage_rescue_compat_enabled={}\nhostage_rescue_compat_available={}\nhostage_rescue_compat_reason={}\nhostage_rescue_compat_owner={}",
                     self.config_path.display(),
                     self.controller.capabilities(),
                     self.controller
@@ -6000,6 +3891,7 @@ impl Runtime {
                     self.controller.hostage_rescue_compat_enabled(),
                     hostage_rescue_available,
                     hostage_rescue_reason,
+                    "funrounds",
                 );
                 Ok(format_status(
                     &summary,
@@ -6048,19 +3940,18 @@ impl Runtime {
                 }
                 if !enabled {
                     self.ground_reverse.retry_cleanup();
+                    self.air_strafe.retry_cleanup();
                     self.cleanup_effects(false);
                     self.restore_team_names();
                     self.welcomes.clear();
                     self.hostage_rescue.clear_attempts();
                 }
                 if enabled && !was_enabled {
-                    self.restore_duck_speed();
-                    self.restore_model_scales();
+                    self.public_properties.restore_all();
                 }
                 self.controller.set_enabled(enabled);
                 if !enabled {
-                    self.restore_duck_speed();
-                    self.restore_model_scales();
+                    self.public_properties.restore_all();
                     self.finish_recovery();
                 }
                 Ok(self.text(slot, "command.enabled", &[("enabled", &enabled.to_string())]))
@@ -6098,6 +3989,7 @@ impl Runtime {
                 }
                 if let Some(shield) = self
                     .combat
+                    .lives
                     .get(&slot)
                     .and_then(|(task, life)| (Some(task.player) == self.players.identity(slot)).then(|| life.shield()).flatten())
                 {
@@ -6147,16 +4039,6 @@ impl Runtime {
             }
         }
     }
-}
-
-fn sync_shield_hud(player: LivePlayer, armor: i32) -> Result<(), Fault> {
-    if s2sdk::GetClientArmor(player.slot) != armor {
-        s2sdk::SetClientArmor(player.slot, armor);
-        if s2sdk::GetClientArmor(player.slot) != armor {
-            return Err(Fault::mechanism(Mechanism::EnergyShield, "shield armor HUD write failed"));
-        }
-    }
-    Ok(())
 }
 
 fn event_weapon_snapshot(player: LivePlayer, attacker: PlayerIdentity, event_weapon: &str) -> Option<KillWeaponTarget> {
@@ -6247,7 +4129,11 @@ fn weapon_identity_is_current(player: LivePlayer, weapon: &FiredWeapon) -> bool 
 fn format_status(summary: &str, faults: &Faults, cleanup_pending: bool, details: &str) -> String {
     format!(
         "{summary} recovery={:?} cleanup_pending={cleanup_pending}\nfaults={}\n{details}",
-        faults.recovery,
+        if cleanup_pending && faults.recovery == Recovery::Ready {
+            Recovery::Recovering
+        } else {
+            faults.recovery
+        },
         faults.reasons(),
     )
 }
@@ -6255,66 +4141,6 @@ fn format_status(summary: &str, faults: &Faults, cleanup_pending: bool, details:
 fn read_config(path: &std::path::Path) -> Result<Config, String> {
     let source = std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
     Config::parse(&source).map_err(|error| format!("{}: {error}", path.display()))
-}
-
-pub(crate) fn remove_native_c4(player: LivePlayer, handles: &[i32]) -> Result<(), Fault> {
-    if LivePlayer::resolve(player.slot) != Some(player) {
-        return Err(Fault::cancelled("player identity changed before native C4 cleanup"));
-    }
-    for handle in handles.iter().copied() {
-        if !s2sdk::IsValidEntHandle(handle) || s2sdk::GetEntityClassname(handle).as_str() != "weapon_c4" {
-            continue;
-        }
-        if s2sdk::GetEntityOwner(handle) != player.pawn_handle {
-            return Err(Fault::cancelled("native C4 ownership changed before cleanup"));
-        }
-        s2sdk::RemoveWeapon(player.slot, handle);
-        if LivePlayer::resolve(player.slot) != Some(player) {
-            return Err(Fault::cancelled("player identity changed during native C4 cleanup"));
-        }
-        if s2sdk::GetClientWeapons(player.slot).iter().any(|current| *current == handle) {
-            return Err(Fault::mechanism(Mechanism::NoC4, "engine retained the native C4 after removal"));
-        }
-        if s2sdk::IsValidEntHandle(handle) {
-            if s2sdk::GetEntityClassname(handle).as_str() != "weapon_c4"
-                || !matches!(s2sdk::GetEntityOwner(handle), owner if owner == -1 || owner == player.pawn_handle)
-            {
-                return Err(Fault::cancelled("native C4 ownership changed during cleanup"));
-            }
-            s2sdk::RemoveEntity(handle);
-            if !crate::game::engine_removal_acknowledged(handle) {
-                return Err(Fault::mechanism(Mechanism::C4Assignment, "native C4 entity survived cleanup"));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn mode65_self_damage(damage: &crate::damage::Damage, pawn: i32, health: i32) -> bool {
-    let damage_type = damage.damage_type;
-    let native_self = damage.inflictor == pawn;
-    // mp_weapon_self_inflict_amount uses pawn-attributed DMG_GENERIC, not DMG_BULLET.
-    native_self && (damage_type == 0 || damage_type == 0x0200_0000 && health <= 1 && damage.amount == 1.0)
-        || damage.weapon_kind == 1 && damage_type & crate::damage::DMG_BULLET != 0
-}
-
-fn self_damage_allowed(mode: &funrounds_core::Mode, damage: &crate::damage::Damage, pawn: i32, health: i32) -> bool {
-    if damage.damage_type & 32 != 0 {
-        return false;
-    }
-    match mode.self_damage {
-        Some(SelfDamage::MissPenalty) => mode65_self_damage(damage, pawn, health),
-        Some(SelfDamage::Native { amount }) => amount > 0.0,
-        None => false,
-    }
-}
-
-fn numeric_self_damage_enters_health(allowed_self: bool, blocked: bool, incoming: f32) -> bool {
-    allowed_self && !blocked && incoming.is_finite() && incoming > 0.0
-}
-
-fn delayed_damage_protection_valid(protection_enabled: bool, target: PlayerTask, current: Option<(PlayerTask, bool)>) -> bool {
-    !protection_enabled || current.is_some_and(|(task, protected)| task == target && !protected)
 }
 
 fn observe_lifecycle_tick(last: &mut Option<i32>, tick: i32, event: Option<&str>) -> bool {
@@ -6348,14 +4174,6 @@ fn round_selection_waits(game_warmup: bool, effects_ready_after_cleanup: bool) -
     game_warmup || !effects_ready_after_cleanup
 }
 
-fn healthshot_override_settled(wanted: bool, active: bool, parameters_restored: bool) -> bool {
-    wanted == active && (wanted || parameters_restored)
-}
-
-fn public_property_cleanup_complete(enabled: bool, duck_speed_empty: bool, model_scales_empty: bool) -> bool {
-    enabled || (duck_speed_empty && model_scales_empty)
-}
-
 fn warmup_reactivation_needed(state: Option<bool>, warmup_active: bool, phase: Phase, activation_pending: bool, activation_available: bool) -> bool {
     state == Some(true) && warmup_active && phase != Phase::Warmup && !activation_pending && activation_available
 }
@@ -6376,10 +4194,6 @@ fn log(message: &str) {
     s2sdk::PrintToServer(&Str::from_str(&format!("[FunRounds] {message}")));
 }
 
-fn respawn_target_valid(expected: LivePlayer, current: Option<LivePlayer>, team: i32, current_team: i32, alive: bool) -> bool {
-    current == Some(expected) && matches!(team, 2 | 3) && current_team == team && !alive
-}
-
 fn random_kill_loadout_start(mode: &funrounds_core::Mode, rng: &mut impl rand::Rng) -> Vec<String> {
     // Resample the same configured equipment categories at each life, not just at round start.
     mode.select_equipment(rng)
@@ -6390,44 +4204,6 @@ fn random_kill_loadout_start(mode: &funrounds_core::Mode, rng: &mut impl rand::R
 }
 fn warmup_spawn_needed(identity: Option<PlayerIdentity>, player: LivePlayer, effect_applied: bool, loadout_pending: bool) -> bool {
     identity.is_none_or(|identity| identity.pawn_handle != player.pawn_handle as u32) || !(effect_applied || loadout_pending)
-}
-
-fn round_respawn_task(players: &PlayerTracker, round: RoundGeneration, player: LivePlayer) -> Option<PlayerTask> {
-    if let Some(identity) = players
-        .identity(player.slot)
-        .filter(|identity| identity.pawn_handle == player.pawn_handle as u32)
-    {
-        return Some(PlayerTask { player: identity, round });
-    }
-    players.respawn_task(player.slot, round)
-}
-
-fn round_respawn_task_valid(players: &PlayerTracker, task: PlayerTask, round: RoundGeneration, player: LivePlayer) -> bool {
-    task.player.slot == player.slot
-        && if task.player.pawn_handle == u32::MAX {
-            players.validates_respawn(task, round)
-        } else {
-            players.validates(task, round, player.pawn_handle as u32)
-        }
-}
-
-fn round_respawn_target_valid(
-    all_respawn: bool,
-    phase: Phase,
-    expected: LivePlayer,
-    current: Option<LivePlayer>,
-    team: i32,
-    current_team: i32,
-) -> bool {
-    all_respawn && phase != Phase::Idle && current == Some(expected) && matches!(team, 2 | 3) && current_team == team
-}
-
-fn lifesteal_eligible(attacker: i32, victim: i32, attacker_alive: bool) -> bool {
-    attacker >= 0 && victim >= 0 && attacker != victim && attacker_alive
-}
-
-fn respawn_window_open(phase: Phase, remaining: Option<f32>) -> bool {
-    phase == Phase::Preparing || phase == Phase::Warmup || (phase == Phase::Running && remaining.is_none_or(|seconds| seconds > 0.0))
 }
 
 fn center_display_due(current: bool, phase: Phase, tick: i32, scheduled: i32) -> bool {
@@ -6475,7 +4251,7 @@ mod tests {
             false,
             &details,
         );
-        let parts = crate::commands::status_reply_parts(&status).collect::<Vec<_>>();
+        let parts = crate::commands::line_reply_parts(&status).collect::<Vec<_>>();
         assert!(parts[0].ends_with("recovery=Stopped cleanup_pending=false"));
         assert_eq!(parts[1], "faults=Global:[created action failed after cancellation]");
         assert!(parts[2].starts_with("capabilities="));
@@ -6511,43 +4287,6 @@ mod tests {
     #[test]
     fn console_output_starts_on_a_separate_line() {
         assert_eq!(super::separate_console_output("[FunRounds] mode".into()), "\n[FunRounds] mode");
-    }
-
-    #[test]
-    fn miss_penalty_respects_native_self_damage_and_final_health_point() {
-        let mut mode = funrounds_core::Config::parse(include_str!("../../../config/funrounds.example.toml"))
-            .unwrap()
-            .modes
-            .remove(0);
-        mode.self_damage = Some(funrounds_core::SelfDamage::MissPenalty);
-        let mut damage = crate::damage::Damage {
-            victim: 42,
-            attacker: 42,
-            inflictor: 42,
-            weapon_kind: 0,
-            hit_group: -1,
-            traced_head: false,
-            amount: 36.0,
-            damage_type: 0,
-            weapon: -1,
-            weapon_class: None,
-            skip_plugin_rules: false,
-        };
-        assert!(super::self_damage_allowed(&mode, &damage, 42, 200));
-        assert!(!super::self_damage_allowed(&mode, &damage, 43, 200));
-        for damage_type in [8, 64, 256, 0x0200_0000] {
-            damage.damage_type = damage_type;
-            assert!(!super::self_damage_allowed(&mode, &damage, 42, 200));
-        }
-        damage.amount = 1.0;
-        assert!(super::self_damage_allowed(&mode, &damage, 42, 1));
-        assert!(!super::self_damage_allowed(&mode, &damage, 42, 2));
-        damage.damage_type = 0;
-        assert!(super::self_damage_allowed(&mode, &damage, 42, 1));
-        damage.damage_type = 2;
-        assert!(!super::self_damage_allowed(&mode, &damage, 42, 200));
-        damage.weapon_kind = 1;
-        assert!(super::self_damage_allowed(&mode, &damage, 42, 200));
     }
 
     #[test]
@@ -6619,58 +4358,6 @@ mod tests {
             assert!(controller.freeze_end(new_key));
             assert_eq!(controller.phase(), Phase::Running);
         }
-    }
-
-    #[test]
-    fn lifesteal_excludes_self_world_and_dead_attackers() {
-        assert!(super::lifesteal_eligible(1, 2, true));
-        assert!(!super::lifesteal_eligible(1, 1, true));
-        assert!(!super::lifesteal_eligible(-1, 2, true));
-        assert!(!super::lifesteal_eligible(1, -1, true));
-        assert!(!super::lifesteal_eligible(1, 2, false));
-    }
-
-    #[test]
-    fn team_respawn_works_during_freeze_without_starting_the_score_timer() {
-        use funrounds_core::Phase;
-        assert!(super::respawn_window_open(Phase::Preparing, None));
-        assert!(super::respawn_window_open(Phase::Running, Some(3.0)));
-        assert!(!super::respawn_window_open(Phase::Running, Some(0.0)));
-        assert!(super::respawn_window_open(Phase::Running, None));
-        assert!(!super::respawn_window_open(Phase::Idle, Some(30.0)));
-    }
-
-    #[test]
-    fn respawn_rejects_changed_handles_team_and_external_resurrection() {
-        let player = crate::game::LivePlayer {
-            slot: 1,
-            controller_handle: 0x4001,
-            pawn_handle: 0x4002,
-        };
-        assert!(super::respawn_target_valid(player, Some(player), 2, 2, false));
-        assert!(!super::respawn_target_valid(player, Some(player), 2, 3, false));
-        assert!(!super::respawn_target_valid(player, Some(player), 2, 2, true));
-        assert!(!super::respawn_target_valid(player, None, 2, 2, false));
-        assert!(!super::respawn_target_valid(
-            player,
-            Some(crate::game::LivePlayer {
-                pawn_handle: 0x8002,
-                ..player
-            }),
-            2,
-            2,
-            false
-        ));
-        assert!(!super::respawn_target_valid(
-            player,
-            Some(crate::game::LivePlayer {
-                controller_handle: 0x8001,
-                ..player
-            }),
-            2,
-            2,
-            false
-        ));
     }
 
     #[test]

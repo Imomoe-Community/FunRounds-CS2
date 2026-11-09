@@ -3,10 +3,10 @@
 # FunRounds-CS2
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-0.3.0--alpha-informational.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-0.4.0--alpha-informational.svg)](Cargo.toml)
 [![Rust Version](https://img.shields.io/badge/Rust-1.99.1+-orange.svg)](rust-toolchain.toml)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20x64-lightgrey.svg)]()
-[![Framework](https://img.shields.io/badge/Framework-Plugify%20%2B%20S2SDK%203.0.6-success.svg)](https://github.com/untrustedmodders/plugify)
+[![Framework](https://img.shields.io/badge/Framework-Plugify%20%2B%20S2SDK%203.3.1-success.svg)](https://github.com/untrustedmodders/plugify)
 
 **高性能、高安全性的 Counter-Strike 2 专用服务端特殊娱乐回合插件**
 
@@ -18,9 +18,9 @@
 
 ### 项目简介
 
-**FunRounds-CS2** 是基于 Rust 与 C++20 原生扩展开发、面向 Counter-Strike 2 专用服务端的特殊娱乐回合（Fun Rounds）插件。本项目构建于 [Plugify](https://github.com/untrustedmodders/plugify) 插件框架和 [S2SDK](https://github.com/untrustedmodders/plugify-plugin-s2sdk) 扩展之上。
+**FunRounds-CS2** 是基于 Rust 与 C++20 原生扩展开发、面向 Counter-Strike 2 专用服务端的特殊娱乐回合（Fun Rounds）插件。本项目构建于 [Plugify](https://github.com/untrustedmodders/plugify) 插件框架和 [S2SDK](https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk/tree/funrounds) 扩展之上。
 
-插件在每个回合开始时（或由管理员实时指定）无缝应用多维度的玩法突变：修改玩家属性、物理参数、动态配装、后坐与视角机制、特殊战斗规则、小鸡生态及 C4 玩法，同时保证严格的崩溃隔离与无残留状态恢复。
+插件在每个回合开始时（或由管理员实时指定）无缝应用多维度的玩法突变：修改玩家属性、机动物理、动态配装、后坐与视角机制、特殊战斗规则、小鸡生态及 C4 玩法，同时保证严格的崩溃隔离与无残留状态恢复。
 
 ---
 
@@ -28,14 +28,51 @@
 
 | 玩法维度 | 特性机制概要 |
 | :--- | :--- |
-| **基础属性与物理** | 生命值（1～10000 或区间随机）、护甲头盔、重力倍率、移速倍率、地面摩擦力、自动连跳（Bunnyhop）、地面加速度与反向倒车行走（`ground_reverse`）、全局时间流速（`time_scale`）及周期性变重力/变移速。 |
-| **视觉与相机视角** | 第三人称视角（`third_person`）、幽灵按行动隐身（`ghost`，支持呼吸心跳音效与距离感知）、夜视仪（`fr_nvg`）、准星/雷达隐藏（`hide_hud`）、模型 RGB 着色、半透明外观与开镜限制。 |
-| **射击与自推反冲** | 开火自身反冲自推（`fr_knock` 支持地面与空中切换）、后坐力与散布消除、开枪镜头震动冲击与衰减（`recoil_view` / `view_punch_decay`）、快速切枪（`fast_switch`）及射击引爆掉落手雷。 |
-| **动态配装与弹药** | 阵营武器清理与定向配发、4 种弹药模式（原生 / 无限备弹 / 无限弹匣 / 单发换装）、电击枪充能、手雷自动补充（HE/闪光/烟雾/诱饵/燃烧弹）、击杀升级换枪（`kill_loadout`）与随机抽枪。 |
-| **特殊战斗判定** | 造成伤害吸血、反弹伤害（`reflect_damage`）、按当前生命动态缩放伤害/移速/衰减、能量吸收护盾、开枪自伤（未命中扣血）、诱饵弹躲避球碰撞杀伤（`dodgeball`）、右键飞刀投掷弹射与命中持续燃烧（`afterburn`）。 |
-| **C4 炸弹与自爆** | 3 种炸弹模式（原生 C4 / 鸡背 C4 / 便携可携带 C4）、自定义安放/拆除/爆炸耗时、炸弹弹跳、4 色引线拆包剪线小游戏（`fr_wire`）、现金购买 C4（`fr_c4`）及引爆炸弹自爆（`fr_suicide`）。 |
-| **小鸡生态与回血** | 普通小鸡比例刷新生态、互动吃鸡回血与未消化自爆风险机制、小鸡连锁爆炸；自定义医疗针回血比例与上限控制（`healthshot`，支持 `fr_healthshot` 购买）。 |
-| **经济与多语言** | 任意位置购买、阵营购买权限、回合保底现金与被动收入；内置完整中英多语言本地化（`zh-CN` / `en`），优先跟随客户端语言。 |
+| **基础属性与物理** | 生命值（1～10000 或区间随机）、护甲头盔（护甲最高 1000）、重力倍率、移速倍率、地面摩擦力、自动连跳（Bunnyhop）、地面加速度与反向行走（`ground_reverse`）、全局时间流速（`time_scale`）及周期性变重力/变移速。 |
+| **动作与机动能力** | 空中辅助转向加速（`autostrafe`）、空中贴墙挂墙（`wall_hang`）、准星瞄准点抓钩牵引（`grapple`）及地图特定区域蹦床弹射（`trampoline`）。 |
+| **视觉与相机视角** | 第三人称视角（`third_person`）、幽灵按行动隐身（`ghost`，支持呼吸心跳音效与距离感知）、大头模式（`big_head`，依据 KD 动态缩放头部）、夜视仪（`fr_nvg`）、准星/雷达隐藏（`hide_hud`）、模型 RGB 着色、半透明外观与开镜限制。 |
+| **射击与自推反冲** | 开火自身反冲自推（`fr_knock` 支持地面与空中切换）、后坐力与散布消除、开火概率换枪/掉枪（`weapon_on_fire`）、子弹命中爆炸（`explosive_bullets`）、开枪镜头震动冲击与衰减及快速切枪（`fast_switch`）。 |
+| **动态配装与武器** | 规范化物品 ID、命名武器组（`[weapon_groups]` 支持 `@group` 引用）、阵营清理与定向配发、4 种弹药模式（原生 / 无限备弹 / 无限弹匣 / 单发换装）、电击枪充能、击杀升级换枪（`kill_loadout`）与独立随机配装。 |
+| **投掷物与特殊战术** | 投掷手雷自动补充、接近敌人近炸引信（`proximity_fuse`）、HE 手雷寻的追踪飞行（`he_guidance`）、HE 爆风推力、烟雾区域治疗（`medical_smoke`）、诱饵弹躲避球碰撞杀伤（`dodgeball`）、右键飞刀及长效闪光（`long_flash`）。 |
+| **特殊战斗与生存惩罚** | 造成伤害吸血、伤害反弹（`reflect_damage`）、动态生命曲线、友军射击转治疗（`friendly_fire_heal`）、脱战自愈（`regeneration`）、低速扣血惩罚（`dont_stop`）、熔岩地面（`hot_floor`）、死亡殉爆（`death_explosion`）与队杀限制。 |
+| **C4 目标与小鸡生态** | 3 种炸弹模式（原生 C4 / 鸡背 C4 / 便携可携带 C4）、自定义耗时与弹跳、4 色引线拆包剪线小游戏（`fr_wire`）、现金购买 C4（`fr_c4`）与自爆（`fr_suicide`）；普通小鸡生态刷新、吃鸡回血与自爆、小鸡回血光环（`chicken_aura`）及医疗针。 |
+
+<details>
+<summary><b>点击展开查看全部详细玩法特性与机制列表</b></summary>
+
+- **规范化装备系统**
+  - **规范物品 ID**：全面采用无 `weapon_` 前缀的标准物品标识符（如 `famas`, `p250`, `hegrenade`, `flashbang`, `smokegrenade`, `decoy`, `molotov`, `incgrenade` 等）。
+  - **命名武器组**：支持在配置顶层定义 `[weapon_groups]`，模式中通过 `@group_name` 语法引用与组合复用。
+  - **扩展护甲上限**：初始护甲支持设定至最高 `1000` 点。
+
+- **动作与机动能力**
+  - **空中辅助加速 (`autostrafe`)**：空中自动对齐偏航速度并施加辅助加速，带来顺滑的空速增益体验。
+  - **空中挂墙 (`wall_hang`)**：在空中贴靠墙面且按住跳跃键时进入挂壁悬停状态。
+  - **抓钩绳索 (`grapple`)**：瞄准任意场景表面并按下使用键，以配置的最大速度与拉力牵引玩家快速位移。
+  - **区域蹦床 (`trampoline`)**：在指定竞技地图（如 Dust2、Mirage）内置点位踩入即触发高空垂直弹射。
+
+- **射击与战斗突变**
+  - **爆炸子弹 (`explosive_bullets`)**：开火命中产生范围爆炸、伤害与击退效果，支持独立冷却、伤害与半径区间。
+  - **开火失控 (`weapon_on_fire`)**：射击时有几率触发强制切换下一武器或直接脱手掉落当前武器。
+  - **动态大头 (`big_head`)**：根据玩家当场击杀/死亡比率（KD）动态缩放头部模型大小与爆头判定框。
+  - **友伤转治疗 (`friendly_fire_heal`)**：命中友军不仅免除误伤，还可按固定数值或伤害比例为队友恢复生命。
+  - **脱战自愈 (`regeneration`)**：脱离交火经过指定冷却延迟后，按固定周期自动恢复生命值。
+
+- **高阶投掷物机制**
+  - **近炸引信 (`proximity_fuse`)**：手雷飞行至敌方玩家感知半径内时触发近炸，直接缩短延时提前起爆。
+  - **寻的追踪手雷 (`he_guidance`)**：高爆手雷出膛后自动以配置转向角速度寻的并追踪飞行轨迹中的敌人。
+  - **爆风推力 (`hegrenade_impulse`)**：高爆手雷爆炸产生额外物理冲量，推开爆心周围的目标。
+  - **医疗烟雾 (`medical_smoke`)**：友方烟雾弹扩散范围内为处于其中的队友持续恢复生命。
+  - **长效致盲 (`long_flash`)**：按倍率延长闪光弹全白致盲时间，并受最大保护上限时间限制。
+
+- **环境惩罚与规则机制**
+  - **止步惩罚 (`dont_stop`)**：玩家水平移速低于安全阈值并超过宽限时间后，将持续受到失速扣血惩罚。
+  - **熔岩地面 (`hot_floor`)**：持续接触地面超过安全秒数后持续扣血，久留不离开则直接被火焰点燃。
+  - **死亡殉爆 (`death_explosion`)**：每回合随机从双方阵营赋予特定玩家死亡自爆装药，阵亡瞬间引发致命爆炸。
+  - **队杀限制 (`teamkill_limit`)**：严格限制单回合队杀次数，超额直接触发惩罚。
+  - **周期性参数波动 (`periodic_speed` / `periodic_gravity`)**：支持配置随机时间间隔，按自定义离散数值或连续区间周期刷新重力与移速。
+
+</details>
 
 <details>
 <summary><b>点击展开架构与可靠性设计</b></summary>
@@ -55,7 +92,7 @@
 ### 项目目录结构
 
 ```text
-├── bindings/             # Plugify S2SDK 接口清单 (123 项接口定义)
+├── bindings/             # Plugify S2SDK 接口清单 (164 项接口定义)
 ├── config/               # 示例配置文件及多语言包
 │   ├── funrounds.example.toml # 示例配置
 │   └── i18n/             # 本地化翻译文件 (zh-CN.toml, en.toml)
@@ -77,7 +114,7 @@
 
 - Counter-Strike 2 专用服务端（Windows x64 或 Linux x64）
 - 服务端已安装配置 [Plugify](https://github.com/untrustedmodders/plugify) 插件框架
-- 服务端已加载并运行 [S2SDK](https://github.com/untrustedmodders/plugify-plugin-s2sdk) 插件（版本 `3.0.6`）
+- 服务端已加载并运行 [S2SDK](https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk/tree/funrounds) 插件（版本 `=3.3.1`）
 
 #### 部署步骤
 
@@ -101,29 +138,29 @@ game/csgo/addons/plugify/
         │   └── funrounds-native.dll (或 lib*.so)   # 原生动态库
         ├── funrounds-native.pplugin                # 原生插件清单
         └── gamedata/
-            └── funrounds-native.jsonc              # Gamedata 特征与偏移文件
+            └── funrounds-native.jsonc              # Gamedata 特征与偏移
 ```
 
 ---
 
 ### 指令列表
 
-#### 管理员与服务端控制台指令（Console / RCON）
+#### 管理员与控制台指令（Console / RCON）
 
 | 控制台指令 | 参数 | 说明 |
 | :--- | :--- | :--- |
 | `fr_status` | 无 | 查看当前回合状态、运行阶段、底层能力就绪状态及故障排查信息。 |
-| `fr_list` | 无 | 列出当前配置池中所有已启用的特殊模式列表。 |
-| `fr_next` | `<id \| random>` | 指定下一回合的模式 ID，或恢复随机抽取 (`random`)。 |
+| `fr_list` | 无 | 列出配置池中所有已启用的特殊模式列表。 |
+| `fr_next` | `<id \| random \| id <id>>` | 指定下一回合的模式 ID（支持直接传 ID 或 `id <id>`），或恢复随机抽取 (`random`)。 |
 | `fr_reload` | 无 | 校验并重载配置文件与多语言文本，重载成功于下一回合生效。 |
 | `fr_enable` | `<0 \| 1>` | 插件总启停开关：`1` 为启用，`0` 为停用。 |
 
-#### 玩家控制台与聊天指令
+#### 玩家控制台与聊天快捷指令
 
-| 控制台指令 | 聊天快捷指令 | 参数 | 说明 |
+| 控制台指令 | 聊天指令 | 参数 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `fr_info` | `!info` / `!frinfo` | 无 | 在聊天栏中查看当前回合模式名称、编号与玩法说明。 |
-| `fr_help` | `!help` / `!frhelp` | 无 | 查看插件帮助信息及玩家可用指令。 |
+| `fr_help` | `!help` / `!frhelp` | 无 | 查看插件帮助信息及玩家可用指令列表。 |
 | `fr_knock` | `!knock` | `[0\|1\|2]` | 设置或切换开火自推反冲（`0` 关闭，`1` 地空全开，`2` 仅空中 [默认]，无参依次切换）。 |
 | `fr_c4` | `!c4` | 无 | 进攻方在模式允许时按配置价格购买额外 C4。 |
 | `fr_suicide` | `!suicide` | 无 | 允许自爆时使用所持或购买的 C4 启动自爆。 |
@@ -136,50 +173,56 @@ game/csgo/addons/plugify/
 
 ### 配置说明
 
-配置文件采用严格 TOML 语法解析。支持 `[defaults]` 全局继承模板为所有模式提供默认参数：
+配置文件采用严格 TOML 语法解析。支持 `[defaults]` 模板为所有模式提供基础属性继承：
 
 ```toml
-# 顶层全局设置
-diagnostics = false # 是否开启诊断日志（默认 false）
+# 全局设置
+diagnostics = false # 诊断日志开关
 
 # 多语言配置
 [i18n]
 default_language = "zh-CN" # 服务端缺省语言（"zh-CN" 或 "en"）
 
-# 全局默认模板（模式内未单独设置的字段将继承此处）
+# 可选命名武器组
+# [weapon_groups]
+# basic = ["famas", "p250"]
+
+# 全局默认模板（模式内未设置的字段将继承此处）
 [defaults]
 gravity = 1.0
 bunnyhop = false
 
 [[modes]]
-id = "example"              # 模式唯一标识（仅允许字母、数字、'_' 或 '-'）
-enabled = true              # 是否启用该模式并加入随机池
-name_key = "mode.example.name" # 引用 i18n/*.toml 中的多语言文本键
-description_key = "mode.example.description"
-weapons = ["weapon_famas", "weapon_p250"]
+id = "example"              # 模式唯一标识
+enabled = true              # 是否启用该模式
+name_key = "mode.example.name" # 多语言名称键
+description_key = "mode.example.description" # 多语言说明键
+weapons = ["famas", "p250"] # 规范物品 ID
 
-# 阵营发放与清理
-clear_weapons = "all"       # 发放前清理武器队伍 (none / all / terrorists / counter_terrorists)
-give_weapons = "all"        # 发放候选武器队伍
-give_knife = "all"          # 发放刀具队伍
+# 阵营装备配发与清理
+clear_weapons = "all"       # 配发前清理武器的队伍 (none / all / terrorists / counter_terrorists)
+give_weapons = "all"        # 配发候选武器的队伍
+give_knife = "all"          # 配发刀具的队伍
 
 # 基础属性与移动
-health = 120                # 初始生命值 (1～10000，或区间随机 { min = 100, max = 150 })
-armor = 50                  # 初始护甲值 (0～255，或区间随机 { min = 0, max = 100 })
-gravity = 1.0               # 重力倍率 (0.0 < g <= 10.0，1.0 为正常重力)
-speed = 1.0                 # 移速倍率
+health = 120                # 初始生命值 (1～10000 或随机范围 { min = 100, max = 150 })
+armor = 50                  # 初始护甲值 (0～1000 或随机范围 { min = 0, max = 100 })
+gravity = 1.0               # 重力倍率 ((0, 10]，1.0 为正常重力)
+speed = 1.0                 # 移速倍率 ((0, 10])
 self_push = true            # 开启开火自推反冲
 
 # 射击与视角控制
-ammo = "reserve"            # 弹药模式 (inherit / reserve / clip / single_shot)
+ammo = "reserve"            # 弹药规则 (inherit / reserve / clip / single_shot)
 headshots = "normal"        # 爆头规则 (normal / only / disabled)
 fast_switch = true          # 快速切枪开关
 
-# 特殊玩法机制选开
+# 可选玩法突变示例
+# autostrafe = true         # 空中辅助转向加速
+# explosive_bullets = { cooldown_seconds = 1.5, damage = 30, radius = 120 } # 爆炸子弹
+# wall_hang = true          # 空中贴墙挂墙
+# grapple = { max_distance = 1000.0, max_speed = 600.0, pull_gain = 4.0 } # 抓钩绳索
 # lifesteal = true          # 吸血恢复
-# suicide = true            # 允许自爆玩法
-# third_person = { distance = 64.0, follow_eyes = true, return_strength = 2.0 } # 第三人称视角
-# bomb = { kind = "native", plant_time = 3.0, explode_time = 45.0, bounce = false } # 特殊炸弹
+# third_person = { distance = 64.0, follow_eyes = true, return_strength = 2.0 } # 第三人称
 ```
 
 <details>
@@ -194,23 +237,23 @@ fast_switch = true          # 快速切枪开关
 
 #### 1. 编译 Rust 插件
 
-编译前请确保安装了 Rust `1.99.1`（可通过仓库内的 `rust-toolchain.toml` 自动匹配）。
+工具链要求：Rust `1.99.1`（由 `rust-toolchain.toml` 自动匹配）：
 
 ```bash
-# 代码格式化检查与 Clippy 静态检查
+# 代码格式化与 Clippy 严格静态检查
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 
-# 运行全量自动化单元测试
+# 执行全量自动化单元测试
 cargo test --workspace --locked
 
-# 编译 Release 发布版本
+# 编译 Release 发布产物
 cargo build --release --workspace --locked
 ```
 
-#### 2. 编译原生 C++ 扩展
+#### 2. 编译原生 C++ 伴侣扩展
 
-需要 Python 3.10+、CMake 3.25+ 以及对应平台的 C++20 编译器（MSVC 2022+ 或 GCC 11+）：
+要求 Python 3.10+、CMake 3.25+ 以及对应平台的 C++20 编译器（MSVC 2022+ 或 GCC 11+）：
 
 ```bash
 # 构建原生扩展并输出至 dist/native

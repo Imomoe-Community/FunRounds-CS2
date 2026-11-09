@@ -5,6 +5,9 @@
 
 #include <cstring>
 
+#include <entity2/entityidentity.h>
+#include <entity2/entitynetwork.h>
+
 namespace funrounds::native::detail {
 namespace {
 
@@ -107,6 +110,53 @@ bool ResolveSchemaField(const char* className,
             return false;
         }
         result = {candidate.m_nSingleInheritanceOffset, static_cast<std::size_t>(size)};
+        return true;
+    }
+    return false;
+}
+
+bool ResolvePlayerPawnComponentChain(SchemaField& result) noexcept {
+    auto* schema = ServerSchema();
+    if (!schema) {
+        return false;
+    }
+    auto* componentClass = schema->FindDeclaredClass("CPlayerPawnComponent").Get();
+    if (!componentClass || componentClass->m_nSize < 0 ||
+        (componentClass->m_nFieldCount != 0 && !componentClass->m_pFields)) {
+        return false;
+    }
+
+    for (std::uint16_t index = 0; index < componentClass->m_nFieldCount; ++index) {
+        const auto& candidate = componentClass->m_pFields[index];
+        if (!candidate.m_pszName || std::strcmp(candidate.m_pszName, "__m_pChainEntity") != 0) {
+            continue;
+        }
+        if (!candidate.m_pType || candidate.m_pType->m_eTypeCategory != SCHEMA_TYPE_DECLARED_CLASS ||
+            candidate.m_nSingleInheritanceOffset < 0) {
+            return false;
+        }
+
+        const auto* declared = static_cast<const CSchemaType_DeclaredClass*>(candidate.m_pType);
+        const auto* chainClass = declared->m_pClassInfo;
+        if (!chainClass || !chainClass->m_pszName ||
+            std::strcmp(chainClass->m_pszName, "CNetworkVarChainer") != 0 ||
+            chainClass->m_nSize != static_cast<int>(sizeof(CNetworkVarChainer))) {
+            return false;
+        }
+
+        int fieldSize = 0;
+        std::uint8_t alignment = 0;
+        if (!candidate.m_pType->GetSizeAndAlignment(fieldSize, alignment) ||
+            fieldSize != static_cast<int>(sizeof(CNetworkVarChainer))) {
+            return false;
+        }
+
+        const auto offset = static_cast<std::size_t>(candidate.m_nSingleInheritanceOffset);
+        const auto objectSize = static_cast<std::size_t>(componentClass->m_nSize);
+        if (offset > objectSize || sizeof(CNetworkVarChainer) > objectSize - offset) {
+            return false;
+        }
+        result = {candidate.m_nSingleInheritanceOffset, sizeof(CNetworkVarChainer)};
         return true;
     }
     return false;

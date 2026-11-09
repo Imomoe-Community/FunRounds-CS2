@@ -10,7 +10,7 @@ use crate::{
     s2sdk,
 };
 pub use funrounds_core::GrenadeKind;
-use funrounds_core::{Mode, PlayerTask, TeamFilter, WeaponSlot, weapon_slot};
+use funrounds_core::{Mode, PlayerTask, TeamFilter, WeaponSlot, item_classname, item_id, weapon_slot};
 use plugify::Str;
 use std::collections::{HashMap, HashSet};
 
@@ -255,7 +255,7 @@ impl Refills {
                 }
                 Ok(Completion::default())
             }
-            _ => Err("equipment engine action returned an unexpected result".into()),
+            _ => Err(Fault::global("equipment engine action returned an unexpected result")),
         }
     }
 
@@ -362,7 +362,7 @@ fn execute_refill(refill: Refill, mut current: impl FnMut() -> bool) -> RefillRe
         }
         if s2sdk::GetClientWeapons(player.slot).iter().any(|current| *current == handle) {
             return result(
-                Outcome::Failed(crate::fault::Scope::Global),
+                Outcome::Failed(crate::fault::Scope::Mechanism(Mechanism::GrenadeRefill)),
                 None,
                 "spent item remained in inventory after removal",
             );
@@ -387,7 +387,7 @@ fn execute_refill(refill: Refill, mut current: impl FnMut() -> bool) -> RefillRe
         || returned_class.as_deref() != Some(classname)
     {
         return result(
-            Outcome::Failed(crate::fault::Scope::Global),
+            Outcome::Failed(crate::fault::Scope::Mechanism(Mechanism::GrenadeRefill)),
             created,
             &format!("GiveNamedItem returned unusable handle={replacement}"),
         );
@@ -409,11 +409,19 @@ fn execute_refill(refill: Refill, mut current: impl FnMut() -> bool) -> RefillRe
         );
     }
     if handle.is_some_and(|handle| s2sdk::GetClientWeapons(player.slot).iter().any(|current| *current == handle)) {
-        return result(Outcome::Failed(crate::fault::Scope::Global), created, "spent item remained in inventory");
+        return result(
+            Outcome::Failed(crate::fault::Scope::Mechanism(Mechanism::GrenadeRefill)),
+            created,
+            "spent item remained in inventory",
+        );
     }
     let replacement_weapon = s2sdk::EntHandleToEntPointer(replacement);
     if replacement_weapon == 0 {
-        return result(Outcome::Failed(crate::fault::Scope::Global), created, "replacement entity unavailable");
+        return result(
+            Outcome::Failed(crate::fault::Scope::Mechanism(Mechanism::GrenadeRefill)),
+            created,
+            "replacement entity unavailable",
+        );
     }
     if !refill.diagnostics {
         return result(Outcome::Completed, created, "");
@@ -497,11 +505,14 @@ fn shared_item_classname(requested: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn kill_loadout_candidate_matches_classname(requested: &str, classname: &str) -> bool {
-    shared_item_classname(requested).unwrap_or(requested) == classname
+    let Some(classname_for_id) = item_id(requested).and_then(item_classname) else {
+        return false;
+    };
+    shared_item_classname(classname_for_id).unwrap_or(classname_for_id) == classname
 }
 
 pub(crate) fn kill_loadout_source_weapon(classname: &str) -> bool {
-    classname == "weapon_knife_t" || weapon_slot(classname).is_some()
+    item_id(classname).is_some_and(|id| weapon_slot(id).is_some())
 }
 
 pub(crate) fn give_name_for_original(classname: &str, item_definition: u16) -> Option<String> {
@@ -655,10 +666,26 @@ impl super::Effect {
             .filter(|handle| s2sdk::IsValidEntHandle(*handle))
             .map(|handle| (handle, s2sdk::GetEntityClassname(handle).to_string()))
             .collect::<Vec<_>>();
-        let mut equipment_to_give = if give_weapons { equipment.to_vec() } else { Vec::new() };
-        if give_knife && !equipment_to_give.iter().any(|weapon| weapon == "weapon_knife") && (clear_weapons || !inventory_has_knife(&inventory)) {
-            equipment_to_give.push("weapon_knife".into());
+        let mut equipment_ids = if give_weapons { equipment.to_vec() } else { Vec::new() };
+        let preserve_knife = give_knife
+            .then(|| {
+                inventory
+                    .iter()
+                    .find(|(_, classname)| is_knife_classname(classname))
+                    .map(|(handle, _)| *handle)
+            })
+            .flatten();
+        if give_knife && !equipment_ids.iter().any(|item| item == "knife") && preserve_knife.is_none() {
+            equipment_ids.push("knife".into());
         }
+        let mut equipment_to_give = equipment_ids
+            .into_iter()
+            .map(|item| {
+                item_classname(&item)
+                    .map(str::to_owned)
+                    .ok_or_else(|| Fault::round(format!("validated equipment item has no engine classname: {item}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let previous_targets = if let Some(target) = target {
             let Some(requested) = equipment_to_give.first() else {
                 return Err(Fault::cancelled("upgrade has no replacement weapon"));
@@ -666,7 +693,7 @@ impl super::Effect {
             upgrade_replacement_targets(&inventory, target, team_weapon(requested, team))
                 .ok_or_else(|| Fault::cancelled("upgrade target is no longer a valid owned weapon"))?
         } else if clear_weapons {
-            replacement_targets(inventory.clone())
+            replacement_targets(inventory.clone(), preserve_knife)
         } else {
             Vec::new()
         };
@@ -703,7 +730,7 @@ impl super::Effect {
                 .iter()
                 .any(|current| *current == original.handle)
             {
-                return Err("engine did not remove the previous loadout".into());
+                return Err(Fault::round("engine did not remove the previous loadout"));
             }
         }
         let requests = equipment_to_give.into_iter().enumerate().collect::<Vec<_>>();
@@ -827,7 +854,8 @@ impl super::Effect {
                         mode.id,
                         returned_class.as_deref().unwrap_or("<invalid-handle>"),
                     )
-                })?;
+                })
+                .map_err(Fault::round)?;
             self.replacement.as_mut().expect("loadout transaction exists").last_grant = Some((handle, outcome, requested_item_matches));
             if self.diagnostics && (outcome != EquipmentGrantOutcome::InInventory || (is_random_draw && returned_class.as_deref() != Some(name))) {
                 let current_weapons = inventory
@@ -922,9 +950,11 @@ fn team_filter_matches(filter: TeamFilter, team: s2sdk::CSTeam) -> bool {
 }
 
 fn inventory_has_knife(inventory: &[(i32, String)]) -> bool {
-    inventory
-        .iter()
-        .any(|(_, name)| matches!(name.as_str(), "weapon_knife" | "weapon_knife_t"))
+    inventory.iter().any(|(_, name)| is_knife_classname(name))
+}
+
+fn is_knife_classname(name: &str) -> bool {
+    item_id(name) == Some("knife")
 }
 
 fn inventory_has_item(inventory: &[(i32, String)], requested: &str, item_definition_reader: Option<unsafe extern "C" fn(i32) -> u16>) -> bool {
@@ -937,13 +967,16 @@ fn inventory_has_item(inventory: &[(i32, String)], requested: &str, item_definit
     })
 }
 
-fn replacement_targets(weapons: impl IntoIterator<Item = (i32, String)>) -> Vec<(i32, String)> {
-    weapons.into_iter().filter(|(_, name)| replaces_weapon(name)).collect()
+fn replacement_targets(weapons: impl IntoIterator<Item = (i32, String)>, preserve_knife: Option<i32>) -> Vec<(i32, String)> {
+    weapons
+        .into_iter()
+        .filter(|(handle, name)| Some(*handle) != preserve_knife && replaces_weapon(name))
+        .collect()
 }
 
 fn upgrade_replacement_targets(weapons: &[(i32, String)], target: i32, requested: &str) -> Option<Vec<(i32, String)>> {
     let target = weapons.iter().find(|(handle, name)| *handle == target && upgrade_target(name))?;
-    let target_slot = match weapon_slot(requested) {
+    let target_slot = match item_id(requested).and_then(weapon_slot) {
         Some(slot @ (WeaponSlot::Primary | WeaponSlot::Secondary)) => Some(slot),
         _ => None,
     };
@@ -951,7 +984,7 @@ fn upgrade_replacement_targets(weapons: &[(i32, String)], target: i32, requested
     if let Some(target_slot) = target_slot {
         for weapon in weapons
             .iter()
-            .filter(|(handle, name)| *handle != target.0 && weapon_slot(name) == Some(target_slot))
+            .filter(|(handle, name)| *handle != target.0 && item_id(name).and_then(weapon_slot) == Some(target_slot))
         {
             if !removed.iter().any(|(handle, _)| *handle == weapon.0) {
                 removed.push(weapon.clone());
@@ -966,7 +999,7 @@ fn upgrade_target(name: &str) -> bool {
 }
 
 fn is_loadout_firearm(name: &str) -> bool {
-    matches!(weapon_slot(name), Some(WeaponSlot::Primary | WeaponSlot::Secondary))
+    matches!(item_id(name).and_then(weapon_slot), Some(WeaponSlot::Primary | WeaponSlot::Secondary))
 }
 
 fn select_upgrade_firearm(
@@ -1576,8 +1609,8 @@ mod tests {
             (4, "weapon_glock".to_owned()),
             (5, "weapon_hegrenade".to_owned()),
         ];
-        let removed = super::replacement_targets(inventory.clone());
-        assert_eq!(removed, inventory[1..]);
+        let removed = super::replacement_targets(inventory.clone(), Some(2));
+        assert_eq!(removed, inventory[2..]);
         assert!(
             inventory
                 .iter()

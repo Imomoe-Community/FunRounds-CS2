@@ -3,10 +3,10 @@
 # FunRounds-CS2
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-0.3.0--alpha-informational.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-0.4.0--alpha-informational.svg)](Cargo.toml)
 [![Rust Version](https://img.shields.io/badge/Rust-1.99.1+-orange.svg)](rust-toolchain.toml)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20x64-lightgrey.svg)]()
-[![Framework](https://img.shields.io/badge/Framework-Plugify%20%2B%20S2SDK%203.0.6-success.svg)](https://github.com/untrustedmodders/plugify)
+[![Framework](https://img.shields.io/badge/Framework-Plugify%20%2B%20S2SDK%203.3.1-success.svg)](https://github.com/untrustedmodders/plugify)
 
 **高性能、高安全性的 Counter-Strike 2 专用服务端特殊娱乐回合插件**<br>
 <sub><sup>A high-performance, safe, and modular special rounds plugin for Counter-Strike 2 dedicated servers.</sub></sup>
@@ -19,11 +19,11 @@
 
 ### 项目简介 / Overview
 
-**FunRounds-CS2** 是基于 Rust 与 C++20 原生扩展开发、面向 Counter-Strike 2 专用服务端的特殊娱乐回合（Fun Rounds）插件，运行于 [Plugify](https://github.com/untrustedmodders/plugify) 插件框架和 [S2SDK](https://github.com/untrustedmodders/plugify-plugin-s2sdk) 之上。
-<sub><sup>**FunRounds-CS2** is a modern special rounds plugin for Counter-Strike 2 dedicated servers developed in Rust and native C++20, running atop [Plugify](https://github.com/untrustedmodders/plugify) and [S2SDK](https://github.com/untrustedmodders/plugify-plugin-s2sdk).</sub></sup>
+**FunRounds-CS2** 是基于 Rust 与 C++20 原生扩展开发、面向 Counter-Strike 2 专用服务端的特殊娱乐回合（Fun Rounds）插件，运行于 [Plugify](https://github.com/untrustedmodders/plugify) 插件框架和 [S2SDK](https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk/tree/funrounds) 之上。
+<sub><sup>**FunRounds-CS2** is a modern special rounds plugin for Counter-Strike 2 dedicated servers developed in Rust and native C++20, running atop [Plugify](https://github.com/untrustedmodders/plugify) and [S2SDK](https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk/tree/funrounds).</sub></sup>
 
-在每个回合开始时（或由管理员实时指定），插件无缝应用多维度的玩法突变：修改玩家属性、物理参数、动态配装、后坐与视角机制、特殊战斗判定、小鸡生态及 C4 玩法，同时保证严格的崩溃隔离与无残留状态恢复。
-<sub><sup>At the start of each round (or on administrative demand), it seamlessly applies multi-dimensional gameplay mutators: altering player attributes, physics, dynamic loadouts, recoil/camera mechanics, combat rules, chicken ecology, and bomb systems—with zero-leak state restoration and crash isolation.</sub></sup>
+在每个回合开始时（或由管理员实时指定），插件无缝应用多维度的玩法突变：修改玩家属性、机动物理、动态配装、后坐与视角机制、特殊战斗判定、小鸡生态及 C4 玩法，同时保证严格的崩溃隔离与无残留状态恢复。
+<sub><sup>At the start of each round (or on administrative demand), it seamlessly applies multi-dimensional gameplay mutators: altering player attributes, mobility physics, dynamic loadouts, recoil/camera mechanics, combat rules, chicken ecology, and bomb systems—with zero-leak state restoration and crash isolation.</sub></sup>
 
 ---
 
@@ -31,14 +31,51 @@
 
 | 维度 / <sub><sup>Category</sub></sup> | 玩法与机制说明 / <sub><sup>Description</sub></sup> |
 | :--- | :--- |
-| **基础属性与物理**<br><sub><sup>Attributes & Physics</sub></sup> | 生命值（1～10000 或随机区间）、护甲头盔、重力倍率、移速倍率、地面摩擦力、自动连跳（Bunnyhop）、地面加速度与反向倒车行走（`ground_reverse`）、全局时间流速（`time_scale`）及周期性变重力/变移速。<br><sub><sup>Health (fixed or random range), armor, gravity, speed multiplier, friction, auto-bunnyhopping, ground acceleration, ground reverse walking, time scale, and periodic oscillation.</sub></sup> |
-| **视觉与相机视角**<br><sub><sup>Visuals & Camera</sub></sup> | 第三人称视角（`third_person`）、幽灵按行动隐身（`ghost`，支持呼吸心跳音效与距离感知）、夜视仪（`fr_nvg`）、准星/雷达隐藏（`hide_hud`）、模型 RGB 着色、半透明外观与开镜限制。<br><sub><sup>Third person camera, stealth ghost mode with breathing audio cues, night vision, HUD hiding, model RGB tint, translucency, and scope restrictions.</sub></sup> |
-| **射击与自推反冲**<br><sub><sup>Recoil & Knockback</sub></sup> | 开火自身反冲自推（`fr_knock` 支持地面与空中切换）、后坐力与散布消除、开枪镜头震动冲击与衰减（`recoil_view` / `view_punch_decay`）、快速切枪（`fast_switch`）及射击引爆掉落手雷。<br><sub><sup>Shooting self-push knockback (ground/air modes), recoil & spread suppression, view-punch intensity/decay, fast switch, and shooting dropped grenades.</sub></sup> |
-| **动态配装与弹药**<br><sub><sup>Loadouts & Ammo</sub></sup> | 阵营武器清理与定向配发、4 种弹药模式（原生 / 无限备弹 / 无限弹匣 / 单发换填）、电击枪充能、手雷自动补充（HE/闪光/烟雾/诱饵/燃烧弹）、击杀升级换枪（`kill_loadout`）与随机抽枪。<br><sub><sup>Team-specific weapon clearing/giving, 4 ammo modes (inherit/reserve/clip/single-shot), taser recharge, grenade refills, kill-progression, and random loadouts.</sub></sup> |
-| **特殊战斗判定**<br><sub><sup>Combat Modifiers</sub></sup> | 造成伤害吸血、反弹伤害（`reflect_damage`）、按当前生命动态缩放伤害/移速/衰减、能量吸收护盾、开枪自伤（未命中扣血）、诱饵弹躲避球碰撞杀伤（`dodgeball`）、右键飞刀投掷弹射与命中持续燃烧（`afterburn`）。<br><sub><sup>Vampiric lifesteal, reflect damage, HP-scaled damage/speed/decay, energy shield, miss penalty self-damage, decoy dodgeball, throwing knives, and afterburn.</sub></sup> |
-| **C4 炸弹与自爆**<br><sub><sup>C4 Objectives & Suicide</sub></sup> | 3 种炸弹模式（原生 C4 / 鸡背 C4 / 便携可携带 C4）、自定义安放/拆除/爆炸耗时、炸弹弹跳、4 色引线拆包剪线小游戏（`fr_wire`）、现金购买 C4（`fr_c4`）及引爆炸弹自爆（`fr_suicide`）。<br><sub><sup>3 bomb types (native, chicken, carry), custom timers, bomb bouncing, 4-color wire cutting minigame, C4 purchasing, and suicide detonation.</sub></sup> |
-| **小鸡生态与回血**<br><sub><sup>Chicken & Healthshots</sub></sup> | 普通小鸡比例刷新生态、互动吃鸡回血与未消化自爆风险机制、小鸡连锁爆炸；自定义医疗针回血比例与上限控制（`healthshot`，支持 `fr_healthshot` 购买）。<br><sub><sup>Chicken population scaling, eating chickens with digestion risk & chain explosions; custom healthshot healing ratios with cash purchase.</sub></sup> |
-| **经济与多语言**<br><sub><sup>Economy & i18n</sub></sup> | 任意位置购买、阵营购买权限、回合保底现金与被动收入；内置完整中英多语言本地化（`zh-CN` / `en`），优先跟随客户端语言。<br><sub><sup>Buy anywhere, team purchase access, round money floor, passive income, and built-in bilingual i18n matching client preferences.</sub></sup> |
+| **基础属性与物理**<br><sub><sup>Attributes & Physics</sub></sup> | 生命值（1～10000 或随机区间）、护甲头盔（护甲最高 1000）、重力倍率、移速倍率、地面摩擦力、自动连跳（Bunnyhop）、地面加速度与反向行走（`ground_reverse`）、全局时间流速（`time_scale`）及周期性变重力/变移速。<br><sub><sup>Health (up to 10,000 or random range), armor/helmets (armor up to 1,000), gravity/speed multipliers, friction, auto-bunnyhopping, ground acceleration/reverse walking, time scale, and periodic gravity/speed oscillation.</sub></sup> |
+| **动作与机动能力**<br><sub><sup>Movement & Mobility</sub></sup> | 空中辅助转向加速（`autostrafe`）、空中贴墙挂墙（`wall_hang`）、准星瞄准点抓钩牵引（`grapple`）及地图特定区域蹦床弹射（`trampoline`）。<br><sub><sup>Air-strafe directional acceleration assist, wall hang upon contact, grapple hook pulling to target, and map-specific trampoline launch zones.</sub></sup> |
+| **视觉与相机视角**<br><sub><sup>Visuals & Camera</sub></sup> | 第三人称视角（`third_person`）、幽灵按行动隐身（`ghost`，支持呼吸心跳音效与距离感知）、大头模式（`big_head`，依据 KD 动态缩放头部）、夜视仪（`fr_nvg`）、准星/雷达隐藏（`hide_hud`）、模型 RGB 着色、半透明外观与开镜限制。<br><sub><sup>Third-person camera, stealth ghost mode with breathing cues, KD-scaled big head mode, night vision, HUD hiding, model RGB tint, translucency, and scope restrictions.</sub></sup> |
+| **射击与自推反冲**<br><sub><sup>Recoil & Knockback</sub></sup> | 开火自身反冲自推（`fr_knock` 支持地面与空中切换）、后坐力与散布消除、开火概率换枪/掉枪（`weapon_on_fire`）、子弹命中爆炸（`explosive_bullets`）、开枪镜头震动冲击与衰减及快速切枪（`fast_switch`）。<br><sub><sup>Shooting self-push knockback (ground/air modes), recoil & spread suppression, fire-triggered weapon drop/switch, explosive bullets, view-punch intensity/decay, and fast switch.</sub></sup> |
+| **动态配装与武器**<br><sub><sup>Loadouts & Weapons</sub></sup> | 规范化物品 ID、命名武器组（`[weapon_groups]` 支持 `@group` 引用）、阵营清理与定向配发、4 种弹药模式（原生 / 无限备弹 / 无限弹匣 / 单发换填）、电击枪充能、击杀升级换枪（`kill_loadout`）与独立随机配装。<br><sub><sup>Canonical weapon IDs, named weapon groups (`@group`), team filtering, 4 ammo modes (inherit/reserve/clip/single-shot), taser recharge, kill-progression, and random loadouts.</sub></sup> |
+| **投掷物与特殊战术**<br><sub><sup>Grenades & Tactical</sub></sup> | 投掷手雷自动补充、接近敌人近炸引信（`proximity_fuse`）、HE 手雷寻的追踪飞行（`he_guidance`）、HE 爆风推力、烟雾区域治疗（`medical_smoke`）、诱饵弹躲避球碰撞杀伤（`dodgeball`）、右键飞刀及长效闪光（`long_flash`）。<br><sub><sup>Grenade replenishment, proximity fuse, guided HE tracking, HE blast impulse, medical smoke healing, decoy dodgeball, throwing knives, and extended flash duration.</sub></sup> |
+| **特殊战斗与生存惩罚**<br><sub><sup>Combat & Hazards</sub></sup> | 造成伤害吸血、伤害反弹（`reflect_damage`）、动态生命曲线、友军射击转治疗（`friendly_fire_heal`）、脱战自愈（`regeneration`）、低速扣血惩罚（`dont_stop`）、熔岩地面（`hot_floor`）、死亡殉爆（`death_explosion`）与队杀限制。<br><sub><sup>Vampiric lifesteal, reflect damage, dynamic HP scaling, friendly fire healing, passive regeneration, low-speed penalty, hot floor lava damage, death explosion, and teamkill limits.</sub></sup> |
+| **C4 目标与小鸡生态**<br><sub><sup>C4 Objectives & Chickens</sub></sup> | 3 种炸弹模式（原生 C4 / 鸡背 C4 / 便携可携带 C4）、自定义耗时与弹跳、4 色引线拆包剪线小游戏（`fr_wire`）、现金购买 C4（`fr_c4`）与自爆（`fr_suicide`）；普通小鸡生态刷新、吃鸡回血与自爆、小鸡回血光环（`chicken_aura`）及医疗针。<br><sub><sup>3 bomb types (native, chicken, carry), custom timers, bomb bouncing, 4-color wire cutting minigame, C4 purchasing & suicide detonation; chicken population scaling, chicken digestion risk, chicken healing aura, and healthshots.</sub></sup> |
+
+<details>
+<summary><b>点击展开查看全部详细玩法特性与机制列表 / Click to expand full gameplay feature details</b></summary>
+
+- **规范化装备系统 / Canonical Equipment & Weapon Groups**
+  - **规范物品 ID**：全面采用无 `weapon_` 前缀的标准物品标识符（如 `famas`, `p250`, `hegrenade`, `flashbang`, `smokegrenade`, `decoy`, `molotov`, `incgrenade` 等）。<br><sub><sup>Canonical weapon IDs omitting the legacy `weapon_` prefix across all loadouts and abilities.</sub></sup>
+  - **命名武器组**：支持在配置顶层定义 `[weapon_groups]`，模式中通过 `@group_name` 语法引用与组合复用。<br><sub><sup>Defines top-level `[weapon_groups]` referenced concisely via `@group_name` in mode loadouts.</sub></sup>
+  - **扩展护甲上限**：初始护甲支持设定至最高 `1000` 点。<br><sub><sup>Initial armor configurable up to 1,000 points.</sub></sup>
+
+- **动作与机动能力 / Movement & Mobility**
+  - **空中辅助加速 (`autostrafe`)**：空中自动对齐偏航速度并施加辅助加速，带来顺滑的空速增益体验。<br><sub><sup>Assists aerial strafe alignment and acceleration for enhanced air control.</sub></sup>
+  - **空中挂墙 (`wall_hang`)**：在空中贴靠墙面且按住跳跃键时进入挂壁悬停状态。<br><sub><sup>Suspends players on vertical surfaces when touching walls while holding the jump key.</sub></sup>
+  - **抓钩绳索 (`grapple`)**：瞄准任意场景表面并按下使用键，以配置的最大速度与拉力牵引玩家快速位移。<br><sub><sup>Fires a grappling hook towards crosshair contact points, pulling the player at configured speeds.</sub></sup>
+  - **区域蹦床 (`trampoline`)**：在指定竞技地图（如 Dust2、Mirage）内置点位踩入即触发高空垂直弹射。<br><sub><sup>Designated map trigger zones launching players into the air with vertical impulse.</sub></sup>
+
+- **射击与战斗突变 / Weaponry & Combat Mutators**
+  - **爆炸子弹 (`explosive_bullets`)**：开火命中产生范围爆炸、伤害与击退效果，支持独立冷却、伤害与半径区间。<br><sub><sup>Bullet impacts detonate with configurable cooldowns, radius, and damage ranges.</sub></sup>
+  - **开火失控 (`weapon_on_fire`)**：射击时有几率触发强制切换下一武器或直接脱手掉落当前武器。<br><sub><sup>Firing carries a randomized chance to forcefully switch or drop the active weapon.</sub></sup>
+  - **动态大头 (`big_head`)**：根据玩家当场击杀/死亡比率（KD）动态缩放头部模型大小与爆头判定框。<br><sub><sup>Scales head hitboxes dynamically based on individual kill-to-death ratios.</sub></sup>
+  - **友伤转治疗 (`friendly_fire_heal`)**：命中友军不仅免除误伤，还可按固定数值或伤害比例为队友恢复生命。<br><sub><sup>Converts friendly fire into healing via fixed values or proportional damage ratios.</sub></sup>
+  - **脱战自愈 (`regeneration`)**：脱离交火经过指定冷却延迟后，按固定周期自动恢复生命值。<br><sub><sup>Passively regenerates health after a period of staying out of combat.</sub></sup>
+
+- **高阶投掷物机制 / Advanced Grenades**
+  - **近炸引信 (`proximity_fuse`)**：手雷飞行至敌方玩家感知半径内时触发近炸，直接缩短延时提前起爆。<br><sub><sup>Grenades trigger early proximity detonation upon detecting nearby enemies.</sub></sup>
+  - **寻的追踪手雷 (`he_guidance`)**：高爆手雷出膛后自动以配置转向角速度寻的并追踪飞行轨迹中的敌人。<br><sub><sup>HE grenades automatically track and steer toward nearby enemies in range.</sub></sup>
+  - **爆风推力 (`hegrenade_impulse`)**：高爆手雷爆炸产生额外物理冲量，推开爆心周围的目标。<br><sub><sup>Applies customizable directional impulse and knockback to players caught in HE explosions.</sub></sup>
+  - **医疗烟雾 (`medical_smoke`)**：友方烟雾弹扩散范围内为处于其中的队友持续恢复生命。<br><sub><sup>Smoke clouds grant periodic healing to allied players inside the active smoke radius.</sub></sup>
+  - **长效致盲 (`long_flash`)**：按倍率延长闪光弹全白致盲时间，并受最大保护上限时间限制。<br><sub><sup>Multiplies flashbang blind durations up to a configured ceiling cap.</sub></sup>
+
+- **环境惩罚与规则机制 / Environmental Hazards & Rules**
+  - **止步惩罚 (`dont_stop`)**：玩家水平移速低于安全阈值并超过宽限时间后，将持续受到失速扣血惩罚。<br><sub><sup>Inflicts periodic health loss if a player's horizontal speed stays below a minimum threshold.</sub></sup>
+  - **熔岩地面 (`hot_floor`)**：持续接触地面超过安全秒数后持续扣血，久留不离开则直接被火焰点燃。<br><sub><sup>Standing continuously on the ground burns the player and eventually sets them on fire.</sub></sup>
+  - **死亡殉爆 (`death_explosion`)**：每回合随机从双方阵营赋予特定玩家死亡自爆装药，阵亡瞬间引发致命爆炸。<br><sub><sup>Designates a quota of players per team to trigger a massive explosion upon dying.</sub></sup>
+  - **队杀限制 (`teamkill_limit`)**：严格限制单回合队杀次数，超额直接触发惩罚。<br><sub><sup>Enforces a threshold on teamkills before triggering punishments.</sub></sup>
+  - **周期性参数波动 (`periodic_speed` / `periodic_gravity`)**：支持配置随机时间间隔，按自定义离散数值或连续区间周期刷新重力与移速。<br><sub><sup>Periodically mutates speed and gravity multipliers using custom value sets or intervals.</sub></sup>
+
+</details>
 
 <details>
 <summary><b>点击展开架构与可靠性设计 / Click to expand Architecture & Reliability</b></summary>
@@ -58,7 +95,7 @@
 ### 项目目录结构 / Project Layout
 
 ```text
-├── bindings/             # Plugify S2SDK 接口清单 (123 项接口定义) / Provider manifest
+├── bindings/             # Plugify S2SDK 接口清单 (164 项接口定义) / Provider manifest (164 methods)
 ├── config/               # 示例配置文件及多语言包 / Configurations & i18n files
 │   ├── funrounds.example.toml # 示例配置 / Reference configuration
 │   └── i18n/             # 本地化翻译文件 (zh-CN.toml, en.toml) / Localization catalogs
@@ -80,7 +117,7 @@
 
 - Counter-Strike 2 专用服务端（Windows x64 或 Linux x64）<br><sub><sup>Counter-Strike 2 Dedicated Server (Windows x64 or Linux x64)</sub></sup>
 - 已安装并运行 [Plugify](https://github.com/untrustedmodders/plugify) 插件框架<br><sub><sup>[Plugify](https://github.com/untrustedmodders/plugify) framework installed and active</sub></sup>
-- 已配置并加载 [S2SDK](https://github.com/untrustedmodders/plugify-plugin-s2sdk) 插件（版本 `3.0.6`）<br><sub><sup>[S2SDK](https://github.com/untrustedmodders/plugify-plugin-s2sdk) plugin (version `3.0.6`) active in Plugify</sub></sup>
+- 已配置并加载 [S2SDK](https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk/tree/funrounds) 插件（版本 `=3.3.1`）<br><sub><sup>[S2SDK](https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk/tree/funrounds) plugin (version `=3.3.1`) active in Plugify</sub></sup>
 
 #### 目录部署 / Deployment Structure
 
@@ -118,7 +155,7 @@ game/csgo/addons/plugify/
 | :--- | :--- | :--- |
 | `fr_status` | 无 <br><sub><sup>None</sub></sup> | 查看当前回合状态、运行阶段、底层能力就绪状态及故障排查信息。<br><sub><sup>Displays current mode, phase, capability readiness, and fault diagnoses.</sub></sup> |
 | `fr_list` | 无 <br><sub><sup>None</sub></sup> | 列出配置池中所有已启用的特殊模式列表。<br><sub><sup>Lists all loaded and enabled round modes in the pool.</sub></sup> |
-| `fr_next` | `<id \| random>` | 指定下一回合的模式 ID，或恢复随机抽取 (`random`)。<br><sub><sup>Queues a specific mode ID or random selection for the next round.</sub></sup> |
+| `fr_next` | `<id \| random \| id <id>>` | 指定下一回合的模式 ID（支持直接传 ID 或 `id <id>`），或恢复随机抽取 (`random`)。<br><sub><sup>Queues a specific mode ID (`fr_next <id>` or `fr_next id <id>`) or random selection (`random`) for the next round.</sub></sup> |
 | `fr_reload` | 无 <br><sub><sup>None</sub></sup> | 校验并重载配置文件与多语言文本，重载成功于下一回合生效。<br><sub><sup>Validates and schedules configuration and i18n reload for the next round.</sub></sup> |
 | `fr_enable` | `<0 \| 1>` | 插件总启停开关：`1` 为启用，`0` 为停用。<br><sub><sup>Master switch: disables (`0`) or enables (`1`) the plugin.</sub></sup> |
 
@@ -151,6 +188,10 @@ diagnostics = false # 诊断日志开关 / Diagnostic logging
 [i18n]
 default_language = "zh-CN" # 服务端缺省语言（"zh-CN" 或 "en"）/ Default language
 
+# 可选命名武器组 / Optional named weapon groups
+# [weapon_groups]
+# basic = ["famas", "p250"]
+
 # 全局默认模板（模式内未设置的字段将继承此处） / Global defaults
 [defaults]
 gravity = 1.0
@@ -161,7 +202,7 @@ id = "example"              # 模式唯一标识 / Unique mode identifier
 enabled = true              # 是否启用该模式 / Whether mode enters the pool
 name_key = "mode.example.name" # 多语言名称键 / Localized name key
 description_key = "mode.example.description" # 多语言说明键 / Localized description key
-weapons = ["weapon_famas", "weapon_p250"]
+weapons = ["famas", "p250"] # 规范物品 ID / Canonical weapon IDs
 
 # 阵营装备配发与清理 / Team equipment distribution
 clear_weapons = "all"       # 配发前清理武器的队伍 (none / all / terrorists / counter_terrorists)
@@ -170,7 +211,7 @@ give_knife = "all"          # 配发刀具的队伍
 
 # 基础属性与移动 / Attributes & movement
 health = 120                # 初始生命值 (1～10000 或随机范围 { min = 100, max = 150 })
-armor = 50                  # 初始护甲值 (0～255 或随机范围 { min = 0, max = 100 })
+armor = 50                  # 初始护甲值 (0～1000 或随机范围 { min = 0, max = 100 })
 gravity = 1.0               # 重力倍率 ((0, 10]，1.0 为正常重力)
 speed = 1.0                 # 移速倍率 ((0, 10])
 self_push = true            # 开启开火自推反冲 / Recoil self-push
@@ -180,11 +221,13 @@ ammo = "reserve"            # 弹药规则 (inherit / reserve / clip / single_sh
 headshots = "normal"        # 爆头规则 (normal / only / disabled)
 fast_switch = true          # 快速切枪开关 / Fast switch
 
-# 特殊玩法机制选开 / Optional mutators
+# 可选玩法突变示例 / Optional mutator examples
+# autostrafe = true         # 空中辅助转向加速 / Air-strafe assist
+# explosive_bullets = { cooldown_seconds = 1.5, damage = 30, radius = 120 } # 爆炸子弹 / Explosive bullets
+# wall_hang = true          # 空中贴墙挂墙 / Wall hang
+# grapple = { max_distance = 1000.0, max_speed = 600.0, pull_gain = 4.0 } # 抓钩绳索 / Grapple hook
 # lifesteal = true          # 吸血恢复 / Vampiric lifesteal
-# suicide = true            # 允许自爆玩法 / Suicide blast
-# third_person = { distance = 64.0, follow_eyes = true, return_strength = 2.0 } # 第三人称
-# bomb = { kind = "native", plant_time = 3.0, explode_time = 45.0, bounce = false } # 特殊炸弹
+# third_person = { distance = 64.0, follow_eyes = true, return_strength = 2.0 } # 第三人称 / Third-person
 ```
 
 <details>

@@ -2,7 +2,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+
+mod abilities;
+use abilities::{
+    BigHeadInput, ChickenAuraInput, DontStopInput, ExplosiveBulletsInput, FriendlyFireHealInput, GrappleInput, HeGrenadeImpulseInput,
+    HeGuidanceInput, HotFloorInput, LongFlashInput, ProximityFuseInput, RegenerationInput, WeaponOnFireInput,
+};
+pub use abilities::{
+    BigHeadSettings, ChickenAuraSettings, DontStopSettings, ExplosiveBulletsSettings, FriendlyFireHealKind, FriendlyFireHealSettings,
+    GrappleSettings, HeGrenadeImpulseSettings, HeGuidanceSettings, HealingAmount, HotFloorSettings, LongFlashSettings, ProximityFuseSettings,
+    RegenerationSettings, WeaponOnFireSettings, big_head_scale, extended_flash_deadline, healing_target, turn_projectile_velocity,
+    wall_hang_contact_eligible,
+};
 
 mod attributes;
 pub use attributes::{AttributeRange, AttributeValue, HelmetValue, LifeAttributes, RandomHelmet};
@@ -26,14 +38,16 @@ pub use third_person::ThirdPersonSettings;
 mod rounds;
 pub use rounds::{Capabilities, NextMode, Phase, RoundController, RoundGeneration, RoundKey};
 mod players;
-pub use players::{PlayerIdentity, PlayerTask, PlayerTracker};
+pub use players::{PlayerIdentity, PlayerTask, PlayerTracker, TeamkillCounter};
 mod rules;
 pub use rules::{
-    DODGEBALL_DAMAGE_MULTIPLIER, LIFESTEAL_MAX_HEALTH, MovementScale, PeriodicMovement, THROWING_KNIFE_BODY_DAMAGE, THROWING_KNIFE_ELASTICITY,
-    THROWING_KNIFE_GRAVITY, THROWING_KNIFE_HEAD_DAMAGE, THROWING_KNIFE_HEADSHOT_DISTANCE, THROWING_KNIFE_LIFETIME, THROWING_KNIFE_SPEED,
-    TeamDeathmatch, TeamResult, dodgeball_damage, lifesteal_recovery, low_health_finish,
+    DODGEBALL_DAMAGE_MULTIPLIER, LIFESTEAL_MAX_HEALTH, MovementScale, PeriodicDistribution, PeriodicMovement, PeriodicSetting,
+    THROWING_KNIFE_BODY_DAMAGE, THROWING_KNIFE_ELASTICITY, THROWING_KNIFE_GRAVITY, THROWING_KNIFE_HEAD_DAMAGE, THROWING_KNIFE_HEADSHOT_DISTANCE,
+    THROWING_KNIFE_LIFETIME, THROWING_KNIFE_SPEED, TeamDeathmatch, TeamResult, dodgeball_damage, lifesteal_recovery, low_health_finish,
+    shockwave_impulse,
 };
 mod health;
+pub mod regions;
 use health::{HealthCurveInput, HealthDecayInput};
 mod text;
 pub use text::{TextBundle, TextCatalog};
@@ -41,11 +55,14 @@ mod combat;
 pub use combat::{CombatLife, combat_hit, weapon_damage_scale};
 mod random_damage;
 pub use random_damage::{RandomDamage, random_damage};
+mod autostrafe;
 mod suicide;
-pub use suicide::{SuicideSequence, suicide_blast_damage};
+pub use autostrafe::air_strafe_input;
+pub use suicide::{DeathExplosion, SuicideSequence, suicide_blast_damage};
 mod equipment;
 mod money;
 pub use equipment::{WeaponSlot, self_push_force, weapon_slot};
+pub use equipment::{item_classname, item_id};
 pub use health::{HealthBand, HealthCurve, HealthDecay};
 pub use money::{money_floor, money_income_credit, next_money_income_due};
 
@@ -89,26 +106,40 @@ struct SelfDamageInput {
     amount: Option<f32>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub struct WeaponDamage {
-    #[serde(default = "one")]
-    pub taser: f32,
-    #[serde(default = "one")]
-    pub knife: f32,
-}
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(transparent)]
+pub struct WeaponDamage(BTreeMap<String, f32>);
 
-impl Default for WeaponDamage {
-    fn default() -> Self {
-        Self { taser: 1.0, knife: 1.0 }
+impl WeaponDamage {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn configured(&self, id: &str) -> Option<f32> {
+        self.0.get(id).copied()
+    }
+
+    pub fn multiplier(&self, id: &str) -> f32 {
+        self.configured(id).unwrap_or(1.0)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for (id, multiplier) in &self.0 {
+            if let Some(bare) = id.strip_prefix("weapon_") {
+                return Err(format!("weapon_damage.{id}: use weapon_damage.{bare}"));
+            }
+            if equipment::weapon_slot(id).is_none() {
+                return Err(format!("weapon_damage.{id}: unknown weapon ID"));
+            }
+            if !multiplier.is_finite() || *multiplier < 0.0 {
+                return Err(format!("weapon_damage.{id}: multiplier must be finite and non-negative"));
+            }
+        }
+        Ok(())
     }
 }
 
-fn one() -> f32 {
-    1.0
-}
-
-pub const VERSION: &str = "0.3-Alpha Test 2";
+pub const VERSION: &str = "0.4-Alpha Test 3";
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -226,8 +257,7 @@ impl TeamFilter {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GrenadeKind {
     He,
     Flash,
@@ -238,6 +268,41 @@ pub enum GrenadeKind {
 }
 
 impl GrenadeKind {
+    pub(crate) fn from_config_id(item: &str) -> Result<Self, String> {
+        match item {
+            "hegrenade" => Ok(Self::He),
+            "flashbang" => Ok(Self::Flash),
+            "smokegrenade" => Ok(Self::Smoke),
+            "decoy" => Ok(Self::Decoy),
+            "molotov" => Ok(Self::Molotov),
+            "incgrenade" => Ok(Self::Incendiary),
+            "he" => Err("use canonical item ID 'hegrenade' instead of legacy alias 'he'".into()),
+            "flash" => Err("use canonical item ID 'flashbang' instead of legacy alias 'flash'".into()),
+            "smoke" => Err("use canonical item ID 'smokegrenade' instead of legacy alias 'smoke'".into()),
+            "incendiary" => Err("use canonical item ID 'incgrenade' instead of legacy alias 'incendiary'".into()),
+            value if value.starts_with("weapon_") => {
+                let canonical = value.strip_prefix("weapon_").unwrap_or(value);
+                if matches!(canonical, "hegrenade" | "flashbang" | "smokegrenade" | "decoy" | "molotov" | "incgrenade") {
+                    Err(format!("use canonical item ID '{canonical}' without the 'weapon_' prefix"))
+                } else {
+                    Err(format!("unsupported grenade item ID '{item}'"))
+                }
+            }
+            _ => Err(format!("unsupported grenade item ID '{item}'")),
+        }
+    }
+
+    pub const fn item_id(self) -> &'static str {
+        match self {
+            Self::He => "hegrenade",
+            Self::Flash => "flashbang",
+            Self::Smoke => "smokegrenade",
+            Self::Decoy => "decoy",
+            Self::Molotov => "molotov",
+            Self::Incendiary => "incgrenade",
+        }
+    }
+
     pub const fn classname(self) -> &'static str {
         match self {
             Self::He => "weapon_hegrenade",
@@ -247,6 +312,18 @@ impl GrenadeKind {
             Self::Molotov => "weapon_molotov",
             Self::Incendiary => "weapon_incgrenade",
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for GrenadeKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let item = String::deserialize(deserializer)?;
+        Self::from_config_id(&item).map_err(D::Error::custom)
     }
 }
 
@@ -356,6 +433,7 @@ pub struct Mode {
     pub weapon_damage: WeaponDamage,
     pub taser_charge: Option<f32>,
     pub bunnyhop: Option<bool>,
+    pub autostrafe: bool,
     pub friction: Option<f32>,
     pub time_scale: Option<f32>,
     pub ground_acceleration: Option<f32>,
@@ -367,6 +445,7 @@ pub struct Mode {
     pub replenish: Vec<GrenadeKind>,
     pub random_loadout: bool,
     pub suicide: bool,
+    pub death_explosion: DeathExplosion,
     pub random_damage: bool,
     pub kill_loadout: bool,
     pub kill_loadout_start: Option<KillLoadoutStart>,
@@ -394,11 +473,12 @@ pub struct Mode {
     pub health_curve: HealthCurve,
     pub health_decay_settings: HealthDecay,
     pub self_push: bool,
-    pub periodic_speed: bool,
-    pub periodic_gravity: bool,
+    pub periodic_speed: Option<PeriodicSetting>,
+    pub periodic_gravity: Option<PeriodicSetting>,
     pub c4_count: Option<u8>,
     pub c4_buy: bool,
     pub round_respawn: RoundRespawn,
+    pub hide_all_hud: bool,
     pub hide_radar: Option<bool>,
     pub hide_player_identification: Option<bool>,
     pub respawn: Option<RespawnSettings>,
@@ -409,6 +489,16 @@ pub struct Mode {
     pub buy_access: Option<TeamFilter>,
     pub buy_anywhere: Option<TeamFilter>,
     pub friendly_fire_scale: Option<f32>,
+    pub damage_multiplier: f32,
+    pub explosive_bullets: Option<ExplosiveBulletsSettings>,
+    pub friendly_fire_heal: Option<FriendlyFireHealSettings>,
+    pub inferno_damage: Option<f32>,
+    pub teamkill_limit: Option<u32>,
+    pub hegrenade_impulse: Option<HeGrenadeImpulseSettings>,
+    pub proximity_fuse: Option<ProximityFuseSettings>,
+    pub wall_hang: bool,
+    pub grapple: Option<GrappleSettings>,
+    pub he_guidance: Option<HeGuidanceSettings>,
     pub teammates_as_enemies: Option<bool>,
     pub random_spawn: Option<TeamFilter>,
     pub drop_weapons: Option<bool>,
@@ -417,6 +507,16 @@ pub struct Mode {
     pub fall_damage_scale: Option<f32>,
     pub ordinary_chickens: bool,
     pub chicken_eating: Option<bool>,
+    pub regeneration: Option<RegenerationSettings>,
+    pub chicken_aura: Option<ChickenAuraSettings>,
+    pub medical_smoke: bool,
+    pub trampoline: bool,
+    pub healing_cap_base_multiple: f32,
+    pub dont_stop: Option<DontStopSettings>,
+    pub hot_floor: Option<HotFloorSettings>,
+    pub weapon_on_fire: Option<WeaponOnFireSettings>,
+    pub long_flash: Option<LongFlashSettings>,
+    pub big_head: Option<BigHeadSettings>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -434,7 +534,7 @@ struct WarmupInput {
 }
 
 impl WarmupInput {
-    fn into_config(mut self) -> Result<WarmupConfig, String> {
+    fn into_config(mut self, weapon_groups: &BTreeMap<String, Vec<String>>) -> Result<WarmupConfig, String> {
         if self.mode.id.is_some()
             || self.mode.name.is_some()
             || self.mode.description.is_some()
@@ -446,7 +546,11 @@ impl WarmupInput {
         if self.respawn_delay.is_some() && self.mode.respawn.is_some() {
             return Err("warmup: use respawn_delay or respawn, not both".into());
         }
+        if self.mode.death_explosion.is_some_and(DeathExplosion::enabled) {
+            return Err("warmup: death_explosion requires a competitive round".into());
+        }
         let enabled = self.mode.enabled.unwrap_or(true);
+        self.mode.resolve_weapons(weapon_groups, "warmup")?;
         self.mode.id = Some("warmup".into());
         self.mode.enabled = Some(true);
         self.mode.name_key = Some("warmup.name".into());
@@ -481,16 +585,60 @@ enum OptionalOverride<T> {
     Value(T),
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+enum WeaponSelection {
+    List(Vec<String>),
+    Group(String),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+enum PeriodicSettingInput {
+    Enabled(bool),
+    Custom(PeriodicSettingFields),
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct WeaponDamageOverride {
-    taser: Option<f32>,
-    knife: Option<f32>,
+struct PeriodicSettingFields {
+    interval_seconds: Option<f32>,
+    values: Option<Vec<f32>>,
+    min: Option<f32>,
+    max: Option<f32>,
+}
+
+impl PeriodicSettingInput {
+    fn resolve(self, name: &str) -> Result<Option<PeriodicSetting>, String> {
+        match self {
+            Self::Enabled(false) => Ok(None),
+            Self::Enabled(true) => Ok(Some(PeriodicSetting {
+                interval_seconds: 10.0,
+                distribution: PeriodicDistribution::Legacy,
+            })),
+            Self::Custom(fields) => {
+                let interval_seconds = fields.interval_seconds.ok_or_else(|| format!("{name}.interval_seconds is required"))?;
+                let distribution = match (fields.values, fields.min, fields.max) {
+                    (Some(values), None, None) => PeriodicDistribution::Tiers(values),
+                    (None, Some(min), Some(max)) => PeriodicDistribution::Range { min, max },
+                    (None, None, None) => return Err(format!("{name} requires either values or both min and max")),
+                    _ => return Err(format!("{name} requires either values or both min and max, not both")),
+                };
+                let setting = PeriodicSetting {
+                    interval_seconds,
+                    distribution,
+                };
+                setting.validate().map_err(|error| format!("{name}: {error}"))?;
+                Ok(Some(setting))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum HudElement {
+    All,
     Radar,
     Crosshair,
 }
@@ -504,7 +652,7 @@ struct ModeInput {
     description: Option<String>,
     name_key: Option<String>,
     description_key: Option<String>,
-    weapons: Option<Vec<String>>,
+    weapons: Option<WeaponSelection>,
     health: Option<AttributeValue>,
     armor: Option<AttributeValue>,
     gravity: Option<f32>,
@@ -517,9 +665,10 @@ struct ModeInput {
     headshots: Option<Headshots>,
     ammo: Option<Ammo>,
     self_damage: Option<OptionalOverride<SelfDamageInput>>,
-    weapon_damage: Option<WeaponDamageOverride>,
+    weapon_damage: Option<WeaponDamage>,
     taser_charge: Option<OptionalOverride<f32>>,
     bunnyhop: Option<bool>,
+    autostrafe: Option<bool>,
     friction: Option<OptionalOverride<f32>>,
     time_scale: Option<OptionalOverride<f32>>,
     ground_acceleration: Option<OptionalOverride<f32>>,
@@ -531,6 +680,7 @@ struct ModeInput {
     replenish: Option<Vec<GrenadeKind>>,
     random_loadout: Option<bool>,
     suicide: Option<bool>,
+    death_explosion: Option<DeathExplosion>,
     random_damage: Option<bool>,
     kill_loadout: Option<bool>,
     kill_loadout_start: Option<KillLoadoutStart>,
@@ -557,8 +707,8 @@ struct ModeInput {
     health_curve: Option<HealthCurveInput>,
     health_decay_settings: Option<HealthDecayInput>,
     self_push: Option<bool>,
-    periodic_speed: Option<bool>,
-    periodic_gravity: Option<bool>,
+    periodic_speed: Option<PeriodicSettingInput>,
+    periodic_gravity: Option<PeriodicSettingInput>,
     c4_count: Option<OptionalOverride<u8>>,
     c4_buy: Option<bool>,
     round_respawn: Option<RoundRespawnInput>,
@@ -572,6 +722,16 @@ struct ModeInput {
     buy_access: Option<OptionalOverride<TeamFilter>>,
     buy_anywhere: Option<OptionalOverride<TeamFilter>>,
     friendly_fire_scale: Option<f32>,
+    damage_multiplier: Option<OptionalOverride<f32>>,
+    explosive_bullets: Option<OptionalOverride<ExplosiveBulletsInput>>,
+    friendly_fire_heal: Option<OptionalOverride<FriendlyFireHealInput>>,
+    inferno_damage: Option<OptionalOverride<f32>>,
+    teamkill_limit: Option<OptionalOverride<u32>>,
+    hegrenade_impulse: Option<OptionalOverride<HeGrenadeImpulseInput>>,
+    proximity_fuse: Option<OptionalOverride<ProximityFuseInput>>,
+    wall_hang: Option<bool>,
+    grapple: Option<OptionalOverride<GrappleInput>>,
+    he_guidance: Option<OptionalOverride<HeGuidanceInput>>,
     teammates_as_enemies: Option<bool>,
     random_spawn: Option<TeamFilter>,
     drop_weapons: Option<bool>,
@@ -580,6 +740,16 @@ struct ModeInput {
     fall_damage_scale: Option<f32>,
     ordinary_chickens: Option<bool>,
     chicken_eating: Option<bool>,
+    regeneration: Option<OptionalOverride<RegenerationInput>>,
+    chicken_aura: Option<OptionalOverride<ChickenAuraInput>>,
+    medical_smoke: Option<bool>,
+    trampoline: Option<bool>,
+    healing_cap_base_multiple: Option<f32>,
+    dont_stop: Option<OptionalOverride<DontStopInput>>,
+    hot_floor: Option<OptionalOverride<HotFloorInput>>,
+    weapon_on_fire: Option<OptionalOverride<WeaponOnFireInput>>,
+    long_flash: Option<OptionalOverride<LongFlashInput>>,
+    big_head: Option<OptionalOverride<BigHeadInput>>,
     ghost: Option<OptionalOverride<GhostInput>>,
     afterburn: Option<OptionalOverride<AfterburnInput>>,
     third_person: Option<OptionalOverride<ThirdPersonInput>>,
@@ -598,6 +768,8 @@ struct RawConfig {
     healthshot: Option<HealthshotInput>,
     #[serde(default)]
     defaults: ModeInput,
+    #[serde(default)]
+    weapon_groups: BTreeMap<String, Vec<String>>,
     warmup: Option<WarmupInput>,
     modes: Vec<ModeInput>,
     #[serde(default)]
@@ -616,6 +788,38 @@ impl Default for I18nInput {
             default_language: "zh-CN".into(),
         }
     }
+}
+
+fn resolved_weapon_list(selection: Option<WeaponSelection>, owner: &str) -> Result<Option<Vec<String>>, String> {
+    match selection {
+        None => Ok(None),
+        Some(WeaponSelection::List(weapons)) => Ok(Some(weapons)),
+        Some(WeaponSelection::Group(_)) => Err(format!("{owner}.weapons weapon group reference was not resolved")),
+    }
+}
+
+fn choose_periodic(
+    mode: Option<PeriodicSettingInput>,
+    defaults: Option<PeriodicSettingInput>,
+    name: &str,
+) -> Result<Option<PeriodicSetting>, String> {
+    mode.or(defaults).map(|setting| setting.resolve(name)).transpose().map(Option::flatten)
+}
+
+fn equipment_input_error(owner: &str, item: &str) -> String {
+    if item == "knife" || item == "weapon_knife" {
+        return format!("{owner}: knife is configured separately from equipment; use give_knife");
+    }
+    if let Some(id) = item.strip_prefix("weapon_")
+        && item_classname(id).is_some()
+    {
+        return format!("{owner}: use canonical item ID '{id}' without the 'weapon_' prefix");
+    }
+    format!("{owner}: equipment item '{item}' is not in the supported CS2 item whitelist")
+}
+
+fn supported_equipment_id(item: &str) -> bool {
+    weapon_slot(item).is_some() && item != "knife"
 }
 
 fn choose<T>(mode: Option<T>, defaults: Option<T>, fallback: T) -> T {
@@ -667,6 +871,68 @@ fn merge_afterburn(
         }
     }
     apply(mode, apply(defaults, None)?)
+}
+
+fn merge_ability<T, S>(
+    mode: Option<OptionalOverride<T>>,
+    defaults: Option<OptionalOverride<T>>,
+    name: &str,
+    resolve: impl Fn(T, Option<S>) -> S,
+) -> Result<Option<S>, String> {
+    fn resolve_default<T, S>(setting: Option<OptionalOverride<T>>, name: &str, resolve: &impl Fn(T, Option<S>) -> S) -> Result<Option<S>, String> {
+        match setting {
+            None | Some(OptionalOverride::Clear(false)) => Ok(None),
+            Some(OptionalOverride::Clear(true)) => Err(format!("{name}: only false clears an optional setting")),
+            Some(OptionalOverride::Value(input)) => Ok(Some(resolve(input, None))),
+        }
+    }
+
+    let inherited = resolve_default(defaults, name, &resolve)?;
+    match mode {
+        None => Ok(inherited),
+        Some(OptionalOverride::Clear(false)) => Ok(None),
+        Some(OptionalOverride::Clear(true)) => Err(format!("{name}: only false clears an optional setting")),
+        Some(OptionalOverride::Value(input)) => Ok(Some(resolve(input, inherited))),
+    }
+}
+
+fn merge_ability_result<T, S>(
+    mode: Option<OptionalOverride<T>>,
+    defaults: Option<OptionalOverride<T>>,
+    name: &str,
+    resolve: impl Fn(T, Option<S>) -> Result<S, String>,
+) -> Result<Option<S>, String> {
+    fn resolve_input<T, S>(input: T, base: Option<S>, name: &str, resolve: &impl Fn(T, Option<S>) -> Result<S, String>) -> Result<Option<S>, String> {
+        resolve(input, base).map(Some).map_err(|error| format!("{name}: {error}"))
+    }
+    let inherited = match defaults {
+        None | Some(OptionalOverride::Clear(false)) => None,
+        Some(OptionalOverride::Clear(true)) => return Err(format!("{name}: only false clears an optional setting")),
+        Some(OptionalOverride::Value(input)) => resolve_input(input, None, name, &resolve)?,
+    };
+    match mode {
+        None => Ok(inherited),
+        Some(OptionalOverride::Clear(false)) => Ok(None),
+        Some(OptionalOverride::Clear(true)) => Err(format!("{name}: only false clears an optional setting")),
+        Some(OptionalOverride::Value(input)) => resolve_input(input, inherited, name, &resolve),
+    }
+}
+
+fn merge_friendly_fire_heal(
+    mode: Option<OptionalOverride<FriendlyFireHealInput>>,
+    defaults: Option<OptionalOverride<FriendlyFireHealInput>>,
+) -> Result<Option<FriendlyFireHealSettings>, String> {
+    let inherited = match defaults {
+        None | Some(OptionalOverride::Clear(false)) => None,
+        Some(OptionalOverride::Clear(true)) => return Err("friendly_fire_heal: only false clears an optional setting".into()),
+        Some(OptionalOverride::Value(input)) => Some(input.resolve(None).map_err(|error| format!("friendly_fire_heal: {error}"))?),
+    };
+    match mode {
+        None => Ok(inherited),
+        Some(OptionalOverride::Clear(false)) => Ok(None),
+        Some(OptionalOverride::Clear(true)) => Err("friendly_fire_heal: only false clears an optional setting".into()),
+        Some(OptionalOverride::Value(input)) => input.resolve(inherited).map(Some).map_err(|error| format!("friendly_fire_heal: {error}")),
+    }
 }
 
 fn merge_third_person(
@@ -802,6 +1068,69 @@ fn merge_self_damage(
 }
 
 impl ModeInput {
+    fn resolve_weapons(&mut self, weapon_groups: &BTreeMap<String, Vec<String>>, owner: &str) -> Result<(), String> {
+        let Some(selection) = self.weapons.take() else { return Ok(()) };
+        self.weapons = Some(WeaponSelection::List(match selection {
+            WeaponSelection::List(weapons) => weapons,
+            WeaponSelection::Group(reference) => {
+                let Some(name) = reference.strip_prefix('@') else {
+                    return Err(format!("{owner}.weapons must be an array or an '@group' reference"));
+                };
+                weapon_groups
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| format!("{owner}.weapons references unknown weapon group '{name}'"))?
+            }
+        }));
+        Ok(())
+    }
+
+    fn validate_native_effect_inputs(&self) -> Result<(), String> {
+        if let Some(setting) = &self.periodic_speed {
+            setting.clone().resolve("periodic_speed")?;
+        }
+        if let Some(setting) = &self.periodic_gravity {
+            setting.clone().resolve("periodic_gravity")?;
+        }
+        if let Some(damage) = &self.weapon_damage {
+            damage.validate()?;
+        }
+        if matches!(&self.inferno_damage, Some(OptionalOverride::Clear(true))) {
+            return Err("inferno_damage: only false clears an optional setting".into());
+        }
+        if matches!(&self.inferno_damage, Some(OptionalOverride::Value(value)) if !value.is_finite() || *value < 0.0) {
+            return Err("inferno_damage must be finite and nonnegative".into());
+        }
+        if matches!(&self.teamkill_limit, Some(OptionalOverride::Clear(true))) {
+            return Err("teamkill_limit: only false clears an optional setting".into());
+        }
+        if matches!(&self.teamkill_limit, Some(OptionalOverride::Value(0))) {
+            return Err("teamkill_limit must be a positive integer".into());
+        }
+        if matches!(&self.hegrenade_impulse, Some(OptionalOverride::Clear(true))) {
+            return Err("hegrenade_impulse: only false clears an optional setting".into());
+        }
+        if let Some(OptionalOverride::Value(input)) = &self.hegrenade_impulse {
+            HeGrenadeImpulseInput { impulse: input.impulse }
+                .resolve(None)
+                .validate()
+                .map_err(str::to_owned)?;
+        }
+        if matches!(&self.grapple, Some(OptionalOverride::Clear(true))) {
+            return Err("grapple: only false clears an optional setting".into());
+        }
+        if matches!(&self.he_guidance, Some(OptionalOverride::Clear(true))) {
+            return Err("he_guidance: only false clears an optional setting".into());
+        }
+        if let Some(OptionalOverride::Value(input)) = &self.grapple {
+            input.clone().resolve(None).validate().map_err(str::to_owned)?;
+        }
+        if let Some(OptionalOverride::Value(input)) = &self.he_guidance {
+            input.clone().resolve(None).validate().map_err(str::to_owned)?;
+        }
+        Ok(())
+    }
+
     fn validate_hud(&self) -> Result<(), String> {
         let Some(hud) = &self.hide_hud else { return Ok(()) };
         if self.hide_radar.is_some() {
@@ -826,18 +1155,10 @@ impl ModeInput {
         let description = resolve_mode_label(self.description, self.description_key.as_deref(), &id, "description")?;
         let kill_loadout = choose(self.kill_loadout, defaults.kill_loadout, false);
         let kill_loadout_start = self.kill_loadout_start.or(if kill_loadout { defaults.kill_loadout_start } else { None });
-        let weapon_damage = WeaponDamage {
-            taser: choose(
-                self.weapon_damage.as_ref().and_then(|damage| damage.taser),
-                defaults.weapon_damage.as_ref().and_then(|damage| damage.taser),
-                1.0,
-            ),
-            knife: choose(
-                self.weapon_damage.as_ref().and_then(|damage| damage.knife),
-                defaults.weapon_damage.as_ref().and_then(|damage| damage.knife),
-                1.0,
-            ),
-        };
+        let mut weapon_damage = defaults.weapon_damage.clone().unwrap_or_default();
+        if let Some(overrides) = self.weapon_damage {
+            weapon_damage.0.extend(overrides.0);
+        }
         let armor = choose(self.armor, defaults.armor, AttributeValue::Fixed(0));
         let helmet = self.helmet.or(defaults.helmet).unwrap_or(match armor {
             AttributeValue::Fixed(value) => HelmetValue::Fixed(value > 0),
@@ -855,6 +1176,8 @@ impl ModeInput {
             defaults.kill_protection,
             defaults.combat_protection,
         );
+        let weapons = resolved_weapon_list(self.weapons, &id)?;
+        let default_weapons = resolved_weapon_list(defaults.weapons.clone(), &id)?;
         Ok(Mode {
             id,
             enabled,
@@ -862,7 +1185,7 @@ impl ModeInput {
             description,
             name_key: self.name_key,
             description_key: self.description_key,
-            weapons: choose(self.weapons, defaults.weapons.clone(), Vec::new()),
+            weapons: choose(weapons, default_weapons, Vec::new()),
             health: choose(self.health, defaults.health, AttributeValue::Fixed(100)),
             armor,
             gravity: choose(self.gravity, defaults.gravity, 1.0),
@@ -878,6 +1201,7 @@ impl ModeInput {
             weapon_damage,
             taser_charge: choose_optional(self.taser_charge, defaults.taser_charge.clone(), "taser_charge")?,
             bunnyhop: self.bunnyhop.or(defaults.bunnyhop),
+            autostrafe: choose(self.autostrafe, defaults.autostrafe, false),
             friction: choose_optional(self.friction, defaults.friction.clone(), "friction")?,
             time_scale: choose_optional(self.time_scale, defaults.time_scale.clone(), "time_scale")?,
             ground_acceleration: choose_optional(self.ground_acceleration, defaults.ground_acceleration.clone(), "ground_acceleration")?,
@@ -889,6 +1213,7 @@ impl ModeInput {
             replenish: choose(self.replenish, defaults.replenish.clone(), Vec::new()),
             random_loadout: choose(self.random_loadout, defaults.random_loadout, false),
             suicide: choose(self.suicide, defaults.suicide, false),
+            death_explosion: choose(self.death_explosion, defaults.death_explosion, DeathExplosion::default()),
             random_damage: choose(self.random_damage, defaults.random_damage, false),
             kill_loadout,
             kill_loadout_start,
@@ -923,8 +1248,8 @@ impl ModeInput {
             health_curve: self.health_curve.unwrap_or_default().resolve(defaults.health_curve.as_ref()),
             health_decay_settings: self.health_decay_settings.unwrap_or_default().resolve(defaults.health_decay_settings),
             self_push: choose(self.self_push, defaults.self_push, false),
-            periodic_speed: choose(self.periodic_speed, defaults.periodic_speed, false),
-            periodic_gravity: choose(self.periodic_gravity, defaults.periodic_gravity, false),
+            periodic_speed: choose_periodic(self.periodic_speed, defaults.periodic_speed.clone(), "periodic_speed")?,
+            periodic_gravity: choose_periodic(self.periodic_gravity, defaults.periodic_gravity.clone(), "periodic_gravity")?,
             c4_count: choose_optional(self.c4_count, defaults.c4_count.clone(), "c4_count")?,
             c4_buy: choose(self.c4_buy, defaults.c4_buy, false),
             round_respawn: self
@@ -932,6 +1257,11 @@ impl ModeInput {
                 .or(defaults.round_respawn)
                 .map(RoundRespawnInput::resolve)
                 .unwrap_or_default(),
+            hide_all_hud: self
+                .hide_hud
+                .as_ref()
+                .or(defaults.hide_hud.as_ref())
+                .is_some_and(|selection| selection.contains(&HudElement::All)),
             hide_radar: self.hide_hud.as_ref().map_or_else(
                 || {
                     self.hide_radar.or_else(|| {
@@ -952,6 +1282,33 @@ impl ModeInput {
             buy_access: choose_optional(self.buy_access, defaults.buy_access.clone(), "buy_access")?,
             buy_anywhere: choose_optional(self.buy_anywhere, defaults.buy_anywhere.clone(), "buy_anywhere")?,
             friendly_fire_scale: self.friendly_fire_scale.or(defaults.friendly_fire_scale),
+            damage_multiplier: choose_optional(self.damage_multiplier, defaults.damage_multiplier.clone(), "damage_multiplier")?.unwrap_or(1.0),
+            explosive_bullets: merge_ability(
+                self.explosive_bullets,
+                defaults.explosive_bullets.clone(),
+                "explosive_bullets",
+                ExplosiveBulletsInput::resolve,
+            )?,
+            friendly_fire_heal: merge_friendly_fire_heal(self.friendly_fire_heal, defaults.friendly_fire_heal.clone())?,
+            inferno_damage: choose_optional(self.inferno_damage, defaults.inferno_damage.clone(), "inferno_damage")?,
+            teamkill_limit: choose_optional(self.teamkill_limit, defaults.teamkill_limit.clone(), "teamkill_limit")?,
+            hegrenade_impulse: merge_ability(
+                self.hegrenade_impulse,
+                defaults.hegrenade_impulse.clone(),
+                "hegrenade_impulse",
+                HeGrenadeImpulseInput::resolve,
+            )?,
+            proximity_fuse: merge_ability_result(
+                self.proximity_fuse,
+                defaults.proximity_fuse.clone(),
+                "proximity_fuse",
+                ProximityFuseInput::resolve,
+            )?,
+            wall_hang: choose(self.wall_hang, defaults.wall_hang, false),
+            grapple: merge_ability(self.grapple, defaults.grapple.clone(), "grapple", |input, base| input.resolve(base))?,
+            he_guidance: merge_ability(self.he_guidance, defaults.he_guidance.clone(), "he_guidance", |input, base| {
+                input.resolve(base)
+            })?,
             teammates_as_enemies: self.teammates_as_enemies.or(defaults.teammates_as_enemies),
             random_spawn: self.random_spawn.or(defaults.random_spawn),
             drop_weapons: self.drop_weapons.or(defaults.drop_weapons),
@@ -960,6 +1317,31 @@ impl ModeInput {
             fall_damage_scale: self.fall_damage_scale.or(defaults.fall_damage_scale),
             ordinary_chickens: choose(self.ordinary_chickens, defaults.ordinary_chickens, true),
             chicken_eating: self.chicken_eating.or(defaults.chicken_eating),
+            regeneration: merge_ability_result(
+                self.regeneration,
+                defaults.regeneration.clone(),
+                "regeneration",
+                RegenerationInput::resolve,
+            )?,
+            chicken_aura: merge_ability_result(
+                self.chicken_aura,
+                defaults.chicken_aura.clone(),
+                "chicken_aura",
+                ChickenAuraInput::resolve,
+            )?,
+            medical_smoke: choose(self.medical_smoke, defaults.medical_smoke, false),
+            trampoline: choose(self.trampoline, defaults.trampoline, false),
+            healing_cap_base_multiple: choose(self.healing_cap_base_multiple, defaults.healing_cap_base_multiple, 1.0),
+            dont_stop: merge_ability(self.dont_stop, defaults.dont_stop.clone(), "dont_stop", DontStopInput::resolve)?,
+            hot_floor: merge_ability(self.hot_floor, defaults.hot_floor.clone(), "hot_floor", HotFloorInput::resolve)?,
+            weapon_on_fire: merge_ability(
+                self.weapon_on_fire,
+                defaults.weapon_on_fire.clone(),
+                "weapon_on_fire",
+                WeaponOnFireInput::resolve,
+            )?,
+            long_flash: merge_ability(self.long_flash, defaults.long_flash.clone(), "long_flash", LongFlashInput::resolve)?,
+            big_head: merge_ability(self.big_head, defaults.big_head.clone(), "big_head", BigHeadInput::resolve)?,
         })
     }
 }
@@ -1024,7 +1406,13 @@ impl Config {
     }
 
     pub fn parse(source: &str) -> Result<Self, String> {
-        let mut input: RawConfig = toml::from_str(source).map_err(|error| error.to_string())?;
+        let mut input: RawConfig = toml::from_str(source).map_err(|error| {
+            if error.message().contains("unknown field `he_shockwave`") {
+                format!("{error}\nUse hegrenade_impulse and weapon_damage.hegrenade = 0.0 for the former impulse-only behavior.")
+            } else {
+                error.to_string()
+            }
+        })?;
         if input.defaults.id.is_some()
             || input.defaults.enabled.is_some()
             || input.defaults.name.is_some()
@@ -1034,18 +1422,27 @@ impl Config {
         {
             return Err("[defaults] may contain capability settings only".into());
         }
+        for (name, weapons) in &input.weapon_groups {
+            if let Some(item) = weapons.iter().find(|item| !supported_equipment_id(item)) {
+                return Err(equipment_input_error(&format!("weapon_groups.{name}"), item));
+            }
+        }
         input.defaults.validate_hud()?;
+        input.defaults.validate_native_effect_inputs()?;
+        input.defaults.resolve_weapons(&input.weapon_groups, "defaults")?;
         let defaults = input.defaults.clone();
-        let warmup = input.warmup.map(WarmupInput::into_config).transpose()?;
+        let warmup = input.warmup.map(|warmup| warmup.into_config(&input.weapon_groups)).transpose()?;
         let chicken = input.chicken.map(ChickenInput::resolve).transpose()?;
         let healthshot = input.healthshot.map(HealthshotInput::resolve).transpose()?;
         let default_language = input.i18n.default_language;
-        if !matches!(default_language.as_str(), "zh-CN" | "en") {
-            return Err(format!("i18n.default_language must be zh-CN or en, got {default_language:?}"));
-        }
+        text::validate_language(&default_language).map_err(|error| format!("i18n.default_language: {error}"))?;
         let modes = std::mem::take(&mut input.modes)
             .into_iter()
-            .map(|mode| mode.into_mode(&defaults))
+            .map(|mut mode| {
+                let owner = mode.id.clone().unwrap_or_else(|| "mode".into());
+                mode.resolve_weapons(&input.weapon_groups, &owner)?;
+                mode.into_mode(&defaults)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let config = Self {
             default_language,
@@ -1075,6 +1472,57 @@ impl Config {
             }
         }
         for mode in self.modes.iter().chain(self.warmup.iter().map(|warmup| &warmup.mode)) {
+            if !mode.healing_cap_base_multiple.is_finite() || mode.healing_cap_base_multiple <= 0.0 {
+                return Err(format!("{}: healing_cap_base_multiple must be finite and positive", mode.id));
+            }
+            if let Some(settings) = mode.regeneration {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if let Some(settings) = mode.chicken_aura {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if !mode.damage_multiplier.is_finite() || mode.damage_multiplier < 0.0 {
+                return Err(format!("{}: damage_multiplier must be finite and nonnegative", mode.id));
+            }
+            if mode.inferno_damage.is_some_and(|damage| !damage.is_finite() || damage < 0.0) {
+                return Err(format!("{}: inferno_damage must be finite and nonnegative", mode.id));
+            }
+            if mode.teamkill_limit == Some(0) {
+                return Err(format!("{}: teamkill_limit must be a positive integer", mode.id));
+            }
+            if let Some(settings) = mode.explosive_bullets {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if let Some(settings) = mode.friendly_fire_heal {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if let Some(settings) = mode.hegrenade_impulse {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if let Some(settings) = &mode.proximity_fuse {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if let Some(settings) = mode.grapple {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if let Some(settings) = mode.he_guidance {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if let Some(settings) = mode.dont_stop {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if let Some(settings) = mode.hot_floor {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if let Some(settings) = mode.weapon_on_fire {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if let Some(settings) = mode.long_flash {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
+            if let Some(settings) = mode.big_head {
+                settings.validate().map_err(|error| format!("{}: {error}", mode.id))?;
+            }
             if let Some(afterburn) = mode.afterburn {
                 afterburn.validate().map_err(|error| format!("{}: {error}", mode.id))?;
             }
@@ -1109,12 +1557,13 @@ impl Config {
             {
                 return Err(format!("{}: invalid health, armor or gravity", mode.id));
             }
-            if mode
-                .weapons
-                .iter()
-                .any(|weapon| equipment::weapon_slot(weapon).is_none() || weapon == "weapon_knife")
-            {
-                return Err(format!("{}: equipment must use the supported CS2 weapon whitelist", mode.id));
+            if mode.weapons.iter().any(|weapon| !supported_equipment_id(weapon)) {
+                let weapon = mode
+                    .weapons
+                    .iter()
+                    .find(|weapon| !supported_equipment_id(weapon))
+                    .expect("invalid item found");
+                return Err(equipment_input_error(&mode.id, weapon));
             }
             if !mode.speed.is_finite() || mode.speed <= 0.0 || mode.speed > 10.0 {
                 return Err(format!("{}: speed must be finite, positive and at most 10", mode.id));
@@ -1122,7 +1571,7 @@ impl Config {
             if mode.taser_charge.is_some_and(|value| !value.is_finite() || value < 0.0) {
                 return Err(format!("{}: taser charge must be finite and non-negative", mode.id));
             }
-            if mode.taser_charge.is_some() && !mode.weapons.iter().any(|weapon| weapon == "weapon_taser") {
+            if mode.taser_charge.is_some() && !mode.weapons.iter().any(|weapon| weapon == "taser") {
                 return Err(format!("{}: taser charge requires a taser equipment candidate", mode.id));
             }
             if mode.random_loadout && mode.kill_loadout {
@@ -1136,7 +1585,7 @@ impl Config {
             }
             if mode.kill_loadout
                 && mode.kill_loadout_start.unwrap_or(KillLoadoutStart::Glock) == KillLoadoutStart::Glock
-                && !mode.weapons.iter().any(|weapon| weapon == "weapon_glock")
+                && !mode.weapons.iter().any(|weapon| weapon == "glock")
             {
                 return Err(format!("{}: kill loadout candidates must include the initial Glock", mode.id));
             }
@@ -1177,23 +1626,14 @@ impl Config {
             }) {
                 return Err(format!("{}: bomb times must be finite and non-negative", mode.id));
             }
-            if !mode.weapon_damage.taser.is_finite()
-                || mode.weapon_damage.taser < 0.0
-                || !mode.weapon_damage.knife.is_finite()
-                || mode.weapon_damage.knife < 0.0
-            {
-                return Err(format!("{}: weapon damage multipliers must be finite and non-negative", mode.id));
-            }
+            mode.weapon_damage.validate().map_err(|error| format!("{}: {error}", mode.id))?;
             if matches!(mode.self_damage, Some(SelfDamage::Native { amount }) if !amount.is_finite() || amount < 0.0)
                 || mode.reflect_damage.is_some_and(|value| !value.is_finite() || value < 0.0)
             {
                 return Err(format!("{}: self and reflected damage must be finite and non-negative", mode.id));
             }
-            if mode
-                .friendly_fire_scale
-                .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
-            {
-                return Err(format!("{}: friendly fire scale must be finite and between 0 and 1", mode.id));
+            if mode.friendly_fire_scale.is_some_and(|value| !value.is_finite() || value < 0.0) {
+                return Err(format!("{}: friendly fire scale must be finite and nonnegative", mode.id));
             }
             if mode.fall_damage_scale.is_some_and(|value| !value.is_finite() || value < 0.0) {
                 return Err(format!("{}: fall damage scale must be finite and non-negative", mode.id));
@@ -1207,7 +1647,7 @@ impl Config {
             {
                 return Err(format!("{}: money income needs a positive finite interval and positive amount", mode.id));
             }
-            if mode.dodgeball && !mode.weapons.iter().any(|weapon| weapon == "weapon_decoy") {
+            if mode.dodgeball && !mode.weapons.iter().any(|weapon| weapon == "decoy") {
                 return Err(format!("{}: dodgeball requires decoy equipment", mode.id));
             }
             if mode.throwing_knives && mode.give_knife == TeamFilter::None {
@@ -1216,7 +1656,7 @@ impl Config {
             if mode
                 .replenish
                 .iter()
-                .any(|kind| !mode.weapons.iter().any(|weapon| weapon == kind.classname()))
+                .any(|kind| !mode.weapons.iter().any(|weapon| weapon == kind.item_id()))
             {
                 return Err(format!("{}: replenishment requires each grenade in the equipment candidates", mode.id));
             }
@@ -1258,7 +1698,7 @@ mod tests {
         let mode = &config.modes[0];
         assert_eq!(mode.id, "example");
         assert!(mode.enabled);
-        assert_eq!(mode.weapons, ["weapon_famas", "weapon_p250"]);
+        assert_eq!(mode.weapons, ["famas", "p250"]);
         assert_eq!(
             (mode.health, mode.armor, mode.gravity),
             (AttributeValue::Fixed(120), AttributeValue::Fixed(50), 1.0)
@@ -1269,7 +1709,6 @@ mod tests {
     fn public_catalogs_localize_the_generic_example_with_matching_placeholders() {
         let zh = TextCatalog::parse(include_str!("../../../config/i18n/zh-CN.toml")).unwrap();
         let en = TextCatalog::parse(include_str!("../../../config/i18n/en.toml")).unwrap();
-        TextBundle::validate_complete_catalogs(&zh, &en).unwrap();
         for source in [
             include_str!("../../../config/i18n/zh-CN.toml"),
             include_str!("../../../config/i18n/en.toml"),
@@ -1301,6 +1740,17 @@ mod tests {
     }
 
     #[test]
+    fn legacy_classnames_and_grenade_aliases_report_canonical_ids() {
+        let source = EXAMPLE.replace("famas", "weapon_famas");
+        let error = Config::parse(&source).unwrap_err();
+        assert!(error.contains("canonical item ID 'famas'"), "{error}");
+
+        let source = EXAMPLE.replace("# replenish = [\"hegrenade\"]", "replenish = [\"he\"]");
+        let error = Config::parse(&source).unwrap_err();
+        assert!(error.contains("canonical item ID 'hegrenade'"), "{error}");
+    }
+
+    #[test]
     fn diagnostics_defaults_off_and_requires_an_explicit_boolean() {
         let source = EXAMPLE.replace("diagnostics = false", "");
         assert!(!Config::parse(&source).unwrap().diagnostics);
@@ -1315,10 +1765,10 @@ mod tests {
             EXAMPLE.replace("enabled = true", "enabled = false"),
             EXAMPLE.replace("health = 120", "health = 0"),
             EXAMPLE.replace("gravity = 1.0", "gravity = nan"),
-            EXAMPLE.replace("weapon_famas", "weapon_shield"),
+            EXAMPLE.replace("famas", "shield"),
             EXAMPLE.replace(
-                "weapons = [\"weapon_famas\", \"weapon_p250\"]",
-                "weapons = [\"weapon_famas\", \"weapon_p250\"]\nammo = \"unsupported\"",
+                "weapons = [\"famas\", \"p250\"]",
+                "weapons = [\"famas\", \"p250\"]\nammo = \"unsupported\"",
             ),
             EXAMPLE.replace("# view_punch_decay = 5.0", "view_punch_decay = -1.0"),
             EXAMPLE.replace(

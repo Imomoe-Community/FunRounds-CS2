@@ -97,12 +97,14 @@ set(FUNROUNDS_S2SDK_INCLUDE_DIRS
 add_library(funrounds-native SHARED
     src/plugin.cpp
     src/engine.cpp
+    src/bighead.cpp
     src/burn.cpp
     src/damage.cpp
     src/touch.cpp
     src/suicide.cpp
     src/collision.cpp
     src/ground_reverse.cpp
+    src/airmove.cpp
     src/third_person.cpp
     src/ghost_visibility.cpp
     src/ghost_radar.cpp
@@ -110,6 +112,8 @@ add_library(funrounds-native SHARED
     src/ghost_radar_state.cpp
     src/interactions.cpp
     src/random_spawn.cpp
+    src/standard_grenade.cpp
+    src/movement_trace.cpp
     "${FUNROUNDS_PLUGIFY_INCLUDE_DIR}/polyhook/polyhook.cpp"
     "${FUNROUNDS_S2SDK_GENERATED_INCLUDE_DIR}/s2sdk/s2sdk.cpp"
 )
@@ -134,7 +138,7 @@ target_include_directories(funrounds-native PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/exports"
 )
 target_include_directories(funrounds-native SYSTEM PRIVATE ${FUNROUNDS_S2SDK_INCLUDE_DIRS})
-target_link_libraries(funrounds-native PRIVATE sourcesdk "${FUNROUNDS_PROTOBUF_TARGET}")
+target_link_libraries(funrounds-native PRIVATE sourcesdk "${FUNROUNDS_PROTOBUF_TARGET}" ${CMAKE_DL_LIBS})
 target_compile_definitions(funrounds-native PRIVATE
     PLUGIFY_IS_DEBUG=$<CONFIG:Debug>
     PLUGIFY_IS_RELEASE=$<CONFIG:Release>

@@ -584,3 +584,52 @@ pub type _GetClientLanguageCode = unsafe extern "C" fn(i32) -> Str;
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_GetClientLanguageCode: Option<_GetClientLanguageCode> = None;
+
+/// Retrieves the number of kills for a client.
+///
+/// # Arguments
+/// * `playerSlot` - (int32): The index of the player's slot.
+///
+/// # Returns - (int32):
+/// The number of kills the client has, or 0 if the player slot is invalid.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetClientKills(playerSlot: i32) -> i32 {
+    unsafe { __s2sdk_GetClientKills.expect("GetClientKills function was not found")(playerSlot) }
+}
+pub type _GetClientKills = unsafe extern "C" fn(i32) -> i32;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetClientKills: Option<_GetClientKills> = None;
+
+/// Retrieves the number of deaths for a client.
+///
+/// # Arguments
+/// * `playerSlot` - (int32): The index of the player's slot.
+///
+/// # Returns - (int32):
+/// The number of deaths the client has, or 0 if the player slot is invalid.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetClientDeaths(playerSlot: i32) -> i32 {
+    unsafe { __s2sdk_GetClientDeaths.expect("GetClientDeaths function was not found")(playerSlot) }
+}
+pub type _GetClientDeaths = unsafe extern "C" fn(i32) -> i32;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetClientDeaths: Option<_GetClientDeaths> = None;
+
+/// Changes the player's team.
+///
+/// # Arguments
+/// * `playerSlot` - (int32): The index of the player's slot.
+/// * `team` - (int32): The team index to change the client to.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn ChangeClientTeam(playerSlot: i32, team: CSTeam) {
+    unsafe { __s2sdk_ChangeClientTeam.expect("ChangeClientTeam function was not found")(playerSlot, team) }
+}
+pub type _ChangeClientTeam = unsafe extern "C" fn(i32, CSTeam);
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_ChangeClientTeam: Option<_ChangeClientTeam> = None;

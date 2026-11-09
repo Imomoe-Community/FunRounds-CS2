@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/untrustedmodders/plugify/refs/tags/v3.1.0/schemas/plugin.schema.json",
-  "version": "0.3.0-alpha.test.2",
+  "version": "0.4.0-alpha.test.3",
   "name": "funrounds_native",
-  "description": "Native Source 2 damage, pickup, touch, collision, chicken-use, suicide-input, ground-reverse, bot-visibility, ghost-radar and passive sound-message hooks for FunRounds",
+  "description": "Native Source 2 damage, pickup, touch, collision, chicken-use, suicide-input, Big Head scaling, ground-reverse, bot-visibility, ghost-radar and passive sound-message hooks for FunRounds",
   "author": "Mai Ooizumi",
   "website": "https://github.com/Mai-Ooizumi",
   "license": "AGPL-3.0-or-later",
@@ -12,7 +12,7 @@
   "dependencies": [
     {
       "name": "s2sdk",
-      "constraints": "=3.0.6"
+      "constraints": "=3.3.1"
     },
     {
       "name": "polyhook",
@@ -20,6 +20,34 @@
     }
   ],
   "methods": [
+    {
+      "name": "HasPlayerMovementHullSupport",
+      "funcName": "HasPlayerMovementHullSupport",
+      "group": "WallHang",
+      "description": "On the game thread, checks the exact paired CS2 26445667 movement-trace ABI, server image identity, and physics-query receiver. Unsupported or mismatched server builds return false.",
+      "paramTypes": [],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "TracePlayerMovementHull",
+      "funcName": "TracePlayerMovementHull",
+      "group": "WallHang",
+      "description": "On the game thread, traces the supplied real local hull using the pinned player-movement filter while ignoring one exact full player-pawn handle. Returns true only after finite trace outputs are validated; a successful miss returns true with outHit=false and outEntityHandle=-1. Failure returns false with deterministic miss outputs. It never passes engine pointers across this provider boundary.",
+      "paramTypes": [
+        { "name": "pawnHandle", "type": "int32", "ref": false },
+        { "name": "start", "type": "vec3", "ref": false },
+        { "name": "end", "type": "vec3", "ref": false },
+        { "name": "hullMins", "type": "vec3", "ref": false },
+        { "name": "hullMaxs", "type": "vec3", "ref": false },
+        { "name": "outPosition", "type": "vec3", "ref": true },
+        { "name": "outFraction", "type": "float", "ref": true },
+        { "name": "outHit", "type": "bool", "ref": true },
+        { "name": "outEntityHandle", "type": "int32", "ref": true },
+        { "name": "outStartSolid", "type": "bool", "ref": true },
+        { "name": "outNormal", "type": "vec3", "ref": true }
+      ],
+      "retType": { "type": "bool" }
+    },
     {
       "name": "HasPlayerRandomSpawnPointSupport",
       "funcName": "HasPlayerRandomSpawnPointSupport",
@@ -50,66 +78,56 @@
       }
     },
     {
-      "name": "HasThirdPersonEyeSupport",
-      "funcName": "HasThirdPersonEyeSupport",
-      "group": "ThirdPerson",
+      "name": "HasThirdPersonEyeSupport", "funcName": "HasThirdPersonEyeSupport", "group": "ThirdPerson",
       "description": "On the game thread, checks the optional pawn eye camera-branch Hook ABI and schema. Does not change any view.",
-      "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "paramTypes": [], "retType": { "type": "bool" }
     },
     {
-      "name": "RegisterThirdPersonEyeTarget",
-      "funcName": "RegisterThirdPersonEyeTarget",
-      "group": "ThirdPerson",
+      "name": "RegisterThirdPersonEyeTarget", "funcName": "RegisterThirdPersonEyeTarget", "group": "ThirdPerson",
       "description": "On the game thread, registers one exact pawn/camera pair before assigning its view. Only a live own-camera path uses the original pawn eye branch.",
-      "paramTypes": [
-        {
-          "name": "pawn",
-          "type": "int32",
-          "ref": false
-        },
-        {
-          "name": "camera",
-          "type": "int32",
-          "ref": false
-        }
-      ],
-      "retType": {
-        "type": "bool"
-      }
+      "paramTypes": [{ "name": "pawn", "type": "int32", "ref": false }, { "name": "camera", "type": "int32", "ref": false }],
+      "retType": { "type": "bool" }
     },
     {
-      "name": "UnregisterThirdPersonEyeTarget",
-      "funcName": "UnregisterThirdPersonEyeTarget",
-      "group": "ThirdPerson",
+      "name": "UnregisterThirdPersonEyeTarget", "funcName": "UnregisterThirdPersonEyeTarget", "group": "ThirdPerson",
       "description": "On the game thread, removes an exact pair only after its pawn view no longer references the owned camera. A failed detach remains retryable.",
-      "paramTypes": [
-        {
-          "name": "pawn",
-          "type": "int32",
-          "ref": false
-        },
-        {
-          "name": "camera",
-          "type": "int32",
-          "ref": false
-        }
-      ],
-      "retType": {
-        "type": "bool"
-      }
+      "paramTypes": [{ "name": "pawn", "type": "int32", "ref": false }, { "name": "camera", "type": "int32", "ref": false }],
+      "retType": { "type": "bool" }
     },
     {
-      "name": "ResetThirdPersonEyeTargets",
-      "funcName": "ResetThirdPersonEyeTargets",
-      "group": "ThirdPerson",
+      "name": "ResetThirdPersonEyeTargets", "funcName": "ResetThirdPersonEyeTargets", "group": "ThirdPerson",
       "description": "Map transition only: drops all old-map target identities and detaches the eye Hook without resolving or modifying reused entity handles.",
-      "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "paramTypes": [], "retType": { "type": "bool" }
+    },
+    {
+      "name": "HasGrenadeDetonateSupport",
+      "funcName": "HasGrenadeDetonateSupport",
+      "group": "Grenades",
+      "description": "On the game thread, checks kind 1 smoke, 2 Molotov, or 3 incendiary independently and installs an owned pre-hook that claims natural Detonate entry for complete projectile handles.",
+      "paramTypes": [{ "name": "kind", "type": "int32" }],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "GetGrenadeDetonationState",
+      "funcName": "GetGrenadeDetonationState",
+      "group": "Grenades",
+      "description": "On the game thread, checks kind 1 smoke, 2 Molotov, or 3 incendiary independently. Returns 1 when any Detonate entry claimed this exact full handle or its non-sentinel projectile has disappeared, 0 for a valid matching projectile not yet claimed, and -1 when support, kind, identity, or state resolution fails. It never changes projectile physics or calls Detonate.",
+      "paramTypes": [
+        { "name": "projectileHandle", "type": "int32" },
+        { "name": "kind", "type": "int32" }
+      ],
+      "retType": { "type": "int32" }
+    },
+    {
+      "name": "DetonateGrenade",
+      "funcName": "DetonateGrenade",
+      "group": "Grenades",
+      "description": "On the game thread, requests native Detonate for an exact full handle after caller-side provenance, managed-projectile exclusion, and proximity checks. Returns 1 when submitted, 0 when natural or earlier Detonate was already claimed or the non-sentinel handle normally disappeared, and -1 on support, identity, or submission failure.",
+      "paramTypes": [
+        { "name": "projectileHandle", "type": "int32" },
+        { "name": "kind", "type": "int32" }
+      ],
+      "retType": { "type": "int32" }
     },
     {
       "name": "TryIgnitePlayer",
@@ -117,16 +135,8 @@
       "group": "Afterburn",
       "description": "On the game thread, attempts native mode-14 ignition for one exact current live player pawn without replacing a valid attached effect. Returns the new attached entityflame full handle for exact caller-owned lifecycle cleanup, or -1 when validation or readback fails.",
       "paramTypes": [
-        {
-          "name": "pawnHandle",
-          "type": "int32",
-          "ref": false
-        },
-        {
-          "name": "duration",
-          "type": "float",
-          "ref": false
-        }
+        { "name": "pawnHandle", "type": "int32", "ref": false },
+        { "name": "duration", "type": "float", "ref": false }
       ],
       "retType": {
         "type": "int32",
@@ -139,9 +149,7 @@
       "group": "Suicide",
       "description": "Reports whether the optional CanAcquire hook and inspect-button schema are available.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "GetLookAtWeaponButtonState",
@@ -149,15 +157,9 @@
       "group": "Suicide",
       "description": "Returns live IN_LOOK_AT_WEAPON state for an exact pawn handle, or -1 when unavailable.",
       "paramTypes": [
-        {
-          "name": "pawnHandle",
-          "type": "int32",
-          "ref": false
-        }
+        { "name": "pawnHandle", "type": "int32", "ref": false }
       ],
-      "retType": {
-        "type": "int32"
-      }
+      "retType": { "type": "int32" }
     },
     {
       "name": "HookPlayerCanAcquire",
@@ -165,16 +167,9 @@
       "group": "Suicide",
       "description": "Hooks pickup acquisition decisions so only active suicide bombers are denied weapon pickups.",
       "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "prototype": "PlayerCanAcquireCallback",
-          "ref": false
-        }
+        { "name": "callback", "type": "function", "prototype": "PlayerCanAcquireCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "UnhookPlayerCanAcquire",
@@ -182,16 +177,9 @@
       "group": "Suicide",
       "description": "Removes the optional CanAcquire detour and callback.",
       "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "prototype": "PlayerCanAcquireCallback",
-          "ref": false
-        }
+        { "name": "callback", "type": "function", "prototype": "PlayerCanAcquireCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HasPlayerTakeDamagePre",
@@ -199,9 +187,7 @@
       "group": "Damage",
       "description": "Reports whether the current native damage-hook prerequisites are available.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HookPlayerTakeDamagePre",
@@ -209,16 +195,9 @@
       "group": "Damage",
       "description": "Installs the exclusive synchronous player damage policy callback.",
       "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "prototype": "DamagePreCallback",
-          "ref": false
-        }
+        { "name": "callback", "type": "function", "prototype": "DamagePreCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "UnhookPlayerTakeDamagePre",
@@ -226,16 +205,9 @@
       "group": "Damage",
       "description": "Revokes the player damage callback and removes its detour.",
       "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "prototype": "DamagePreCallback",
-          "ref": false
-        }
+        { "name": "callback", "type": "function", "prototype": "DamagePreCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HasEntityTakeDamagePre",
@@ -243,9 +215,7 @@
       "group": "Damage",
       "description": "Reports whether the shared non-player damage callback prerequisites are available without player-only headshot tracing.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HookEntityTakeDamagePre",
@@ -253,16 +223,9 @@
       "group": "Damage",
       "description": "Subscribes one synchronous non-player entity damage callback to the shared TakeDamageOld detour; nonzero suppresses native damage.",
       "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "prototype": "EntityDamagePreCallback",
-          "ref": false
-        }
+        { "name": "callback", "type": "function", "prototype": "EntityDamagePreCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "UnhookEntityTakeDamagePre",
@@ -270,16 +233,9 @@
       "group": "Damage",
       "description": "Revokes this entity damage callback and removes the shared detour only when no damage callbacks remain. Returns true when this callback is absent or revoked; other callbacks are untouched.",
       "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "prototype": "EntityDamagePreCallback",
-          "ref": false
-        }
+        { "name": "callback", "type": "function", "prototype": "EntityDamagePreCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "GetCurrentDamageFrameToken",
@@ -287,9 +243,7 @@
       "group": "Damage",
       "description": "Returns the current nested damage-call token, or zero outside a damage call.",
       "paramTypes": [],
-      "retType": {
-        "type": "uint64"
-      }
+      "retType": { "type": "uint64" }
     },
     {
       "name": "TakeEntityDamageWithWeapon",
@@ -297,51 +251,15 @@
       "group": "Damage",
       "description": "Applies native damage with an exact ability weapon handle and optional callback-specific rule bypass; returns -1 on execution failure, otherwise the actual non-negative health lost (0 is valid).",
       "paramTypes": [
-        {
-          "name": "victimHandle",
-          "type": "int32",
-          "ref": false
-        },
-        {
-          "name": "inflictorHandle",
-          "type": "int32",
-          "ref": false
-        },
-        {
-          "name": "attackerHandle",
-          "type": "int32",
-          "ref": false
-        },
-        {
-          "name": "force",
-          "type": "vec3",
-          "ref": false
-        },
-        {
-          "name": "position",
-          "type": "vec3",
-          "ref": false
-        },
-        {
-          "name": "amount",
-          "type": "float",
-          "ref": false
-        },
-        {
-          "name": "damageType",
-          "type": "int32",
-          "ref": false
-        },
-        {
-          "name": "weaponHandle",
-          "type": "int32",
-          "ref": false
-        },
-        {
-          "name": "skipPluginRules",
-          "type": "bool",
-          "ref": false
-        }
+        { "name": "victimHandle", "type": "int32", "ref": false },
+        { "name": "inflictorHandle", "type": "int32", "ref": false },
+        { "name": "attackerHandle", "type": "int32", "ref": false },
+        { "name": "force", "type": "vec3", "ref": false },
+        { "name": "position", "type": "vec3", "ref": false },
+        { "name": "amount", "type": "float", "ref": false },
+        { "name": "damageType", "type": "int32", "ref": false },
+        { "name": "weaponHandle", "type": "int32", "ref": false },
+        { "name": "skipPluginRules", "type": "bool", "ref": false }
       ],
       "retType": {
         "type": "int32",
@@ -354,48 +272,57 @@
       "group": "Entities",
       "description": "Reports whether the Touch vtable offset is available in the native gamedata.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HookEntityTouchPre",
       "funcName": "HookEntityTouchPre",
       "group": "Entities",
-      "description": "Hooks the entity's current Touch implementation address; the callback sees all entities sharing it.",
+      "description": "Subscribes this callback to the entity's current Touch implementation. Other callbacks may share the detour; any nonzero callback result suppresses the original Touch.",
       "paramTypes": [
-        {
-          "name": "entityHandle",
-          "type": "int32",
-          "ref": false
-        },
-        {
-          "name": "callback",
-          "type": "function",
-          "prototype": "EntityTouchPreCallback",
-          "ref": false
-        }
+        { "name": "entityHandle", "type": "int32", "ref": false },
+        { "name": "callback", "type": "function", "prototype": "EntityTouchPreCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "UnhookEntityTouchPre",
       "funcName": "UnhookEntityTouchPre",
       "group": "Entities",
-      "description": "Returns true for a non-null callback with no hooks or after all its hooks detach; false for null or incomplete own-hook detachment. Other callbacks' hooks are untouched.",
+      "description": "Removes only this callback from its Touch subscriptions. A detour remains while another callback uses it; false means an own final-hook detach must be retried.",
       "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "prototype": "EntityTouchPreCallback",
-          "ref": false
-        }
+        { "name": "callback", "type": "function", "prototype": "EntityTouchPreCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "HasBigHeadScaleSupport",
+      "funcName": "HasBigHeadScaleSupport",
+      "group": "BigHead",
+      "description": "Reports whether the current server build has the verified Pawn reset hook, schema field and GameRules mutator-bit contract needed to own Big Head scaling.",
+      "paramTypes": [],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "SetBigHeadScaleTarget",
+      "funcName": "SetBigHeadScaleTarget",
+      "group": "BigHead",
+      "description": "On the game thread, targets a finite positive scale for one exact live player Pawn after its native reset. Returns false if the target or current build contract cannot be confirmed.",
+      "paramTypes": [
+        { "name": "pawnHandle", "type": "int32", "ref": false },
+        { "name": "scale", "type": "float", "ref": false }
+      ],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "ClearBigHeadScaleTarget",
+      "funcName": "ClearBigHeadScaleTarget",
+      "group": "BigHead",
+      "description": "On the game thread, removes the exact Pawn target and restores its captured original scale only while the current Pawn still holds the owned value; map changes discard old handles without writing through them.",
+      "paramTypes": [
+        { "name": "pawnHandle", "type": "int32", "ref": false }
+      ],
+      "retType": { "type": "bool" }
     },
     {
       "name": "SetEntityDefaultCollisionGroup",
@@ -403,15 +330,28 @@
       "group": "Entities",
       "description": "Sets both collision-group fields to the standard default and notifies collision rules.",
       "paramTypes": [
-        {
-          "name": "entityHandle",
-          "type": "int32",
-          "ref": false
-        }
+        { "name": "entityHandle", "type": "int32", "ref": false }
       ],
-      "retType": {
-        "type": "void"
-      }
+      "retType": { "type": "void" }
+    },
+    {
+      "name": "HasAirMoveSupport",
+      "funcName": "HasAirMoveSupport",
+      "group": "AirMove",
+      "description": "Reports whether the verified AirMove entry and current pawn identity schema are available.",
+      "paramTypes": [],
+      "retType": { "type": "bool" }
+    },
+    {
+      "name": "SetAirMoveAssist",
+      "funcName": "SetAirMoveAssist",
+      "group": "AirMove",
+      "description": "Attaches or detaches temporary AirMove input assistance for this callback.",
+      "paramTypes": [
+        { "name": "active", "type": "bool", "ref": false },
+        { "name": "assist", "type": "function", "prototype": "AirMoveAssist", "ref": false }
+      ],
+      "retType": { "type": "bool" }
     },
     {
       "name": "HasGroundReverseSupport",
@@ -419,9 +359,7 @@
       "group": "GroundReverse",
       "description": "Reports whether the platform ground-reverse callsite and current-controller identity schema are available.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "SetGroundReverseActive",
@@ -429,20 +367,10 @@
       "group": "GroundReverse",
       "description": "Enables ground-reversed human movement and normal BOT movement with the configured local ground acceleration; false detaches the hook.",
       "paramTypes": [
-        {
-          "name": "active",
-          "type": "bool",
-          "ref": false
-        },
-        {
-          "name": "acceleration",
-          "type": "float",
-          "ref": false
-        }
+        { "name": "active", "type": "bool", "ref": false },
+        { "name": "acceleration", "type": "float", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HasGhostVisibilitySupport",
@@ -450,9 +378,7 @@
       "group": "GhostVisibility",
       "description": "Installs the resident CCSBot visibility hook and reports whether its current-platform signature is available.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "SetGhostVisibilityTargets",
@@ -460,15 +386,9 @@
       "group": "GhostVisibility",
       "description": "Atomically replaces the exact full pawn-handle set hidden from BOT visibility; an empty set clears the filter.",
       "paramTypes": [
-        {
-          "name": "pawnHandles",
-          "type": "int32[]",
-          "ref": false
-        }
+        { "name": "pawnHandles", "type": "int32[]", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HasGhostRadarSupport",
@@ -476,9 +396,7 @@
       "group": "GhostRadar",
       "description": "On the game thread, reports whether both the per-recipient radar update filter and spotted-state filter are ready.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HasGhostPassiveSoundMessageSupport",
@@ -486,9 +404,7 @@
       "group": "GhostVisibility",
       "description": "On the game thread, reports whether the per-recipient filter for the complete paired passive movement sound-event family is ready for fully hidden Ghost pawn handles. It filters client sound messages only; Hostage.Breath and active combat sounds remain visible.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HasGhostPassiveNoiseSupport",
@@ -496,9 +412,7 @@
       "group": "GhostVisibility",
       "description": "On the game thread, reports whether the scoped CCSBotManager::OnPlayerFootstep/per-BOT noise filter is ready. It suppresses only footsteps from exact fully hidden Ghost pawns to the exact connected enemy BOT controller; other noise, fall damage, teammates, and combat stay native.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "SetGhostRadarTargets",
@@ -506,20 +420,10 @@
       "group": "GhostRadar",
       "description": "On the game thread, publishes full pawn handles and parallel 64-bit masks of living enemy recipients whose radar updates must be hidden. Empty parallel arrays clear the snapshot.",
       "paramTypes": [
-        {
-          "name": "fullPawnHandles",
-          "type": "int32[]",
-          "ref": false
-        },
-        {
-          "name": "enemyRecipientMasks",
-          "type": "uint64[]",
-          "ref": false
-        }
+        { "name": "fullPawnHandles", "type": "int32[]", "ref": false },
+        { "name": "enemyRecipientMasks", "type": "uint64[]", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HasUseTargetSupport",
@@ -527,9 +431,7 @@
       "group": "ChickenEating",
       "description": "Reports whether the exact committed player-use target callback is available on this platform.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HookUseTarget",
@@ -537,16 +439,9 @@
       "group": "ChickenEating",
       "description": "Observes the exact outer use-selector result and committed target for a live player pawn.",
       "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "prototype": "UseTargetCallback",
-          "ref": false
-        }
+        { "name": "callback", "type": "function", "prototype": "UseTargetCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "UnhookUseTarget",
@@ -554,16 +449,9 @@
       "group": "ChickenEating",
       "description": "Removes only this callback from the committed use-target observation hook.",
       "paramTypes": [
-        {
-          "name": "callback",
-          "type": "function",
-          "prototype": "UseTargetCallback",
-          "ref": false
-        }
+        { "name": "callback", "type": "function", "prototype": "UseTargetCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HasChickenFollowBlockSupport",
@@ -571,9 +459,7 @@
       "group": "ChickenFollow",
       "description": "Reports whether the exact CChickenChickenUse callback detour is available on this platform.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "SetChickenFollowBlocking",
@@ -581,15 +467,9 @@
       "group": "ChickenFollow",
       "description": "On the game thread, enables the native chicken-follow veto or disables it and removes only this provider's detour. Returns false while setup or owned-hook cleanup remains incomplete.",
       "paramTypes": [
-        {
-          "name": "active",
-          "type": "bool",
-          "ref": false
-        }
+        { "name": "active", "type": "bool", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HasHealthshotSupport",
@@ -597,9 +477,7 @@
       "group": "Healthshot",
       "description": "Reports whether the healthshot eligibility and successful-effect hooks resolve on this platform.",
       "paramTypes": [],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "HookHealthshot",
@@ -607,22 +485,10 @@
       "group": "Healthshot",
       "description": "Blocks only the custom B-relative cap decision before consumption and reports successful native effects afterward.",
       "paramTypes": [
-        {
-          "name": "canUse",
-          "type": "function",
-          "prototype": "HealthshotCanUseCallback",
-          "ref": false
-        },
-        {
-          "name": "effect",
-          "type": "function",
-          "prototype": "HealthshotEffectCallback",
-          "ref": false
-        }
+        { "name": "canUse", "type": "function", "prototype": "HealthshotCanUseCallback", "ref": false },
+        { "name": "effect", "type": "function", "prototype": "HealthshotEffectCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     },
     {
       "name": "UnhookHealthshot",
@@ -630,216 +496,114 @@
       "group": "Healthshot",
       "description": "Removes only the two healthshot callbacks owned by this provider consumer.",
       "paramTypes": [
-        {
-          "name": "canUse",
-          "type": "function",
-          "prototype": "HealthshotCanUseCallback",
-          "ref": false
-        },
-        {
-          "name": "effect",
-          "type": "function",
-          "prototype": "HealthshotEffectCallback",
-          "ref": false
-        }
+        { "name": "canUse", "type": "function", "prototype": "HealthshotCanUseCallback", "ref": false },
+        { "name": "effect", "type": "function", "prototype": "HealthshotEffectCallback", "ref": false }
       ],
-      "retType": {
-        "type": "bool"
-      }
+      "retType": { "type": "bool" }
     }
   ],
   "prototypes": [
+    {
+      "name": "AirMoveAssist",
+      "funcName": "AirMoveAssist",
+      "description": "Produces forward and left input for the exact airborne pawn, or returns false to keep native input.",
+      "paramTypes": [
+        { "name": "slot", "type": "int32" },
+        { "name": "pawn", "type": "int32" },
+        { "name": "controller", "type": "int32" },
+        { "name": "yaw", "type": "float" },
+        { "name": "vx", "type": "float" },
+        { "name": "vy", "type": "float" },
+        { "name": "forward", "type": "float", "ref": true },
+        { "name": "left", "type": "float", "ref": true }
+      ],
+      "retType": { "type": "bool" }
+    },
     {
       "name": "PlayerCanAcquireCallback",
       "funcName": "PlayerCanAcquireCallback",
       "description": "Synchronous pickup decision for exact player pawn and controller handles.",
       "paramTypes": [
-        {
-          "name": "pawnHandle",
-          "type": "int32"
-        },
-        {
-          "name": "controllerHandle",
-          "type": "int32"
-        }
+        { "name": "pawnHandle", "type": "int32" },
+        { "name": "controllerHandle", "type": "int32" }
       ],
-      "retType": {
-        "type": "int32"
-      }
+      "retType": { "type": "int32" }
     },
     {
       "name": "DamagePreCallback",
       "funcName": "DamagePreCallback",
       "description": "Synchronous player damage decision with native damage type, exact weapon handle, and per-call rule scope.",
       "paramTypes": [
-        {
-          "name": "victimHandle",
-          "type": "int32"
-        },
-        {
-          "name": "attackerHandle",
-          "type": "int32"
-        },
-        {
-          "name": "inflictorHandle",
-          "type": "int32"
-        },
-        {
-          "name": "weaponKind",
-          "type": "int32"
-        },
-        {
-          "name": "hitGroup",
-          "type": "int32"
-        },
-        {
-          "name": "tracedHead",
-          "type": "bool"
-        },
-        {
-          "name": "damage",
-          "type": "float"
-        },
-        {
-          "name": "damageType",
-          "type": "uint32"
-        },
-        {
-          "name": "multiplier",
-          "type": "float",
-          "ref": true
-        },
-        {
-          "name": "markHeadshot",
-          "type": "bool",
-          "ref": true
-        },
-        {
-          "name": "weaponHandle",
-          "type": "int32"
-        },
-        {
-          "name": "skipPluginRules",
-          "type": "bool"
-        }
+        { "name": "victimHandle", "type": "int32" },
+        { "name": "attackerHandle", "type": "int32" },
+        { "name": "inflictorHandle", "type": "int32" },
+        { "name": "weaponKind", "type": "int32" },
+        { "name": "hitGroup", "type": "int32" },
+        { "name": "tracedHead", "type": "bool" },
+        { "name": "damage", "type": "float" },
+        { "name": "damageType", "type": "uint32" },
+        { "name": "multiplier", "type": "float", "ref": true },
+        { "name": "markHeadshot", "type": "bool", "ref": true },
+        { "name": "weaponHandle", "type": "int32" },
+        { "name": "skipPluginRules", "type": "bool" }
       ],
-      "retType": {
-        "type": "int32"
-      }
+      "retType": { "type": "int32" }
     },
     {
       "name": "EntityDamagePreCallback",
       "funcName": "EntityDamagePreCallback",
       "description": "Synchronous raw non-player entity damage decision with exact victim/source handles, damage type, and per-call rule scope; return zero to allow or nonzero to suppress.",
       "paramTypes": [
-        {
-          "name": "victimHandle",
-          "type": "int32"
-        },
-        {
-          "name": "attackerHandle",
-          "type": "int32"
-        },
-        {
-          "name": "inflictorHandle",
-          "type": "int32"
-        },
-        {
-          "name": "abilityHandle",
-          "type": "int32"
-        },
-        {
-          "name": "damage",
-          "type": "float"
-        },
-        {
-          "name": "damageType",
-          "type": "uint32"
-        },
-        {
-          "name": "skipPluginRules",
-          "type": "bool"
-        }
+        { "name": "victimHandle", "type": "int32" },
+        { "name": "attackerHandle", "type": "int32" },
+        { "name": "inflictorHandle", "type": "int32" },
+        { "name": "abilityHandle", "type": "int32" },
+        { "name": "damage", "type": "float" },
+        { "name": "damageType", "type": "uint32" },
+        { "name": "skipPluginRules", "type": "bool" }
       ],
-      "retType": {
-        "type": "int32"
-      }
+      "retType": { "type": "int32" }
     },
     {
       "name": "EntityTouchPreCallback",
       "funcName": "EntityTouchPreCallback",
-      "description": "Synchronous decision for every entity sharing the selected Touch implementation.",
+      "description": "Synchronous veto decision for a subscribed Touch implementation; any nonzero callback result suppresses the original call.",
       "paramTypes": [
-        {
-          "name": "entityHandle",
-          "type": "int32"
-        },
-        {
-          "name": "otherHandle",
-          "type": "int32"
-        }
+        { "name": "entityHandle", "type": "int32" },
+        { "name": "otherHandle", "type": "int32" }
       ],
-      "retType": {
-        "type": "int32"
-      }
+      "retType": { "type": "int32" }
     },
     {
       "name": "UseTargetCallback",
       "funcName": "UseTargetCallback",
       "description": "Synchronous target observation for an exact live player pawn; target is -1 if no committed match and inUse reports the current E state.",
       "paramTypes": [
-        {
-          "name": "pawnHandle",
-          "type": "int32"
-        },
-        {
-          "name": "targetHandle",
-          "type": "int32"
-        },
-        {
-          "name": "inUse",
-          "type": "bool"
-        }
+        { "name": "pawnHandle", "type": "int32" },
+        { "name": "targetHandle", "type": "int32" },
+        { "name": "inUse", "type": "bool" }
       ],
-      "retType": {
-        "type": "void"
-      }
+      "retType": { "type": "void" }
     },
     {
       "name": "HealthshotCanUseCallback",
       "funcName": "HealthshotCanUseCallback",
       "description": "Returns nonzero only to veto custom healthshot use for the exact player life and healthshot inventory entity.",
       "paramTypes": [
-        {
-          "name": "pawnHandle",
-          "type": "int32"
-        },
-        {
-          "name": "weaponHandle",
-          "type": "int32"
-        }
+        { "name": "pawnHandle", "type": "int32" },
+        { "name": "weaponHandle", "type": "int32" }
       ],
-      "retType": {
-        "type": "int32"
-      }
+      "retType": { "type": "int32" }
     },
     {
       "name": "HealthshotEffectCallback",
       "funcName": "HealthshotEffectCallback",
       "description": "Reports the completed native healthshot effect for exact pawn and inventory-weapon handles.",
       "paramTypes": [
-        {
-          "name": "pawnHandle",
-          "type": "int32"
-        },
-        {
-          "name": "weaponHandle",
-          "type": "int32"
-        }
+        { "name": "pawnHandle", "type": "int32" },
+        { "name": "weaponHandle", "type": "int32" }
       ],
-      "retType": {
-        "type": "void"
-      }
+      "retType": { "type": "void" }
     }
   ]
 }
