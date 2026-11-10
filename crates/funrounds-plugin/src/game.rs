@@ -142,13 +142,19 @@ impl LivePlayer {
             return Self::resolve_handles(slot);
         }
         // IsClientAlive follows m_hPlayerPawn, while GetClientPawn/Health follow
-        // current m_hPawn. Only accept the latter as a live takeover pawn when its
-        // authoritative controller link still points to this exact slot controller.
+        // current m_hPawn. A post-match unspawned pawn can still have positive HP;
+        // takeover requires a live pawn owned by this exact slot controller.
         if s2sdk::GetClientHealth(slot) <= 0 {
             return None;
         }
         let player = Self::resolve_handles(slot)?;
-        (s2sdk::GetEntityClassname(player.pawn_handle).as_str() == "player" && player.pawn_controller().is_some()).then_some(player)
+        let class = Str::from_str("CBaseEntity");
+        let field = Str::from_str("m_lifeState");
+        (s2sdk::GetEntityClassname(player.pawn_handle).as_str() == "player"
+            && s2sdk::GetSchemaOffset(&class, &field) >= 0
+            && s2sdk::GetEntSchema2(s2sdk::EntHandleToEntPointer(player.pawn_handle), &class, &field, 0) == 0
+            && player.pawn_controller().is_some())
+        .then_some(player)
     }
 
     // Death cleanup needs the current pawn identity without treating a dead player as active.
@@ -208,8 +214,9 @@ pub fn bot_takeover_probe() -> Probe {
         __s2sdk_GetMaxClients, __s2sdk_IsClientInGame, __s2sdk_IsClientAlive, __s2sdk_GetClientHealth, __s2sdk_GetEntityClassname,
         __s2sdk_PlayerSlotToEntHandle, __s2sdk_GetClientPawn, __s2sdk_IsValidEntHandle,
         __s2sdk_EntHandleToEntPointer, __s2sdk_EntPointerToEntHandle,
-        __s2sdk_GetEntSchemaEnt2, __s2sdk_GetSchemaOffset,
+        __s2sdk_GetEntSchema2, __s2sdk_GetEntSchemaEnt2, __s2sdk_GetSchemaOffset,
     );
+    probe.schema("CBaseEntity", "m_lifeState");
     probe.schema("CBasePlayerPawn", "m_hController");
     probe
 }

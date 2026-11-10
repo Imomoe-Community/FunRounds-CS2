@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use funrounds_core::{TextBundle, TextCatalog};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Semantic feedback kept independent of the receiver's current language.
@@ -26,12 +27,12 @@ impl Message {
     }
 }
 
-/// Preserve the previous round's label in both supported languages so a default-language
+/// Preserve the previous round's label in available languages so a default-language
 /// reload does not leave the global previous-round team name in the old language.
 #[derive(Clone, Debug)]
 pub(crate) struct ModeNames {
-    zh_cn: String,
-    en: String,
+    localized: BTreeMap<String, String>,
+    historical: String,
 }
 impl ModeNames {
     pub(crate) fn capture(mode: &funrounds_core::Mode, texts: &TextBundle) -> Result<Self, String> {
@@ -46,13 +47,15 @@ impl ModeNames {
                 .render_default(language, mode.name_key.as_deref().expect("validated mode label"), &[])
                 .unwrap_or_else(|_| historical.clone())
         };
-        Ok(Self {
-            zh_cn: for_default("zh-CN"),
-            en: for_default("en"),
-        })
+        let localized = texts
+            .external_languages()
+            .chain(["zh-CN", "en", texts.default_language()])
+            .map(|language| (language.to_owned(), for_default(language)))
+            .collect();
+        Ok(Self { localized, historical })
     }
     pub(crate) fn for_default(&self, language: &str) -> &str {
-        if language == "en" { &self.en } else { &self.zh_cn }
+        self.localized.get(language).map_or(&self.historical, String::as_str)
     }
 }
 
@@ -74,15 +77,22 @@ pub(crate) fn config_path(root: &Path) -> (PathBuf, Option<String>) {
 pub(crate) fn load(directory: &Path, default: &str, strict: bool, config: Option<&funrounds_core::Config>) -> Result<TextBundle, String> {
     let mut candidates = Vec::new();
     let mut reports = Vec::new();
-    for language in ["zh-CN", "en"] {
-        let path = directory.join(format!("{language}.toml"));
+    let paths = match catalog_paths(directory) {
+        Ok(paths) => paths,
+        Err(error) if strict => return Err(error),
+        Err(error) => {
+            reports.push(error);
+            Vec::new()
+        }
+    };
+    for path in paths {
+        let language = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
         match std::fs::read_to_string(&path) {
             Ok(source) => candidates.push((
-                language.to_owned(),
-                TextCatalog::parse_for_language(&source, language).map_err(|error| format!("{}: {error}", path.display())),
+                language.clone(),
+                TextCatalog::parse_for_language(&source, &language).map_err(|error| format!("{}: {error}", path.display())),
             )),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => reports.push(format!("{} missing; using fallback", path.display())),
-            Err(error) => candidates.push((language.to_owned(), Err(format!("{}: {error}", path.display())))),
+            Err(error) => candidates.push((language, Err(format!("{}: {error}", path.display())))),
         }
     }
     let texts = if strict {
@@ -100,16 +110,41 @@ pub(crate) fn load(directory: &Path, default: &str, strict: bool, config: Option
         reports.extend(rejected);
         texts
     };
-    for language in ["zh-CN", "en"] {
+    let mut languages = texts.external_languages().collect::<Vec<_>>();
+    languages.sort_unstable();
+    for language in languages {
         let missing = texts.missing_keys(language);
         if !missing.is_empty() {
-            reports.push(format!("{language}: {} missing keys use fallback: {}", missing.len(), missing.join(",")));
+            reports.push(format!("{language}: {} missing keys use fallback", missing.len()));
         }
     }
     if !reports.is_empty() {
         crate::s2sdk::PrintToServer(&plugify::Str::from_str(&format!("[FunRounds] text catalogs: {}", reports.join("; "))));
     }
     Ok(texts)
+}
+
+fn catalog_paths(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("{}: {error}", directory.display())),
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|error| format!("{}: {error}", directory.display()))?.path();
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+            // Keep unreadable entries as candidates: startup rejects that file, not every valid locale.
+            && std::fs::metadata(&path).map_or(true, |metadata| metadata.is_file())
+        {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
 }
 
 /// Unlike status replies, console text keeps whitespace and the original line layout.

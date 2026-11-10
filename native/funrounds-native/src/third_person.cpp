@@ -43,7 +43,8 @@ T Read(const void* object, SchemaField field) noexcept {
 
 bool ImportsAvailable() noexcept {
     return __polyhook_HookDetour2 && __polyhook_FindDetour && __polyhook_AddCallback &&
-           __polyhook_RemoveCallback && __polyhook_IsCallbackRegistered && __polyhook_UnhookDetour &&
+           __polyhook_RemoveCallback && __polyhook_IsCallbackRegistered &&
+           __polyhook_AreCallbacksRegistered && __polyhook_UnhookDetour &&
            __polyhook_GetRegisterPointer && __polyhook_SetRegisterPointer &&
            __s2sdk_GetGameConfigSignature && __s2sdk_GetEntityClassname;
 }
@@ -151,6 +152,11 @@ bool RemoveHook() noexcept {
                 return false;
             }
         }
+        if (polyhook::AreCallbacksRegistered(current)) {
+            // Keep only the known HookDetour2 handle so this module can reattach
+            // its callback later; no callback into this module remains registered.
+            return true;
+        }
         (void)polyhook::UnhookDetour(g_hook.address);
         if (polyhook::FindDetour(g_hook.address)) {
             return false;
@@ -162,12 +168,39 @@ bool RemoveHook() noexcept {
     }
 }
 
-bool InstallHook(const Snapshot& schema) {
-    if (g_hook.address) {
-        return g_hook.hook && polyhook::FindDetour(g_hook.address) == g_hook.hook &&
-               polyhook::IsCallbackRegistered(g_hook.hook, polyhook::CallbackType::Pre, EyePre);
+bool RefreshKnownHookRecord() noexcept {
+    try {
+        if (!g_hook.address) {
+            return !g_hook.hook;
+        }
+        const auto current = polyhook::FindDetour(g_hook.address);
+        if (!current) {
+            g_hook = {};
+            return true;
+        }
+        return g_hook.hook && current == g_hook.hook;
+    } catch (...) {
+        return false;
     }
-    void* const address = BranchAddress(schema);
+}
+
+bool AttachEyeCallback(polyhook::HookHandle hook) {
+    if (!polyhook::IsCallbackRegistered(hook, polyhook::CallbackType::Pre, EyePre)) {
+        (void)polyhook::AddCallback(hook, polyhook::CallbackType::Pre, EyePre);
+    }
+    return polyhook::IsCallbackRegistered(hook, polyhook::CallbackType::Pre, EyePre);
+}
+
+bool InstallHookAt(void* address) {
+    if (!address || !RefreshKnownHookRecord()) {
+        return false;
+    }
+    if (g_hook.address) {
+        if (g_hook.address != address) {
+            return false;
+        }
+        return AttachEyeCallback(g_hook.hook);
+    }
     if (!address || polyhook::FindDetour(address)) {
         return false;
     }
@@ -177,16 +210,27 @@ bool InstallHook(const Snapshot& schema) {
         (void)RemoveHook();
         return false;
     }
-    (void)polyhook::AddCallback(g_hook.hook, polyhook::CallbackType::Pre, EyePre);
-    return polyhook::IsCallbackRegistered(g_hook.hook, polyhook::CallbackType::Pre, EyePre);
+    return AttachEyeCallback(g_hook.hook);
+}
+
+bool InstallHook(const Snapshot& schema) {
+    if (!RefreshKnownHookRecord()) {
+        return false;
+    }
+    if (g_hook.address) {
+        return AttachEyeCallback(g_hook.hook);
+    }
+    return InstallHookAt(BranchAddress(schema));
 }
 } // namespace
 
 bool HasThirdPersonEyeSupport() noexcept {
     try {
         Snapshot schema;
-        return ImportsAvailable() && ResolveSchema(schema) &&
-               (g_hook.address ? (g_hook.hook && polyhook::FindDetour(g_hook.address) == g_hook.hook) : BranchAddress(schema) != nullptr);
+        if (!ImportsAvailable() || !ResolveSchema(schema) || !RefreshKnownHookRecord()) {
+            return false;
+        }
+        return g_hook.address || BranchAddress(schema) != nullptr;
     } catch (...) {
         return false;
     }
@@ -271,6 +315,7 @@ bool ShutdownThirdPersonEye() noexcept {
         return false;
     }
 }
+
 } // namespace funrounds::native::detail
 
 extern "C" PLUGIN_API bool HasThirdPersonEyeSupport() {

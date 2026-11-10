@@ -412,7 +412,7 @@ fn weapon_pointer(handle: i32, classname: &str) -> Result<usize, String> {
 }
 
 pub(super) fn is_firearm(classname: &str) -> bool {
-    classname.starts_with("weapon_") && !NON_FIREARM_WEAPONS.contains(&classname)
+    classname.starts_with("weapon_") && !crate::projectiles::knife_fire_event(classname) && !NON_FIREARM_WEAPONS.contains(&classname)
 }
 
 pub(crate) fn firearm_event(weapon: &str) -> bool {

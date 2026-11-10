@@ -4,6 +4,7 @@
 #include "interactions.hpp"
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -115,7 +116,8 @@ polyhook::ResultType ChickenFollowUsePre(polyhook::HookHandle,
 
 bool HookImportsAvailable() noexcept {
     return __polyhook_HookDetour && __polyhook_FindDetour && __polyhook_AddCallback &&
-           __polyhook_IsCallbackRegistered && __polyhook_RemoveCallback && __polyhook_UnhookDetour &&
+           __polyhook_IsCallbackRegistered && __polyhook_AreCallbacksRegistered &&
+           __polyhook_RemoveCallback && __polyhook_UnhookDetour &&
            __polyhook_GetArgumentPointer && __polyhook_GetArgumentFloat && __polyhook_GetArgumentInt32 &&
            __polyhook_GetReturnPointer && __polyhook_SetReturnBool && __s2sdk_GetGameConfigSignature &&
            __s2sdk_GetGameConfigOffset && __s2sdk_GetSchemaOffset && __s2sdk_GetEntSchema2 && __s2sdk_GetEntSchemaEnt2 &&
@@ -130,7 +132,16 @@ bool ChickenFollowImportsAvailable() noexcept {
     return HookImportsAvailable();
 }
 
-bool ResolveUseTargetMetadata() noexcept {
+bool ResolvePawnControllerSchema(std::int32_t& offset) noexcept {
+    offset = -1;
+    if (!EnsureEngine() || !__s2sdk_GetSchemaOffset) {
+        return false;
+    }
+    offset = s2sdk::GetSchemaOffset(plg::string("CBasePlayerPawn"), plg::string("m_hController"));
+    return offset >= 0;
+}
+
+bool ResolveUseTargetMetadata(std::int32_t& pawnControllerOffset) noexcept {
     if (!EnsureEngine() || !__s2sdk_GetGameConfigOffset || !__s2sdk_GetSchemaOffset || !__s2sdk_GetEntSchema2) {
         return false;
     }
@@ -140,13 +151,15 @@ bool ResolveUseTargetMetadata() noexcept {
     if (g_useTarget.committedTargetOffset < 0) {
         return false;
     }
-    if (g_useTarget.schemaCount == 0) {
-        for (std::size_t index = 0; index < kPawnClasses.size(); ++index) {
-            const auto className = kPawnClasses[index];
-            const auto offset = s2sdk::GetSchemaOffset(plg::string(className), plg::string("m_pUseServices"));
-            if (offset >= 0) {
-                g_useTarget.schemaClassIndices[g_useTarget.schemaCount++] = index;
-            }
+    if (!ResolvePawnControllerSchema(pawnControllerOffset)) {
+        return false;
+    }
+    g_useTarget.schemaCount = 0;
+    for (std::size_t index = 0; index < kPawnClasses.size(); ++index) {
+        const auto className = kPawnClasses[index];
+        const auto offset = s2sdk::GetSchemaOffset(plg::string(className), plg::string("m_pUseServices"));
+        if (offset >= 0) {
+            g_useTarget.schemaClassIndices[g_useTarget.schemaCount++] = index;
         }
     }
     return g_useTarget.schemaCount != 0;
@@ -159,13 +172,12 @@ void* Signature(std::string_view name) noexcept {
     return s2sdk::GetGameConfigSignature(GameConfig(), plg::string(name));
 }
 
-bool SlotOwnsPawn(std::int32_t slot, void* pawn) noexcept {
+bool SlotOwnsPawn(std::int32_t slot, void* pawn, std::int32_t pawnControllerOffset) noexcept {
     if (!pawn || !s2sdk::IsClientInGame(slot) || s2sdk::GetClientPawn(slot) != pawn) {
         return false;
     }
     const auto controller = s2sdk::PlayerSlotToEntHandle(slot);
-    if (!s2sdk::IsValidEntHandle(controller) ||
-        s2sdk::GetSchemaOffset(plg::string("CBasePlayerPawn"), plg::string("m_hController")) < 0) {
+    if (!s2sdk::IsValidEntHandle(controller) || pawnControllerOffset < 0) {
         return false;
     }
     // A stale BOT slot may retain m_hPawn after takeover. The pawn's reverse link is authoritative.
@@ -173,7 +185,8 @@ bool SlotOwnsPawn(std::int32_t slot, void* pawn) noexcept {
 }
 
 bool ResolveUseServiceOwner(void* services, std::int32_t& pawnHandle, std::int32_t& slot) noexcept {
-    if (!services || !ResolveUseTargetMetadata()) {
+    std::int32_t pawnControllerOffset{-1};
+    if (!services || !ResolveUseTargetMetadata(pawnControllerOffset)) {
         return false;
     }
     std::size_t matches = 0;
@@ -188,7 +201,7 @@ bool ResolveUseServiceOwner(void* services, std::int32_t& pawnHandle, std::int32
         void* const pawn = s2sdk::GetClientPawn(candidateSlot);
         const auto candidateHandle = HandleFromEntity(pawn);
         if (!pawn || candidateHandle == kInvalidHandle || !IsPlayerPawn(candidateHandle) ||
-            EntityFromHandle(candidateHandle) != pawn || !SlotOwnsPawn(candidateSlot, pawn)) {
+            EntityFromHandle(candidateHandle) != pawn || !SlotOwnsPawn(candidateSlot, pawn, pawnControllerOffset)) {
             continue;
         }
         bool serviceMatches = false;
@@ -207,7 +220,7 @@ bool ResolveUseServiceOwner(void* services, std::int32_t& pawnHandle, std::int32
             slot = candidateSlot;
         }
     }
-    return matches == 1 && SlotOwnsPawn(slot, EntityFromHandle(pawnHandle));
+    return matches == 1 && SlotOwnsPawn(slot, EntityFromHandle(pawnHandle), pawnControllerOffset);
 }
 
 bool UseButtonDown(std::int32_t slot) noexcept {
@@ -236,6 +249,10 @@ bool ResolveHealthshotOwner(void* weapon, void* pawn, std::int32_t& pawnHandle,
     if (resolvedPawn == kInvalidHandle || !IsPlayerPawn(resolvedPawn) || EntityFromHandle(resolvedPawn) != pawn) {
         return false;
     }
+    std::int32_t pawnControllerOffset{-1};
+    if (!ResolvePawnControllerSchema(pawnControllerOffset)) {
+        return false;
+    }
     std::size_t ownerMatches = 0;
     std::int32_t matchedSlot = -1;
     std::int32_t matchedWeapon = kInvalidHandle;
@@ -244,7 +261,7 @@ bool ResolveHealthshotOwner(void* weapon, void* pawn, std::int32_t& pawnHandle,
         return false;
     }
     for (std::int32_t candidateSlot = 0; candidateSlot < maximum; ++candidateSlot) {
-        if (!SlotOwnsPawn(candidateSlot, pawn)) {
+        if (!SlotOwnsPawn(candidateSlot, pawn, pawnControllerOffset)) {
             continue;
         }
         std::size_t weaponMatches = 0;
@@ -264,7 +281,7 @@ bool ResolveHealthshotOwner(void* weapon, void* pawn, std::int32_t& pawnHandle,
         }
     }
     if (ownerMatches != 1 || matchedSlot < 0 || matchedWeapon == kInvalidHandle ||
-        !SlotOwnsPawn(matchedSlot, pawn) || HandleFromEntity(pawn) != resolvedPawn) {
+        !SlotOwnsPawn(matchedSlot, pawn, pawnControllerOffset) || HandleFromEntity(pawn) != resolvedPawn) {
         return false;
     }
     pawnHandle = resolvedPawn;
@@ -294,6 +311,11 @@ bool RemoveUseTargetHook() noexcept {
             if (polyhook::IsCallbackRegistered(current, polyhook::CallbackType::Post, UseTargetPost)) {
                 return false;
             }
+            g_useTarget.callbackInstalled = false;
+        }
+        if (polyhook::AreCallbacksRegistered(current)) {
+            g_useTarget = {};
+            return true;
         }
         if (!polyhook::UnhookDetour(g_useTarget.address) && polyhook::FindDetour(g_useTarget.address)) {
             return false;
@@ -336,6 +358,11 @@ bool RemoveHealthshotHooks() noexcept {
                 }
             }
             installed = false;
+            if (polyhook::AreCallbacksRegistered(current)) {
+                hook = nullptr;
+                address = nullptr;
+                return true;
+            }
             if (!polyhook::UnhookDetour(address) && polyhook::FindDetour(address)) {
                 return false;
             }
@@ -357,7 +384,14 @@ bool RemoveHealthshotHooks() noexcept {
                    polyhook::CallbackType::Post, HealthshotEffectPost,
                    g_healthshot.effectCallbackInstalled) && clean;
     if (clean) {
-        g_healthshot = {};
+        if (!g_healthshot.canUseHook && !g_healthshot.effectHook) {
+            g_healthshot = {};
+        } else {
+            g_healthshot.canUseCallback = nullptr;
+            g_healthshot.effectCallback = nullptr;
+            g_healthshot.canUseOwner = nullptr;
+            g_healthshot.effectOwner = nullptr;
+        }
     }
     return clean;
 }
@@ -398,6 +432,10 @@ bool RemoveChickenFollowUseHook() noexcept {
             }
             g_chickenFollowUse.callbackInstalled = false;
         }
+        if (polyhook::AreCallbacksRegistered(current)) {
+            g_chickenFollowUse = {};
+            return true;
+        }
         if (!polyhook::UnhookDetour(g_chickenFollowUse.address) &&
             polyhook::FindDetour(g_chickenFollowUse.address)) {
             return false;
@@ -412,33 +450,39 @@ bool RemoveChickenFollowUseHook() noexcept {
     }
 }
 
-bool InstallChickenFollowUseHook() {
-    if (!ChickenFollowImportsAvailable()) {
-        return false;
-    }
-    const auto address = Signature(kChickenFollowUseSignature);
+bool InstallChickenFollowUseHookAt(void* address) {
     if (!address || (g_chickenFollowUse.address && g_chickenFollowUse.address != address)) {
         return false;
     }
     if (g_chickenFollowUse.hook) {
-        if (polyhook::FindDetour(address) != g_chickenFollowUse.hook ||
-            !polyhook::IsCallbackRegistered(g_chickenFollowUse.hook, polyhook::CallbackType::Pre,
-                                             ChickenFollowUsePre)) {
+        if (polyhook::FindDetour(address) != g_chickenFollowUse.hook) {
             return false;
+        }
+        if (!polyhook::IsCallbackRegistered(g_chickenFollowUse.hook, polyhook::CallbackType::Pre,
+                                             ChickenFollowUsePre)) {
+            (void)polyhook::AddCallback(g_chickenFollowUse.hook, polyhook::CallbackType::Pre,
+                                        ChickenFollowUsePre);
+            g_chickenFollowUse.callbackInstalled = polyhook::IsCallbackRegistered(
+                g_chickenFollowUse.hook, polyhook::CallbackType::Pre, ChickenFollowUsePre);
+            if (!g_chickenFollowUse.callbackInstalled) {
+                return false;
+            }
+        } else {
+            g_chickenFollowUse.callbackInstalled = true;
         }
         g_chickenFollowUse.active = true;
         return true;
     }
-    if (polyhook::FindDetour(address)) {
-        return false;
-    }
-
     // Preserve the full CChickenChickenUse ABI: (this, const EntityUseInput_t*) -> void.
     const std::array arguments{polyhook::DataType::Pointer, polyhook::DataType::Pointer};
     g_chickenFollowUse.address = address;
-    g_chickenFollowUse.hook = polyhook::HookDetour(
-        address, polyhook::DataType::Void, plg::vector<polyhook::DataType>(arguments.begin(), arguments.end()), -1,
-        plg::string(kChickenFollowUseHookName));
+    g_chickenFollowUse.hook = polyhook::FindDetour(address);
+    if (!g_chickenFollowUse.hook) {
+        g_chickenFollowUse.hook = polyhook::HookDetour(
+            address, polyhook::DataType::Void,
+            plg::vector<polyhook::DataType>(arguments.begin(), arguments.end()), -1,
+            plg::string(kChickenFollowUseHookName));
+    }
     if (!g_chickenFollowUse.hook) {
         (void)RemoveChickenFollowUseHook();
         return false;
@@ -459,8 +503,16 @@ bool InstallChickenFollowUseHook() {
     }
 }
 
+bool InstallChickenFollowUseHook() {
+    if (!ChickenFollowImportsAvailable()) {
+        return false;
+    }
+    return InstallChickenFollowUseHookAt(Signature(kChickenFollowUseSignature));
+}
+
 bool InstallUseTargetHook(UseTargetCallback callback) {
-    if (!callback || !HookImportsAvailable() || !ResolveUseTargetMetadata()) {
+    std::int32_t pawnControllerOffset{-1};
+    if (!callback || !HookImportsAvailable() || !ResolveUseTargetMetadata(pawnControllerOffset)) {
         return false;
     }
     const auto address = Signature(kUseTargetSignature);
@@ -468,21 +520,30 @@ bool InstallUseTargetHook(UseTargetCallback callback) {
         return false;
     }
     if (g_useTarget.hook) {
-        if (g_useTarget.owner != callback || polyhook::FindDetour(address) != g_useTarget.hook ||
-            !polyhook::IsCallbackRegistered(g_useTarget.hook, polyhook::CallbackType::Post, UseTargetPost)) {
+        if (g_useTarget.owner != callback || polyhook::FindDetour(address) != g_useTarget.hook) {
             return false;
+        }
+        if (!polyhook::IsCallbackRegistered(g_useTarget.hook, polyhook::CallbackType::Post, UseTargetPost)) {
+            (void)polyhook::AddCallback(g_useTarget.hook, polyhook::CallbackType::Post, UseTargetPost);
+            g_useTarget.callbackInstalled = polyhook::IsCallbackRegistered(
+                g_useTarget.hook, polyhook::CallbackType::Post, UseTargetPost);
+            if (!g_useTarget.callbackInstalled) {
+                return false;
+            }
+        } else {
+            g_useTarget.callbackInstalled = true;
         }
         g_useTarget.callback = callback;
         return true;
     }
-    if (polyhook::FindDetour(address)) {
-        return false;
-    }
     const std::array arguments{polyhook::DataType::Pointer, polyhook::DataType::Float};
     g_useTarget.address = address;
-    g_useTarget.hook = polyhook::HookDetour(address, polyhook::DataType::Pointer,
-        plg::vector<polyhook::DataType>(arguments.begin(), arguments.end()), -1,
-        plg::string(kUseTargetHookName));
+    g_useTarget.hook = polyhook::FindDetour(address);
+    if (!g_useTarget.hook) {
+        g_useTarget.hook = polyhook::HookDetour(address, polyhook::DataType::Pointer,
+            plg::vector<polyhook::DataType>(arguments.begin(), arguments.end()), -1,
+            plg::string(kUseTargetHookName));
+    }
     if (!g_useTarget.hook) {
         (void)RemoveUseTargetHook();
         return false;
@@ -515,33 +576,35 @@ bool InstallHealthshotHooks(HealthshotCanUseCallback canUse, HealthshotEffectCal
         (g_healthshot.effectAddress && g_healthshot.effectAddress != effectAddress)) {
         return false;
     }
-    if (g_healthshot.canUseHook || g_healthshot.effectHook) {
-        if (g_healthshot.canUseOwner != canUse || g_healthshot.effectOwner != effect ||
-            polyhook::FindDetour(canUseAddress) != g_healthshot.canUseHook ||
-            polyhook::FindDetour(effectAddress) != g_healthshot.effectHook ||
-            !polyhook::IsCallbackRegistered(g_healthshot.canUseHook, polyhook::CallbackType::Pre, HealthshotCanUsePre) ||
-            !polyhook::IsCallbackRegistered(g_healthshot.effectHook, polyhook::CallbackType::Post, HealthshotEffectPost)) {
-            return false;
-        }
-        g_healthshot.canUseCallback = canUse;
-        g_healthshot.effectCallback = effect;
-        return true;
-    }
-    if (polyhook::FindDetour(canUseAddress) || polyhook::FindDetour(effectAddress)) {
+    if ((g_healthshot.canUseOwner && g_healthshot.canUseOwner != canUse) ||
+        (g_healthshot.effectOwner && g_healthshot.effectOwner != effect)) {
         return false;
     }
 
     const std::array canUseArguments{polyhook::DataType::Pointer, polyhook::DataType::Pointer};
     g_healthshot.canUseAddress = canUseAddress;
-    g_healthshot.canUseHook = polyhook::HookDetour(canUseAddress, polyhook::DataType::Bool,
-        plg::vector<polyhook::DataType>(canUseArguments.begin(), canUseArguments.end()), -1,
-        plg::string(kHealthshotCanUseHookName));
+    if (g_healthshot.canUseHook) {
+        if (polyhook::FindDetour(canUseAddress) != g_healthshot.canUseHook) {
+            return false;
+        }
+    } else {
+        g_healthshot.canUseHook = polyhook::FindDetour(canUseAddress);
+        if (!g_healthshot.canUseHook) {
+            g_healthshot.canUseHook = polyhook::HookDetour(canUseAddress, polyhook::DataType::Bool,
+                plg::vector<polyhook::DataType>(canUseArguments.begin(), canUseArguments.end()), -1,
+                plg::string(kHealthshotCanUseHookName));
+        }
+    }
     if (!g_healthshot.canUseHook) {
         (void)RemoveHealthshotHooks();
         return false;
     }
     try {
-        (void)polyhook::AddCallback(g_healthshot.canUseHook, polyhook::CallbackType::Pre, HealthshotCanUsePre);
+        if (!polyhook::IsCallbackRegistered(g_healthshot.canUseHook,
+                                             polyhook::CallbackType::Pre, HealthshotCanUsePre)) {
+            (void)polyhook::AddCallback(g_healthshot.canUseHook, polyhook::CallbackType::Pre,
+                                        HealthshotCanUsePre);
+        }
         g_healthshot.canUseCallbackInstalled = polyhook::IsCallbackRegistered(
             g_healthshot.canUseHook, polyhook::CallbackType::Pre, HealthshotCanUsePre);
         if (!g_healthshot.canUseCallbackInstalled) {
@@ -558,14 +621,28 @@ bool InstallHealthshotHooks(HealthshotCanUseCallback canUse, HealthshotEffectCal
 #error "Healthshot interaction hook supports Windows x64 and Linux x64 only"
 #endif
         g_healthshot.effectAddress = effectAddress;
-        g_healthshot.effectHook = polyhook::HookDetour(effectAddress, polyhook::DataType::Void,
-            plg::vector<polyhook::DataType>(effectArguments.begin(), effectArguments.end()), -1,
-            plg::string(kHealthshotEffectHookName));
+        if (g_healthshot.effectHook) {
+            if (polyhook::FindDetour(effectAddress) != g_healthshot.effectHook) {
+                (void)RemoveHealthshotHooks();
+                return false;
+            }
+        } else {
+            g_healthshot.effectHook = polyhook::FindDetour(effectAddress);
+            if (!g_healthshot.effectHook) {
+                g_healthshot.effectHook = polyhook::HookDetour(effectAddress, polyhook::DataType::Void,
+                    plg::vector<polyhook::DataType>(effectArguments.begin(), effectArguments.end()), -1,
+                    plg::string(kHealthshotEffectHookName));
+            }
+        }
         if (!g_healthshot.effectHook) {
             (void)RemoveHealthshotHooks();
             return false;
         }
-        (void)polyhook::AddCallback(g_healthshot.effectHook, polyhook::CallbackType::Post, HealthshotEffectPost);
+        if (!polyhook::IsCallbackRegistered(g_healthshot.effectHook,
+                                             polyhook::CallbackType::Post, HealthshotEffectPost)) {
+            (void)polyhook::AddCallback(g_healthshot.effectHook, polyhook::CallbackType::Post,
+                                        HealthshotEffectPost);
+        }
         g_healthshot.effectCallbackInstalled = polyhook::IsCallbackRegistered(
             g_healthshot.effectHook, polyhook::CallbackType::Post, HealthshotEffectPost);
         if (!g_healthshot.effectCallbackInstalled) {
@@ -689,11 +766,14 @@ polyhook::ResultType ChickenFollowUsePre(polyhook::HookHandle,
     }
 }
 
+
 } // namespace
+
 
 bool HasUseTargetSupport() noexcept {
     try {
-        return HookImportsAvailable() && ResolveUseTargetMetadata() && Signature(kUseTargetSignature);
+        std::int32_t pawnControllerOffset{-1};
+        return HookImportsAvailable() && ResolveUseTargetMetadata(pawnControllerOffset) && Signature(kUseTargetSignature);
     } catch (...) {
         return false;
     }

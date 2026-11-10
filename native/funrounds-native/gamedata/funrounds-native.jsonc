@@ -2,6 +2,12 @@
   "$schema": "https://raw.githubusercontent.com/untrustedmodders/plugify-plugin-s2sdk/refs/tags/v3.0.0/assets/gamedata.schema.json",
   "csgo": {
     "Signatures": {
+      // Current CS2 BuildID 26445667 only. Native additionally validates PE timestamp/image size or the Linux ELF BuildID, helper RVA/prologue, and receiver slot/value before calling.
+      "FunRounds::PlayerMovementTraceShape": {
+        "library": "server",
+        "win64": "48 89 54 24 10 48 89 4C 24 08 55 53 56 57 41 54 41 56 41 57 48 8D AC 24 F0 DB FF FF",
+        "linuxsteamrt64": "55 48 8D 05 ?? ?? ?? ?? 48 89 E5 41 57 49 89 F7 41 56 48 8D 35 ?? ?? ?? ?? 49 89 CE"
+      },
       // Internal spawn validator, independently inspected on both 2000938 binaries.
       // This bypasses only the caller's Deathmatch-mode gate, not point validation.
       "FunRounds::SelectSpawnSpot": {
@@ -30,6 +36,33 @@
         "library": "server",
         "win64": "44 89 44 24 ? 48 89 54 24 ? 48 89 4C 24 ? 55 53 56 57 41 54 41 55 41 56 41 57 48 8B EC",
         "linuxsteamrt64": "55 48 89 E5 41 57 41 56 49 89 F6 41 55 41 54 49 89 CC 53 48 89 FB 48 83 EC ? 4C 8B 6F 38"
+      },
+      // Exact entry prefixes verified in CS2 BuildID 26445667 (2000942).
+      // The layout anchors below must all resolve relative to this entry and its AngleVectors call.
+      "FunRounds::AirMove": {
+        "library": "server",
+        "win64": "48 8B C4 55 53 56 57 41 56 48 8D 68 C8 48 81 EC 10 01 00 00 0F 29 70 C8 4C 8D 05 01 1A E4 00 0F 29 78 B8 48 8B DA 44 0F 29 40 A8 48 8B F9",
+        "linuxsteamrt64": "55 48 8D 15 3A 5D 32 FF 48 89 E5 41 57 41 56 4C 8D BD 68 FF FF FF 41 55 4C 8D B5 78 FF FF FF 41 54 49 89 FC 53 48 89 F3 48 81 EC A8 00 00 00"
+      },
+      "FunRounds::AirMove::AnglesCall": {
+        "library": "server",
+        "win64": "48 8D 4B 14 4C 8D 4C 24 60 4C 8D 44 24 30 48 8D 54 24 40 E8 ?? ?? ?? ??",
+        "linuxsteamrt64": "48 8D 4D 84 4C 89 F2 4C 89 FE 48 8D 7B 14 E8 ?? ?? ?? ??"
+      },
+      "FunRounds::AirMove::InputLoads": {
+        "library": "server",
+        "win64": "F3 0F 10 43 30 41 0F 28 C9 F3 0F 10 74 24 40 F3 44 0F 10 7B 2C F3 0F 11 45 40",
+        "linuxsteamrt64": "F3 0F 7E 43 2C F3 0F 11 65 80 F3 0F 16 CA F3 0F 10 1D ?? ?? ?? ?? F3 0F 12 F0 F3 0F 16 F8"
+      },
+      "FunRounds::AirMove::VelocityLoads": {
+        "library": "server",
+        "win64": "F3 0F 10 43 38 F3 0F 5C C2 F3 0F 11 43 38 F3 0F 10 43 3C F3 0F 5C C1 F3 0F 11 43 3C",
+        "linuxsteamrt64": "F3 0F 7E 53 38 F3 0F 16 CA 0F 28 C2 F3 0F 59 C2 F3 0F 59 C9 F3 0F 58 C1 66 0F EF C9"
+      },
+      "FunRounds::AirMove::AngleVectors": {
+        "library": "server",
+        "win64": "48 8B C4 48 89 58 08 48 89 70 10 57 48 83 EC 70 F3 0F 10 01 49 8B F8 0F 29 70 E8 4C 8D 40 A8 F3 0F 10 71 04 48 8B DA 0F 29 78 D8 48 8D 50 B8 F3 0F 10 3D 29 E9 35 00",
+        "linuxsteamrt64": "55 48 89 E5 41 55 49 89 F5 41 54 48 8D 45 C0 49 89 D4 53 48 8D 75 D0 48 89 CB 48 83 EC 38 F3 0F 10 05 ?? ?? ?? ?? F3 0F 59 07 F3 0F 10 77 08 F3 0F 10 4F 04"
       },
       "FunRounds::GroundReverseAccelerationCallsite": {
         "library": "server",
@@ -74,10 +107,31 @@
       "CChickenChickenUse": {
         "library": "server",
         "win64": "48 8B 01 FF A0 E0 09 00 00",
-        "linuxsteamrt64": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1E 48 85 DB 0F 84 ?? ?? ?? ?? 48 8B 03 49 89 FC 49 89 F5 48 89 DF FF 90 50 05 00 00"
+        "linuxsteamrt64": "55 48 89 E5 41 55 41 54 53 48 83 EC 08 48 8B 1E 48 85 DB 0F 84 ?? ?? ?? ?? 48 8B 03 49 89 FC 48 89 DF FF 90 50 05 00 00 84 C0"
+      },
+      // Current BuildID 26334290 reset routines read and restore
+      // CCSPlayerPawn::m_flBigHeadScale after the native mutator reset.
+      // The paired Windows and Linux server binaries were checked in IDA.
+      "FunRounds::BigHeadScaleReset": {
+        "library": "server",
+        "win64": "48 8B C4 57 48 81 EC 70 01 00 00 83 B9 F0 0F 00 00 00 48 8B F9 0F 85 4A 02 00 00 48 89 58 08 48 89 70 18 E8 ? ? ? ? 48 8B D8 48 85 C0 74 10 48 8B C8 E8 ? ? ? ? 48 8B CB E8 ? ? ? ? F3 0F 10 87 AC 15 00 00 0F 2E 05 ? ? ? ? 7A",
+        "linuxsteamrt64": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 89 FB 48 81 EC 68 01 00 00 E8 ? ? ? ? 48 85 C0 74 13 49 89 C4 48 89 C7 E8 ? ? ? ? 4C 89 E7 E8 ? ? ? ? F3 0F 10 0D ? ? ? ? 0F 2E 8B 74"
       }
     },
     "Offsets": {
+      // FromEntry offsets tie the body signatures to AirMove. Operand offsets
+      // are relative to the corresponding signature, not CMoveData. Equal
+      // operand offsets identify a packed pair (second float follows the first).
+      "FunRounds::AirMove::AnglesCallFromEntry": { "win64": 93, "linuxsteamrt64": 52 },
+      "FunRounds::AirMove::InputLoadsFromEntry": { "win64": 279, "linuxsteamrt64": 137 },
+      "FunRounds::AirMove::VelocityLoadsFromEntry": { "win64": 1062, "linuxsteamrt64": 632 },
+      "FunRounds::AirMove::AnglesBaseDisp8": { "win64": 3, "linuxsteamrt64": 13 },
+      "FunRounds::AirMove::AngleVectorsRel32": { "win64": 20, "linuxsteamrt64": 15 },
+      "FunRounds::AirMove::YawDisp8": { "win64": 35, "linuxsteamrt64": 51 },
+      "FunRounds::AirMove::ForwardDisp8": { "win64": 20, "linuxsteamrt64": 4 },
+      "FunRounds::AirMove::LeftDisp8": { "win64": 4, "linuxsteamrt64": 4 },
+      "FunRounds::AirMove::VelocityXDisp8": { "win64": 4, "linuxsteamrt64": 4 },
+      "FunRounds::AirMove::VelocityYDisp8": { "win64": 18, "linuxsteamrt64": 4 },
       "CBaseEntity::Touch": {
         "win64": 151,
         "linuxsteamrt64": 150
@@ -90,13 +144,32 @@
         "win64": 188,
         "linuxsteamrt64": 187
       },
+      // Player Ignite call shape is ABI-specific and validated by burn.cpp; keep the slot paired with gamedata.
+      "CBaseEntity::IgnitePawn": {
+        "win64": 266,
+        "linuxsteamrt64": 267
+      },
       // CPlayer_UseServices committed full target handle, same observed build.
       "UseServicesLastTargetHandle": {
         "win64": 72,
         "linuxsteamrt64": 72
+      },
+      // Runtime-verified against the pinned CS2 2000940 server on Windows and
+      // Linux: the engine exposes this shared Detonate wrapper for each type.
+      "CSGrenadeProjectileBase::Detonate": {
+        "win64": 309,
+        "linuxsteamrt64": 310
       }
     },
     "VTables": {
+      "CSmokeGrenadeProjectile": {
+        "library": "server",
+        "table": "CSmokeGrenadeProjectile"
+      },
+      "CMolotovProjectile": {
+        "library": "server",
+        "table": "CMolotovProjectile"
+      },
       // Shared CServerSideClientBase::SendNetMessage hook; the binary vtable is in engine2.
       "CServerSideClient": {
         "library": "engine2",

@@ -28,49 +28,128 @@ pub fn low_health_finish(health: i32) -> bool {
     health <= 1
 }
 
+/// Returns an additive velocity impulse in the direction from the blast to the target.
+/// The result is a normalized direction multiplied by `impulse`, in Source units per second.
+pub fn shockwave_impulse(origin: [f32; 3], center: [f32; 3], impulse: f32) -> Option<[f32; 3]> {
+    if !impulse.is_finite() || impulse < 0.0 || origin.into_iter().chain(center).any(|value| !value.is_finite()) {
+        return None;
+    }
+
+    let direction = std::array::from_fn::<_, 3, _>(|axis| f64::from(center[axis]) - f64::from(origin[axis]));
+    let length = direction[0].hypot(direction[1]).hypot(direction[2]);
+    if !length.is_finite() || length == 0.0 {
+        return None;
+    }
+
+    let magnitude = f64::from(impulse);
+    let result = direction.map(|component| (component / length * magnitude) as f32);
+    result.into_iter().all(f32::is_finite).then_some(result)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MovementScale {
-    pub speed: f32,
-    pub gravity: f32,
+    pub speed: Option<f32>,
+    pub gravity: Option<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PeriodicDistribution {
+    Tiers(Vec<f32>),
+    Range { min: f32, max: f32 },
+    Legacy,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PeriodicSetting {
+    pub interval_seconds: f32,
+    pub distribution: PeriodicDistribution,
+}
+
+impl PeriodicSetting {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.interval_seconds.is_finite() || self.interval_seconds <= 0.0 {
+            return Err("periodic movement interval must be finite and positive");
+        }
+        match &self.distribution {
+            PeriodicDistribution::Tiers(values) if values.is_empty() => Err("periodic movement tiers must not be empty"),
+            PeriodicDistribution::Tiers(values) if values.iter().any(|value| !value.is_finite() || *value <= 0.0) => {
+                Err("periodic movement tiers must be finite and positive")
+            }
+            PeriodicDistribution::Range { min, max } if !min.is_finite() || !max.is_finite() || *min <= 0.0 || *max < *min => {
+                Err("periodic movement range must be finite, positive, and ordered")
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn sample(&self, speed: bool, rng: &mut impl Rng) -> f32 {
+        match &self.distribution {
+            PeriodicDistribution::Tiers(values) => values[rng.random_range(0..values.len())],
+            PeriodicDistribution::Range { min, max } if min == max => *min,
+            PeriodicDistribution::Range { min, max } => rng.random_range(*min..=*max),
+            PeriodicDistribution::Legacy if speed => match rng.random_range(0..=5) {
+                0 => 0.3,
+                1 => 0.7,
+                _ => rng.random_range(1..=10) as f32,
+            },
+            PeriodicDistribution::Legacy => rng.random_range(0.001..=4.0),
+        }
+    }
 }
 
 pub struct PeriodicMovement {
-    next_update: f32,
-    current: Option<MovementScale>,
+    speed: Option<(PeriodicSetting, f32)>,
+    gravity: Option<(PeriodicSetting, f32)>,
+    current: MovementScale,
 }
 
 impl PeriodicMovement {
-    pub fn start(now: f32) -> Result<Self, String> {
-        if !now.is_finite() || now < 0.0 || !(now + 10.0).is_finite() {
+    pub fn start(now: f32, speed: Option<PeriodicSetting>, gravity: Option<PeriodicSetting>) -> Result<Self, String> {
+        if !now.is_finite() || now < 0.0 {
             return Err("periodic movement needs a finite non-negative start time".into());
         }
+        let next_due = |setting: &PeriodicSetting| -> Result<f32, String> {
+            setting.validate().map_err(str::to_owned)?;
+            let due = now + setting.interval_seconds;
+            due.is_finite()
+                .then_some(due)
+                .ok_or_else(|| "periodic movement schedule is not finite".to_owned())
+        };
+        let speed = speed.map(|setting| next_due(&setting).map(|due| (setting, due))).transpose()?;
+        let gravity = gravity.map(|setting| next_due(&setting).map(|due| (setting, due))).transpose()?;
         Ok(Self {
-            next_update: now + 10.0,
-            current: None,
+            speed,
+            gravity,
+            current: MovementScale { speed: None, gravity: None },
         })
     }
 
     pub fn update(&mut self, now: f32, rng: &mut impl Rng) -> Option<MovementScale> {
-        if !now.is_finite() || now < self.next_update {
+        if !now.is_finite() || now < 0.0 {
             return None;
         }
-        let roll = rng.random_range(0..=5);
-        let speed = match roll {
-            0 => 0.3,
-            1 => 0.7,
-            _ => rng.random_range(1..=10) as f32,
-        };
-        let movement = MovementScale {
-            speed,
-            gravity: rng.random_range(0.001..=4.0),
-        };
-        self.current = Some(movement);
-        self.next_update = now + 10.0;
-        Some(movement)
+        let mut movement = MovementScale { speed: None, gravity: None };
+        if let Some((setting, due)) = &mut self.speed
+            && now >= *due
+        {
+            let value = setting.sample(true, rng);
+            movement.speed = Some(value);
+            self.current.speed = Some(value);
+            *due = now + setting.interval_seconds;
+        }
+        if let Some((setting, due)) = &mut self.gravity
+            && now >= *due
+        {
+            let value = setting.sample(false, rng);
+            movement.gravity = Some(value);
+            self.current.gravity = Some(value);
+            *due = now + setting.interval_seconds;
+        }
+        (movement.speed.is_some() || movement.gravity.is_some()).then_some(movement)
     }
 
     pub fn current(&self) -> Option<MovementScale> {
-        self.current
+        (self.current.speed.is_some() || self.current.gravity.is_some()).then_some(self.current)
     }
 }
 

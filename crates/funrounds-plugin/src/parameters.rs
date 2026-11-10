@@ -47,6 +47,9 @@ fn round_settings(settings: Vec<(&'static str, String)>, purchase_prepared: bool
 
 pub fn settings(mode: &Mode) -> Vec<(&'static str, String)> {
     let mut settings = Vec::new();
+    if let Some(damage) = mode.inferno_damage {
+        settings.push(("inferno_damage", damage.to_string()));
+    }
     if let Some(buy_time) = mode.buy_time {
         settings.push(("mp_buytime", buy_time.to_string()));
     }
@@ -178,6 +181,7 @@ fn parameter_fault(name: &str, message: String) -> Fault {
     let mechanism = match name {
         "sv_infinite_ammo" => Mechanism::Ammo,
         "mp_taser_recharge_time" => Mechanism::TaserCharge,
+        "inferno_damage" => Mechanism::InfernoDamage,
         "sv_friction" => Mechanism::Friction,
         "host_timescale" => Mechanism::TimeScale,
         "sv_accelerate" => Mechanism::GroundAcceleration,
@@ -236,15 +240,16 @@ fn convar_probe(names: impl IntoIterator<Item = &'static str>) -> Probe {
 }
 
 pub fn has_convar(name: &str) -> bool {
-    valid_handle(s2sdk::FindConVar(&Str::from_str(name)))
+    let find = unsafe { std::ptr::addr_of!(s2sdk::__s2sdk_FindConVar).read() };
+    find.is_some_and(|find| unsafe { valid_handle(find(&Str::from_str(name))) })
 }
 
-fn valid_handle(handle: u64) -> bool {
+pub(crate) fn valid_handle(handle: u64) -> bool {
     // Source SDK ConVarRef stores the access index in the low 16 bits; zero is valid.
     handle as u16 != u16::MAX
 }
 
-fn parsed_value(value: &str) -> Option<f64> {
+pub(crate) fn parsed_value(value: &str) -> Option<f64> {
     let value = match value {
         "true" => 1.0,
         "false" => 0.0,
@@ -329,6 +334,7 @@ pub fn capabilities(weapon_fire: bool, round_prestart: bool, reasons: &mut Vec<S
         ammo: convar_probe(["sv_infinite_ammo"]).record("ammo", reasons),
         taser_charge: convar_probe(["mp_taser_recharge_time"]).record("taser_charge", reasons),
         bunnyhop: convar_probe(BUNNYHOP.iter().map(|(name, _)| *name)).record("bunnyhop", reasons),
+        inferno_damage: convar_probe(["inferno_damage"]).record("inferno_damage", reasons),
         friction: convar_probe(["sv_friction"]).record("friction", reasons),
         time_scale: convar_probe(["host_timescale"]).record("time_scale", reasons),
         ground_acceleration: convar_probe(["sv_accelerate"]).record("ground_acceleration", reasons),
@@ -359,6 +365,7 @@ pub fn capabilities(weapon_fire: bool, round_prestart: bool, reasons: &mut Vec<S
         fov: crate::effects::fov_probe().record("fov", reasons),
         third_person: crate::effects::third_person_probe().record("third_person", reasons),
         hide_crosshair: crate::effects::crosshair_probe().record("hide_crosshair", reasons),
+        hide_all_hud: crate::effects::hide_all_hud_probe().record("hide_all_hud", reasons),
         buy_time: {
             let mut probe = convar_probe(["mp_buytime"]);
             probe.require(round_prestart, "event:round_prestart");

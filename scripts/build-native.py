@@ -17,8 +17,8 @@ from typing import Optional, Sequence, Tuple
 
 S2SDK_URL = "https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk.git"
 # funrounds branch; pin the patched provider used by both plugins and the bundle.
-S2SDK_COMMIT = "dfa3a3e8e88a70872b66d379490d3228a48f6d81"
-S2SDK_VERSION = "3.0.6"
+S2SDK_COMMIT = "2fca1d177ddca1c265ee585457ad160752e9111c"
+S2SDK_VERSION = "3.3.1"
 SOURCESDK_URL = "https://github.com/Wend4r/sourcesdk.git"
 SOURCESDK_COMMIT = "f3de33c58595c628c12b4ffaba76dfcd49b8763f"
 

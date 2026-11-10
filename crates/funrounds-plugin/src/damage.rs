@@ -250,8 +250,20 @@ pub fn capture_weapon_class(weapon: i32, inflictor: i32, weapon_kind: i32) -> Op
     }
 }
 
-pub fn weapon_scale_class(classname: &str) -> &str {
-    classname.strip_suffix("_projectile").unwrap_or(classname)
+pub fn weapon_scale_id(classname: &str) -> &str {
+    let id = classname.strip_prefix("weapon_").unwrap_or(classname);
+    let id = id.strip_suffix("_projectile").unwrap_or(id);
+    if crate::projectiles::knife_fire_event(id) { "knife" } else { id }
+}
+
+impl Damage {
+    pub fn is_native_he(&self) -> bool {
+        !self.skip_plugin_rules
+            && self.damage_type & DMG_FALL == 0
+            && self.inflictor != -1
+            && s2sdk::IsValidEntHandle(self.inflictor)
+            && s2sdk::GetEntityClassname(self.inflictor).as_str() == "hegrenade_projectile"
+    }
 }
 
 fn normalize_event_weapon(classname: &str) -> Option<String> {
@@ -288,7 +300,7 @@ pub struct EntityBridge {
 
 impl EntityBridge {
     pub fn subscribe(callback: crate::funrounds_native::EntityDamagePreCallback) -> (Option<Self>, bool) {
-        // These three imports are optional additions to the native ABI.
+        // These three imports were added after the original native ABI.
         // They are optional for existing installations, so check the whole new
         // surface before calling any generated wrapper (which expects imports).
         let imports_available = unsafe {

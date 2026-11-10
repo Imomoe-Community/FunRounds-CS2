@@ -11,8 +11,9 @@ using EntityTouchPreCallback = std::int32_t (*)(std::int32_t entityHandle, std::
 
 bool IsTouchAvailable();
 bool HookTouch(std::int32_t entityHandle, EntityTouchPreCallback callback);
-// Returns false for null callbacks or when one of the callback's retained
-// Touch hooks cannot be detached. A callback that owns no hooks succeeds.
+// Removes only this callback's subscriptions. Other callbacks keep their shared
+// detours alive; false means one of this callback's final-hook detachments must
+// be retried.
 bool UnhookTouch(EntityTouchPreCallback callback);
 bool ShutdownTouch() noexcept;
 #if defined(FUNROUNDS_NATIVE_LIFECYCLE_PROBE)

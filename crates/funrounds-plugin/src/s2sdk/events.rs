@@ -137,3 +137,21 @@ pub type _SetEventString = unsafe extern "C" fn(usize, &Str, &Str);
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_SetEventString: Option<_SetEventString> = None;
+
+/// Retrieves the float value of a game event's key.
+///
+/// # Arguments
+/// * `event` - (ptr64): A pointer to the IGameEvent object containing event data.
+/// * `key` - (string): The key for which to retrieve the float value.
+///
+/// # Returns - (float):
+/// The float value associated with the key.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetEventFloat(event: usize, key: &Str) -> f32 {
+    unsafe { __s2sdk_GetEventFloat.expect("GetEventFloat function was not found")(event, key) }
+}
+pub type _GetEventFloat = unsafe extern "C" fn(usize, &Str) -> f32;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetEventFloat: Option<_GetEventFloat> = None;

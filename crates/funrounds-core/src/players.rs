@@ -26,6 +26,30 @@ pub struct PlayerTracker {
     next_connection: u64,
 }
 
+#[derive(Debug, Default)]
+pub struct TeamkillCounter {
+    count: u32,
+    seen_victims: Vec<PlayerIdentity>,
+}
+
+impl TeamkillCounter {
+    /// Counts a distinct victim life once and resets the count when `limit` is reached.
+    /// Seen identities remain recorded until the caller replaces or drops this counter.
+    pub fn record(&mut self, victim: PlayerIdentity, limit: u32) -> bool {
+        if limit == 0 || self.seen_victims.contains(&victim) {
+            return false;
+        }
+        self.seen_victims.push(victim);
+        self.count = self.count.saturating_add(1);
+        if self.count >= limit {
+            self.count = 0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 impl PlayerTracker {
     pub fn connect(&mut self, slot: i32) -> bool {
         if slot < 0 || self.players.contains_key(&slot) {

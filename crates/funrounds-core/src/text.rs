@@ -5,8 +5,8 @@ use crate::{Config, Mode};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-const ZH_CN: &str = include_str!("../../../config/i18n/zh-CN.toml");
-const EN: &str = include_str!("../../../config/i18n/en.toml");
+const ZH_CN: &str = include_str!("../assets/i18n/zh-CN.toml");
+const EN: &str = include_str!("../assets/i18n/en.toml");
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,8 +46,7 @@ impl TextCatalog {
         validate_language(language)?;
         let embedded = TextCatalog::parse(match language {
             "zh-CN" => ZH_CN,
-            "en" => EN,
-            _ => unreachable!(),
+            _ => EN,
         })?;
         validate_shared_placeholders(self, &embedded, language, "embedded")
     }
@@ -87,16 +86,16 @@ impl TextBundle {
             ("en".to_owned(), TextCatalog::parse(EN)?),
         ]);
         Self::validate_complete_pair(&embedded["zh-CN"], &embedded["en"])?;
-        let mut external = HashMap::new();
+        let mut external: HashMap<String, TextCatalog> = HashMap::new();
         for (language, catalog) in catalogs {
             validate_language(&language)?;
             catalog.validate_language(&language)?;
+            for (other_language, other) in &external {
+                catalog.validate_compatible_with(&language, other, other_language)?;
+            }
             if external.insert(language.clone(), catalog).is_some() {
                 return Err(format!("duplicate text catalog for language {language}"));
             }
-        }
-        if let (Some(zh), Some(en)) = (external.get("zh-CN"), external.get("en")) {
-            zh.validate_compatible_with("zh-CN", en, "en")?;
         }
         Ok(Self {
             default_language: default_language.into(),
@@ -110,35 +109,27 @@ impl TextBundle {
         candidates: impl IntoIterator<Item = (String, Result<TextCatalog, String>)>,
     ) -> Result<(Self, Vec<String>), String> {
         validate_language(default_language)?;
-        let mut accepted = Vec::new();
+        let mut candidates = candidates.into_iter().collect::<Vec<_>>();
+        // Give the configured default priority, then resolve secondary conflicts deterministically.
+        candidates.sort_by(|(a, _), (b, _)| (a != default_language, a).cmp(&(b != default_language, b)));
+        let mut accepted: Vec<(String, TextCatalog)> = Vec::new();
         let mut reports = Vec::new();
         for (language, candidate) in candidates {
             match candidate.and_then(|catalog| {
                 catalog.validate_language(&language)?;
+                for (other_language, other) in &accepted {
+                    if language == *other_language {
+                        return Err(format!("duplicate text catalog for language {language}"));
+                    }
+                    catalog.validate_compatible_with(&language, other, other_language)?;
+                }
                 Ok(catalog)
             }) {
                 Ok(catalog) => accepted.push((language, catalog)),
                 Err(error) => reports.push(format!("{language} rejected: {error}")),
             }
         }
-        if let Some(default) = accepted
-            .iter()
-            .find(|(language, _)| language == default_language)
-            .map(|(_, catalog)| catalog.clone())
-        {
-            accepted.retain(|(language, catalog)| {
-                if language == default_language {
-                    return true;
-                }
-                match default.validate_compatible_with(default_language, catalog, language) {
-                    Ok(()) => true,
-                    Err(error) => {
-                        reports.push(format!("{language} rejected: {error}"));
-                        false
-                    }
-                }
-            });
-        } else {
+        if !accepted.iter().any(|(language, _)| language == default_language) {
             reports.push(format!("{default_language} missing or invalid; embedded text will be used"));
         }
         Ok((Self::load(default_language, accepted)?, reports))
@@ -149,7 +140,7 @@ impl TextBundle {
         config: &Config,
     ) -> Result<(Self, Vec<String>), String> {
         let (mut bundle, mut reports) = Self::load_startup(default_language, candidates)?;
-        let embedded_default = bundle.embedded.get(default_language).expect("supported locale");
+        let embedded_default = bundle.embedded.get(default_language).unwrap_or(&bundle.embedded["en"]);
         bundle.external.retain(|language, catalog| {
             if let Err(error) = validate_catalog_mode_values(config, language, catalog, embedded_default) {
                 reports.push(format!("{language} rejected: {error}"));
@@ -160,19 +151,20 @@ impl TextBundle {
         });
         Ok((bundle, reports))
     }
+    pub fn external_languages(&self) -> impl Iterator<Item = &str> {
+        self.external.keys().map(String::as_str)
+    }
+    /// New locales use the built-in English catalog only after external per-key fallback.
+    fn embedded_for(&self, language: &str) -> &TextCatalog {
+        self.embedded.get(language).unwrap_or(&self.embedded["en"])
+    }
     /// Keys absent from this locale's external catalog and therefore resolved by fallback.
     pub fn missing_keys(&self, language: &str) -> Vec<String> {
         let Some(catalog) = self.external.get(language) else {
-            return self
-                .embedded
-                .get(&self.default_language)
-                .map(|c| c.keys().map(str::to_owned).collect())
-                .unwrap_or_default();
+            return self.embedded_for(&self.default_language).keys().map(str::to_owned).collect();
         };
-        self.embedded
-            .get(&self.default_language)
-            .into_iter()
-            .flat_map(|c| c.keys())
+        self.embedded_for(&self.default_language)
+            .keys()
             .filter(|key| catalog.get(key).is_none())
             .map(str::to_owned)
             .collect()
@@ -189,10 +181,7 @@ impl TextBundle {
         {
             return catalog.render(key, args);
         }
-        self.embedded
-            .get(&self.default_language)
-            .expect("supported bundle always contains embedded server-default text")
-            .render(key, args)
+        self.embedded_for(&self.default_language).render(key, args)
     }
     /// Resolve a global label for a nominated server default, rather than falling
     /// back through the current server's different default language.
@@ -203,10 +192,10 @@ impl TextBundle {
         {
             return catalog.render(key, args);
         }
-        self.embedded[language].render(key, args)
+        self.embedded_for(language).render(key, args)
     }
 
-    /// Strict package validation: both catalogs must be complete and use matching placeholders.
+    /// The two built-in catalogs must have the same keys and placeholders.
     fn validate_complete_pair(zh_cn: &TextCatalog, en: &TextCatalog) -> Result<(), String> {
         if zh_cn.messages.keys().ne(en.messages.keys()) {
             let missing_en: Vec<_> = zh_cn.messages.keys().filter(|key| !en.messages.contains_key(*key)).cloned().collect();
@@ -222,18 +211,20 @@ impl TextBundle {
         }
         Ok(())
     }
-    pub fn validate_complete_catalogs(zh_cn: &TextCatalog, en: &TextCatalog) -> Result<(), String> {
-        Self::validate_complete_pair(zh_cn, en)?;
-        let embedded_zh = TextCatalog::parse(ZH_CN)?;
-        let embedded_en = TextCatalog::parse(EN)?;
-        for (language, supplied, embedded) in [("zh-CN", zh_cn, &embedded_zh), ("en", en, &embedded_en)] {
-            for key in embedded.keys() {
-                let text = supplied
-                    .get(key)
-                    .ok_or_else(|| format!("{language} catalog is missing required built-in key {key:?}"))?;
-                if placeholders(text)? != placeholders(embedded.get(key).expect("embedded key"))? {
-                    return Err(format!("{language} catalog {key:?} placeholder set differs from built-in text"));
+    /// Distribution catalogs must contain all built-in keys and the same custom keys.
+    pub fn validate_complete_catalogs(&self) -> Result<(), String> {
+        let default = self
+            .external
+            .get(&self.default_language)
+            .ok_or_else(|| format!("missing default-language catalog: {}", self.default_language))?;
+        for (language, catalog) in &self.external {
+            for key in self.embedded_for(&self.default_language).keys().chain(default.keys()) {
+                if catalog.get(key).is_none() {
+                    return Err(format!("{language} catalog is missing required text key {key:?}"));
                 }
+            }
+            if catalog.keys().ne(default.keys()) {
+                return Err(format!("{language} and {} catalog keys differ", self.default_language));
             }
         }
         Ok(())
@@ -245,7 +236,7 @@ impl TextBundle {
                 self.default_language, config.default_language
             ));
         }
-        let embedded_default = self.embedded.get(&self.default_language).expect("supported default locale");
+        let embedded_default = self.embedded_for(&self.default_language);
         let external_default = self.external.get(&self.default_language);
         for mode in &config.modes {
             validate_mode_keys(mode, external_default, embedded_default, &self.external)?;
@@ -334,11 +325,17 @@ fn validate_shared_placeholders(a: &TextCatalog, b: &TextCatalog, language_a: &s
     }
     Ok(())
 }
-fn validate_language(language: &str) -> Result<(), String> {
-    if matches!(language, "zh-CN" | "en") {
+pub(crate) fn validate_language(language: &str) -> Result<(), String> {
+    if language.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && language
+            .split(['-', '_'])
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+    {
         Ok(())
     } else {
-        Err(format!("unsupported text language: {language:?}"))
+        Err(format!(
+            "invalid text language {language:?}; use an ASCII language code such as zh-CN, en or pt-BR"
+        ))
     }
 }
 fn validate_key(key: &str) -> Result<(), String> {
