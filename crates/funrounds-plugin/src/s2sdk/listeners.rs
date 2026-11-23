@@ -68,3 +68,31 @@ pub type _OnMapEnd_Unregister = unsafe extern "C" fn(OnMapEndCallback);
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_OnMapEnd_Unregister: Option<_OnMapEnd_Unregister> = None;
+
+/// Register callback to event.
+///
+/// # Arguments
+/// * `callback` - (function): Function callback.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn OnEntitySpawned_Register(callback: OnEntitySpawnedCallback) {
+    unsafe { __s2sdk_OnEntitySpawned_Register.expect("OnEntitySpawned_Register function was not found")(callback) }
+}
+pub type _OnEntitySpawned_Register = unsafe extern "C" fn(OnEntitySpawnedCallback);
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_OnEntitySpawned_Register: Option<_OnEntitySpawned_Register> = None;
+
+/// Unregister callback to event.
+///
+/// # Arguments
+/// * `callback` - (function): Function callback.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn OnEntitySpawned_Unregister(callback: OnEntitySpawnedCallback) {
+    unsafe { __s2sdk_OnEntitySpawned_Unregister.expect("OnEntitySpawned_Unregister function was not found")(callback) }
+}
+pub type _OnEntitySpawned_Unregister = unsafe extern "C" fn(OnEntitySpawnedCallback);
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_OnEntitySpawned_Unregister: Option<_OnEntitySpawned_Unregister> = None;

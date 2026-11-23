@@ -204,8 +204,6 @@ impl Preferences {
     }
 
     fn apply_snapshot(&mut self, saved: Saved) {
-        self.saved = Ok(saved.clone());
-        self.loaded = true;
         for session in self.sessions.values_mut() {
             if let Some(id) = session.id
                 && !session.changed
@@ -214,6 +212,8 @@ impl Preferences {
                 session.value = saved.knock.get(&id.to_string()).copied().unwrap_or_default();
             }
         }
+        self.saved = Ok(saved);
+        self.loaded = true;
     }
 
     fn apply_result(&mut self, result: BatchResult) {
@@ -348,7 +348,11 @@ impl Preferences {
                 persistence: PreferencePersistence::Unchanged,
             };
         }
-        if !already_pending {
+        let failed_pending = self
+            .pending
+            .get(&id)
+            .is_some_and(|change| self.failures.get(&id).is_some_and(|(revision, _)| *revision == change.revision));
+        if !already_pending || failed_pending {
             self.revision = self.revision.wrapping_add(1);
             self.pending.insert(
                 id,

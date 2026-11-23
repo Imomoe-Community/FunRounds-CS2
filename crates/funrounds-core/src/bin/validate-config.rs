@@ -10,39 +10,35 @@ fn validate_file(path: &Path) -> Result<(), String> {
 }
 
 fn validate_bundle(config: &Config, directory: &Path, allow_fallback: bool) -> Result<(), String> {
-    let zh_path = directory.join("zh-CN.toml");
-    let en_path = directory.join("en.toml");
-    let catalogs = if allow_fallback {
-        let mut catalogs = Vec::new();
-        for (language, path) in [("zh-CN", &zh_path), ("en", &en_path)] {
-            if let Some(catalog) = read_catalog_if_present(path)? {
-                catalogs.push((language.to_owned(), catalog));
+    let mut catalogs = Vec::new();
+    match fs::read_dir(directory) {
+        Ok(entries) => {
+            for entry in entries {
+                let path = entry.map_err(|error| format!("{}: {error}", directory.display()))?.path();
+                if path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+                    && fs::metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?.is_file()
+                {
+                    let language = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                    let source = fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+                    let catalog = TextCatalog::parse_for_language(&source, &language).map_err(|error| format!("{}: {error}", path.display()))?;
+                    catalogs.push((language, catalog));
+                }
             }
         }
-        catalogs
-    } else {
-        let zh = read_catalog(&zh_path)?;
-        let en = read_catalog(&en_path)?;
-        TextBundle::validate_complete_catalogs(&zh, &en).map_err(|error| format!("{}: {error}", directory.display()))?;
-        vec![("zh-CN".into(), zh), ("en".into(), en)]
-    };
-    let bundle = TextBundle::load(config.default_language.as_str(), catalogs)?;
-    bundle.validate_config(config)
-}
-
-fn read_catalog(path: &Path) -> Result<TextCatalog, String> {
-    let source = fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    TextCatalog::parse(&source).map_err(|error| format!("{}: {error}", path.display()))
-}
-
-fn read_catalog_if_present(path: &Path) -> Result<Option<TextCatalog>, String> {
-    match fs::read_to_string(path) {
-        Ok(source) => TextCatalog::parse(&source)
-            .map(Some)
-            .map_err(|error| format!("{}: {error}", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("{}: {error}", path.display())),
+        Err(error) if allow_fallback && error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{}: {error}", directory.display())),
     }
+    catalogs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let bundle = TextBundle::load(config.default_language.as_str(), catalogs)?;
+    if !allow_fallback {
+        bundle
+            .validate_complete_catalogs()
+            .map_err(|error| format!("{}: {error}", directory.display()))?;
+    }
+    bundle.validate_config(config)
 }
 
 fn run() -> Result<(), String> {

@@ -97,14 +97,12 @@ public:
         return {&update, fields_.entityIndex};
     }
 
-    void DeleteSubrange(int index, int count) {
-        for (int removed = 0; removed < count; ++removed) {
-            const int last = size() - 1;
-            for (int current = index; current < last; ++current) {
-                reflection_->SwapElements(&message_, fields_.updates, current, current + 1);
-            }
-            reflection_->RemoveLast(&message_, fields_.updates);
-        }
+    void Swap(int left, int right) {
+        reflection_->SwapElements(&message_, fields_.updates, left, right);
+    }
+
+    void RemoveLast() {
+        reflection_->RemoveLast(&message_, fields_.updates);
     }
 
 private:

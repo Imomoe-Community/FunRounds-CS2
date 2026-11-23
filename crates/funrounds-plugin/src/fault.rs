@@ -9,6 +9,7 @@ pub enum Mechanism {
     Ammo,
     TaserCharge,
     Bunnyhop,
+    Autostrafe,
     Friction,
     TimeScale,
     GroundAcceleration,
@@ -52,6 +53,7 @@ pub enum Mechanism {
     ProjectileDamage,
     Dodgeball,
     ThrowingKnives,
+    Lifesteal,
     ViewPunchDecay,
     NoScope,
     Fov,
@@ -62,6 +64,10 @@ pub enum Mechanism {
     Classic,
     HealthSpeed,
     HealthDecay,
+    Regeneration,
+    MedicalSmoke,
+    Trampoline,
+    ChickenAura,
     PeriodicSpeed,
     PeriodicGravity,
     WinCondition,
@@ -69,10 +75,25 @@ pub enum Mechanism {
     C4Assignment,
     RandomDamage,
     Suicide,
+    DeathExplosion,
     Healthshot,
     ChickenFollowBlocking,
     ChickenEating,
     Afterburn,
+    DontStop,
+    HotFloor,
+    BigHead,
+    InfernoDamage,
+    TeamkillPunishment,
+    HideAllHud,
+    HeGrenadeImpulse,
+    LongFlash,
+    WallHang,
+    Grapple,
+    HeGuidance,
+    ExplosiveBullets,
+    FriendlyFireHeal,
+    ProximityFuse(funrounds_core::GrenadeKind),
 }
 
 impl Mechanism {
@@ -84,6 +105,7 @@ impl Mechanism {
             }
             Self::TaserCharge => capabilities.taser_charge = false,
             Self::Bunnyhop => capabilities.bunnyhop = false,
+            Self::Autostrafe => capabilities.autostrafe = false,
             Self::Friction => capabilities.friction = false,
             Self::TimeScale => capabilities.time_scale = false,
             Self::GroundAcceleration => {
@@ -139,6 +161,7 @@ impl Mechanism {
             }
             Self::Dodgeball => capabilities.dodgeball = false,
             Self::ThrowingKnives => capabilities.throwing_knives = false,
+            Self::Lifesteal => capabilities.lifesteal = false,
             Self::ViewPunchDecay => capabilities.view_punch_decay = false,
             Self::NoScope => capabilities.no_scope = false,
             Self::Fov => capabilities.fov = false,
@@ -154,12 +177,41 @@ impl Mechanism {
             Self::Classic => capabilities.speed = false,
             Self::HealthSpeed => capabilities.health_speed = false,
             Self::HealthDecay => capabilities.health_decay = false,
+            Self::Regeneration => capabilities.regeneration = false,
+            Self::MedicalSmoke => capabilities.medical_smoke = false,
+            Self::Trampoline => capabilities.trampoline = false,
+            Self::ChickenAura => capabilities.chicken_aura = false,
             Self::RandomDamage => capabilities.random_damage = false,
             Self::Suicide => capabilities.suicide = false,
+            Self::DeathExplosion => capabilities.death_explosion = false,
             Self::Healthshot => capabilities.healthshot = false,
             Self::ChickenFollowBlocking => capabilities.ordinary_chickens = false,
             Self::ChickenEating => {}
-            Self::Afterburn => capabilities.afterburn = false,
+            Self::Afterburn => {
+                capabilities.afterburn = false;
+                capabilities.hot_floor = false;
+            }
+            Self::DontStop => capabilities.dont_stop = false,
+            Self::HotFloor => capabilities.hot_floor = false,
+            Self::BigHead => capabilities.big_head = false,
+            Self::InfernoDamage => capabilities.inferno_damage = false,
+            Self::TeamkillPunishment => capabilities.teamkill_punishment = false,
+            Self::HideAllHud => capabilities.hide_all_hud = false,
+            Self::HeGrenadeImpulse => capabilities.hegrenade_impulse = false,
+            Self::LongFlash => capabilities.long_flash = false,
+            Self::WallHang => capabilities.wall_hang = false,
+            Self::Grapple => capabilities.grapple = false,
+            Self::HeGuidance => capabilities.he_guidance = false,
+            Self::ExplosiveBullets => capabilities.explosive_bullets = false,
+            Self::FriendlyFireHeal => capabilities.friendly_fire_heal = false,
+            Self::ProximityFuse(kind) => match kind {
+                funrounds_core::GrenadeKind::He => capabilities.proximity_he = false,
+                funrounds_core::GrenadeKind::Flash => capabilities.proximity_flash = false,
+                funrounds_core::GrenadeKind::Smoke => capabilities.proximity_smoke = false,
+                funrounds_core::GrenadeKind::Molotov => capabilities.proximity_molotov = false,
+                funrounds_core::GrenadeKind::Incendiary => capabilities.proximity_incendiary = false,
+                funrounds_core::GrenadeKind::Decoy => {}
+            },
         }
     }
 }
@@ -167,6 +219,7 @@ impl Mechanism {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     Cancelled,
+    Round,
     Mechanism(Mechanism),
     Global,
 }
@@ -192,6 +245,13 @@ impl Fault {
         }
     }
 
+    pub fn round(message: impl Into<String>) -> Self {
+        Self {
+            scope: Scope::Round,
+            message: message.into(),
+        }
+    }
+
     pub fn global(message: impl Into<String>) -> Self {
         Self {
             scope: Scope::Global,
@@ -208,18 +268,6 @@ impl Fault {
 impl fmt::Display for Fault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.message.fmt(f)
-    }
-}
-
-impl From<String> for Fault {
-    fn from(message: String) -> Self {
-        Self::global(message)
-    }
-}
-
-impl From<&str> for Fault {
-    fn from(message: &str) -> Self {
-        Self::global(message)
     }
 }
 
@@ -248,6 +296,11 @@ impl Faults {
     pub fn record(&mut self, fault: &Fault) -> bool {
         match fault.scope {
             Scope::Cancelled => return false,
+            Scope::Round => {
+                if self.recovery != Recovery::Stopped {
+                    self.recovery = Recovery::Recovering;
+                }
+            }
             Scope::Mechanism(mechanism) => {
                 mechanism.exclude(&mut self.available);
                 if self.recovery != Recovery::Stopped {
@@ -281,6 +334,43 @@ impl Faults {
         } else {
             self.available
         }
+    }
+
+    /// Promotes wall hang after its schema-dependent native probe becomes ready.
+    /// A recorded runtime failure remains sticky for this recovery epoch.
+    pub fn enable_wall_hang(&mut self) -> bool {
+        if self.recovery == Recovery::Stopped || self.reasons.iter().any(|(scope, _)| *scope == Scope::Mechanism(Mechanism::WallHang)) {
+            return false;
+        }
+        let changed = !self.available.wall_hang;
+        self.available.wall_hang = true;
+        changed
+    }
+
+    pub fn set_trampoline_available(&mut self, ready: bool) -> bool {
+        let available =
+            ready && self.recovery != Recovery::Stopped && !self.reasons.iter().any(|(scope, _)| *scope == Scope::Mechanism(Mechanism::Trampoline));
+        std::mem::replace(&mut self.available.trampoline, available) != available
+    }
+
+    /// Promotes grapple after its schema-dependent use-target probe and callback are ready.
+    pub fn enable_grapple(&mut self) -> bool {
+        if self.recovery == Recovery::Stopped || self.reasons.iter().any(|(scope, _)| *scope == Scope::Mechanism(Mechanism::Grapple)) {
+            return false;
+        }
+        let changed = !self.available.grapple;
+        self.available.grapple = true;
+        changed
+    }
+
+    /// Promotes HE guidance only after its spawn observer has been attached.
+    pub fn enable_he_guidance(&mut self) -> bool {
+        if self.recovery == Recovery::Stopped || self.reasons.iter().any(|(scope, _)| *scope == Scope::Mechanism(Mechanism::HeGuidance)) {
+            return false;
+        }
+        let changed = !self.available.he_guidance;
+        self.available.he_guidance = true;
+        changed
     }
 
     pub fn finish_cleanup(&mut self, complete: bool) -> bool {
@@ -468,8 +558,8 @@ mod tests {
             .replace("id = \"example\"", "id = \"feature\"")
             .replace("name_key = \"mode.example.name\"", "name = \"Feature\"")
             .replace(
-                "weapons = [\"weapon_famas\", \"weapon_p250\"]",
-                "weapons = [\"weapon_famas\", \"weapon_p250\"]\ngive_knife = \"all\"\nthrowing_knives = true",
+                "weapons = [\"famas\", \"p250\"]",
+                "weapons = [\"famas\", \"p250\"]\ngive_knife = \"all\"\nthrowing_knives = true",
             );
         let reloaded_source = format!("{header}\n{basic_source}\n{feature_source}");
         controller.queue_reload(&reloaded_source).unwrap();

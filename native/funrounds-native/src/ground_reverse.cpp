@@ -11,6 +11,8 @@
 #include <polyhook/polyhook.hpp>
 #include <plugin_export.h>
 #include <s2sdk/s2sdk.hpp>
+#include <entity2/entityinstance.h>
+#include <entity2/entitynetwork.h>
 
 #include "engine.hpp"
 #include "entity_handle.hpp"
@@ -22,7 +24,6 @@ namespace {
 constexpr char kCallsiteSignature[] = "FunRounds::GroundReverseAccelerationCallsite";
 constexpr char kHookName[] = "FunRounds::GroundReverseAccelerationCallsite";
 constexpr std::int32_t kInvalidHandle = -1;
-constexpr std::int32_t kMovementPawnOffset = 56;
 constexpr float kDefaultAcceleration = 5.5F;
 
 #if defined(_WIN32)
@@ -37,6 +38,7 @@ struct GroundReverseState {
     void* address{};
     polyhook::HookHandle hook{};
     SchemaField pawnController{};
+    SchemaField movementOwnerChain{};
     bool schemaReady{};
     bool enabled{};
     float acceleration{kDefaultAcceleration};
@@ -71,7 +73,8 @@ bool ResolveGroundIdentitySchema() noexcept {
     if (g_state.schemaReady) {
         return true;
     }
-    if (!ResolveSchemaField("CBasePlayerPawn", "m_hController", sizeof(std::uint32_t), g_state.pawnController)) {
+    if (!ResolveSchemaField("CBasePlayerPawn", "m_hController", sizeof(std::uint32_t), g_state.pawnController) ||
+        !ResolvePlayerPawnComponentChain(g_state.movementOwnerChain)) {
         return false;
     }
     g_state.schemaReady = true;
@@ -95,7 +98,9 @@ bool ResolveCurrentControl(void* movement,
         return false;
     }
 
-    void* pawn = ReadField<void*>(movement, kMovementPawnOffset);
+    auto* const movementOwner = reinterpret_cast<CNetworkVarChainer*>(
+        static_cast<std::byte*>(movement) + g_state.movementOwnerChain.offset);
+    void* pawn = movementOwner->GetObject();
     pawnHandle = HandleFromEntity(pawn);
     if (!pawn || pawnHandle == kInvalidHandle || !IsPlayerPawn(pawnHandle) ||
         HandleFromEntity(pawn) != pawnHandle || EntityFromHandle(pawnHandle) != pawn) {
@@ -110,42 +115,29 @@ bool ResolveCurrentControl(void* movement,
         return false;
     }
 
-    std::int32_t matchedSlots = 0;
-    std::int32_t matchingSlot = -1;
-    void* matchingPawn = nullptr;
-    bool matchingClientInGame = false;
-    bool matchingFakeClient = false;
     const auto maxClients = s2sdk::GetMaxClients();
     if (maxClients <= 0) {
         return false;
     }
-    for (std::int32_t slot = 0; slot < maxClients; ++slot) {
-        if (!s2sdk::IsClientInGame(slot) || s2sdk::PlayerSlotToEntHandle(slot) != currentControllerHandle) {
-            continue;
-        }
-        void* const slotPawn = s2sdk::GetClientPawn(slot);
-        if (!slotPawn || slotPawn != pawn || HandleFromEntity(slotPawn) != pawnHandle) {
-            continue;
-        }
-        ++matchedSlots;
-        matchingSlot = slot;
-        matchingPawn = slotPawn;
-        matchingClientInGame = true;
-        matchingFakeClient = s2sdk::IsFakeClient(slot);
+    const auto controllerRefHandle = static_cast<CEntityInstance*>(controller)->GetRefEHandle();
+    const std::int32_t slot = controllerRefHandle.GetEntryIndex() - 1;
+    if (controllerRefHandle.ToInt() != ToNativeHandle(currentControllerHandle) || slot < 0 || slot >= maxClients ||
+        !s2sdk::IsClientInGame(slot) || s2sdk::PlayerSlotToEntHandle(slot) != currentControllerHandle) {
+        return false;
     }
-
-    if (matchingSlot == -1) {
+    void* const slotPawn = s2sdk::GetClientPawn(slot);
+    if (slotPawn != pawn || HandleFromEntity(slotPawn) != pawnHandle) {
         return false;
     }
     const GroundControlIdentity identity{
         .pawnHandle = pawnHandle,
         .currentControllerHandle = currentControllerHandle,
-        .slotControllerHandle = s2sdk::PlayerSlotToEntHandle(matchingSlot),
+        .slotControllerHandle = currentControllerHandle,
         .pawn = pawn,
-        .slotPawn = matchingPawn,
-        .exactSlotMatches = matchedSlots,
-        .clientInGame = matchingClientInGame,
-        .fakeClient = matchingFakeClient,
+        .slotPawn = slotPawn,
+        .exactSlotMatches = 1,
+        .clientInGame = true,
+        .fakeClient = s2sdk::IsFakeClient(slot),
     };
     source = ClassifyGroundControlSource(identity);
     return source != GroundControlSource::Unresolved;
@@ -266,7 +258,11 @@ bool SetGroundReverseActive(bool active, float acceleration) noexcept {
 }
 
 bool ShutdownGroundReverse() noexcept {
-    return RemoveGroundHook();
+    if (!RemoveGroundHook()) {
+        return false;
+    }
+    g_state = {};
+    return true;
 }
 
 namespace {

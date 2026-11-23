@@ -122,3 +122,18 @@ pub type _AddCommandListener = unsafe extern "C" fn(&Str, ConCommandCallback, Ho
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_AddCommandListener: Option<_AddCommandListener> = None;
+
+/// Executes a client command on the server without network communication.
+///
+/// # Arguments
+/// * `playerSlot` - (int32): The index of the client.
+/// * `command` - (string): The command to be executed by the client.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn FakeClientCommand(playerSlot: i32, command: &Str) {
+    unsafe { __s2sdk_FakeClientCommand.expect("FakeClientCommand function was not found")(playerSlot, command) }
+}
+pub type _FakeClientCommand = unsafe extern "C" fn(i32, &Str);
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_FakeClientCommand: Option<_FakeClientCommand> = None;

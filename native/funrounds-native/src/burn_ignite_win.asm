@@ -11,10 +11,10 @@ FunRoundsInvokeIgnite PROC FRAME
     .allocstack 48h
     .endprolog
 
-    ; Reviewed Win64 CBaseModelEntity::Ignite call shape: slot 266, mode in R8D.
+    ; Gamedata-provided vtable slot arrives in R9; mode remains in R8D.
     mov r10, rcx
     mov r11, qword ptr [r10]
-    mov rax, qword ptr [r11+850h]
+    mov rax, qword ptr [r11+r9*8]
 
     ; Win64 shadow space plus four engine stack arguments.
     mov qword ptr [rsp+20h], 0

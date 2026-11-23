@@ -41,12 +41,12 @@ class CITests(unittest.TestCase):
             for name in ("funrounds-core", "funrounds-plugin")
         ))
         self.write("crates/funrounds-core/src/lib.rs", f'pub const VERSION: &str = "{version}";\n')
-        main = {"version": version, "dependencies": [{"name": "s2sdk", "constraints": "=3.0.6"},
+        main = {"version": version, "dependencies": [{"name": "s2sdk", "constraints": "=3.3.1"},
                 {"name": "funrounds_native", "constraints": f"={version}"}]}
-        native = {"version": version, "dependencies": [{"name": "s2sdk", "constraints": "=3.0.6"}]}
+        native = {"version": version, "dependencies": [{"name": "s2sdk", "constraints": "=3.3.1"}]}
         self.write("packaging/funrounds.pplugin", json.dumps(main))
         self.write("native/funrounds-native/funrounds-native.pplugin", json.dumps(native))
-        self.write("bindings/s2sdk.pplugin", '{"version":"3.0.6","dependencies":[{"name":"configs","constraints":">=2.1.0"}]}')
+        self.write("bindings/s2sdk.pplugin", '{"version":"3.3.1","dependencies":[{"name":"configs","constraints":">=2.1.2"}]}')
         self.write("native/funrounds-native/gamedata/funrounds-native.jsonc", '{}')
         self.write("config/funrounds.example.toml", '# Generic example\n')
         for language in ("zh-CN", "en"):
@@ -61,7 +61,7 @@ class CITests(unittest.TestCase):
             (output / f"funrounds-{version}-{platform}.zip").write_bytes(b"archive")
         return output
 
-    def sdk_fixture(self, platform, version="3.0.6"):
+    def sdk_fixture(self, platform, version="3.3.1"):
         name = "plugify-plugin-s2sdk.dll" if platform == "windows-x64" else "libplugify-plugin-s2sdk.so"
         self.write(f"native-output/s2sdk/bin/{name}", "patched SDK")
         self.write("native-output/s2sdk/plugify-plugin-s2sdk.pplugin", json.dumps({"name": "s2sdk", "version": version}))
@@ -199,7 +199,7 @@ class CITests(unittest.TestCase):
         self.assertIn("--draft", create)
         self.assertIn("b" * 40, create)
         self.assertIn("Includes patched S2SDK", create[create.index("--notes") + 1])
-        self.assertIn("configs >=2.1.0", create[create.index("--notes") + 1])
+        self.assertIn("configs >=2.1.2", create[create.index("--notes") + 1])
         self.assertIn("--draft=false", publish)
         self.assertIn("--prerelease=false", publish)
 

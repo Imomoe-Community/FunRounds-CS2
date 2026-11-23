@@ -3,10 +3,10 @@
 # FunRounds-CS2
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-0.3.0--alpha-informational.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-0.4.0--alpha-informational.svg)](Cargo.toml)
 [![Rust Version](https://img.shields.io/badge/Rust-1.99.1+-orange.svg)](rust-toolchain.toml)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20x64-lightgrey.svg)]()
-[![Framework](https://img.shields.io/badge/Framework-Plugify%20%2B%20S2SDK%203.0.6-success.svg)](https://github.com/untrustedmodders/plugify)
+[![Framework](https://img.shields.io/badge/Framework-Plugify%20%2B%20S2SDK%203.3.1-success.svg)](https://github.com/untrustedmodders/plugify)
 
 **A high-performance, safe, and modular special rounds plugin for Counter-Strike 2 dedicated servers.**
 
@@ -18,9 +18,9 @@
 
 ### Overview
 
-**FunRounds-CS2** is a modern Counter-Strike 2 server plugin developed in Rust and native C++20, built atop the [Plugify](https://github.com/untrustedmodders/plugify) framework and [S2SDK](https://github.com/untrustedmodders/plugify-plugin-s2sdk).
+**FunRounds-CS2** is a modern Counter-Strike 2 server plugin developed in Rust and native C++20, built atop the [Plugify](https://github.com/untrustedmodders/plugify) framework and [S2SDK](https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk/tree/funrounds).
 
-At the start of each round (or on administrative demand), it seamlessly applies multi-dimensional gameplay mutators—altering player attributes, physics, dynamic loadouts, recoil/camera mechanics, combat rules, chicken ecology, and bomb systems—with zero-leak state restoration and crash isolation.
+At the start of each round (or on administrative demand), it seamlessly applies multi-dimensional gameplay mutators—altering player attributes, mobility physics, dynamic loadouts, recoil/camera mechanics, combat rules, chicken ecology, and bomb systems—with zero-leak state restoration and crash isolation.
 
 ---
 
@@ -28,14 +28,51 @@ At the start of each round (or on administrative demand), it seamlessly applies 
 
 | Category | Description |
 | :--- | :--- |
-| **Attributes & Physics** | Health (1–10,000 or random range), armor/helmets, gravity scaling, speed multiplier, friction, auto-bunnyhopping, ground acceleration, ground reverse walking (`ground_reverse`), time scale (`time_scale`), and periodic speed/gravity oscillation. |
-| **Visuals & Camera** |  Third person camera (`third_person`), stealth ghost mode with breathing audio cues and distance awareness (`ghost`), night vision (`fr_nvg`), crosshair/radar hiding (`hide_hud`), model RGB tinting, translucency, and scope restrictions. |
-| **Recoil & Knockback** | Weapon recoil self-push knockback (`fr_knock` supports ground and air modes), recoil & spread suppression, view-punch intensity/decay (`recoil_view` / `view_punch_decay`), fast switch (`fast_switch`), and shooting dropped grenades. |
-| **Loadouts & Ammunition** | Team-specific weapon clearing and granting, 4 ammo modes (inherit / reserve / clip / single-shot), taser recharge intervals, automatic grenade replenishment (HE/flash/smoke/decoy/molotov), kill progression (`kill_loadout`), and random draws. |
-| **Combat Modifiers** | Vampiric lifesteal, reflect damage (`reflect_damage`), HP-scaled damage/speed/decay, energy absorption shield, miss penalty self-damage, decoy dodgeball collisions (`dodgeball`), throwing knives with bouncing, and afterburn damage. |
-| **C4 Objectives & Suicide** | 3 bomb types (native, chicken, carry), custom timers, bomb bouncing, 4-color wire cutting minigame (`fr_wire`), C4 cash purchasing (`fr_c4`), and C4 suicide explosions (`fr_suicide`). |
-| **Chicken & Healthshots** | Chicken population scaling, eating chickens with digestion risk & chain explosions; custom healthshot healing ratios with cash purchase (`fr_healthshot`). |
-| **Economy & i18n** | Buy anywhere, team purchase access, round money floor, passive income; built-in bilingual i18n (`zh-CN` / `en`) automatically matching client language. |
+| **Attributes & Physics** | Health (up to 10,000 or random range), armor/helmets (armor up to 1,000), gravity scaling, speed multiplier, friction, auto-bunnyhopping, ground acceleration, ground reverse walking (`ground_reverse`), time scale (`time_scale`), and periodic speed/gravity oscillation. |
+| **Movement & Mobility** | Air-strafe directional acceleration assist (`autostrafe`), wall hang upon contact (`wall_hang`), grapple hook pulling to target (`grapple`), and map-specific trampoline launch zones (`trampoline`). |
+| **Visuals & Camera** | Third person camera (`third_person`), stealth ghost mode with breathing audio cues and distance awareness (`ghost`), dynamic KD-scaled big head mode (`big_head`), night vision (`fr_nvg`), crosshair/radar hiding (`hide_hud`), model RGB tinting, translucency, and scope restrictions. |
+| **Recoil & Knockback** | Weapon recoil self-push knockback (`fr_knock` supports ground and air modes), recoil & spread suppression, weapon drop/switch on fire (`weapon_on_fire`), explosive bullets (`explosive_bullets`), view-punch intensity/decay, and fast switch (`fast_switch`). |
+| **Loadouts & Weapons** | Canonical weapon IDs, named weapon groups (`[weapon_groups]` referenced via `@group`), team-specific weapon clearing and granting, 4 ammo modes (inherit / reserve / clip / single-shot), taser recharge intervals, kill progression (`kill_loadout`), and random draws. |
+| **Grenades & Tactical** | Automatic grenade replenishment, proximity fuse detonation (`proximity_fuse`), guided HE tracking (`he_guidance`), HE blast impulse (`hegrenade_impulse`), medical smoke healing (`medical_smoke`), decoy dodgeball collisions (`dodgeball`), throwing knives, and extended flash duration (`long_flash`). |
+| **Combat & Hazards** | Vampiric lifesteal, reflect damage (`reflect_damage`), dynamic HP curves, friendly fire healing (`friendly_fire_heal`), passive regeneration (`regeneration`), low-speed penalty (`dont_stop`), hot floor lava damage (`hot_floor`), death explosion (`death_explosion`), and teamkill limits. |
+| **C4 Objectives & Chickens** | 3 bomb types (native, chicken, carry), custom timers, bomb bouncing, 4-color wire cutting minigame (`fr_wire`), C4 cash purchasing (`fr_c4`), and C4 suicide explosions (`fr_suicide`); chicken population scaling, eating chickens with digestion risk, chicken healing aura (`chicken_aura`), and healthshots. |
+
+<details>
+<summary><b>Click to expand full gameplay feature details</b></summary>
+
+- **Canonical Equipment & Weapon Groups**
+  - **Canonical Weapon IDs**: Fully transitions to standard IDs without the legacy `weapon_` prefix (e.g. `famas`, `p250`, `hegrenade`, `flashbang`, `smokegrenade`, `decoy`, `molotov`, `incgrenade`).
+  - **Named Weapon Groups**: Supports top-level `[weapon_groups]` definitions referenced succinctly as `@group_name` across modes.
+  - **Expanded Armor Cap**: Initial armor can be configured up to `1000` points.
+
+- **Movement & Mobility**
+  - **Air-Strafe Assist (`autostrafe`)**: Automatically aligns horizontal velocity with viewing angles to provide smooth aerial acceleration.
+  - **Wall Hang (`wall_hang`)**: Suspends players on vertical surfaces while touching walls and holding the jump key.
+  - **Grapple Hook (`grapple`)**: Shoots a grappling tether towards surfaces upon pressing the use key, pulling the player at configured speeds.
+  - **Map Trampolines (`trampoline`)**: Designated geographic trigger areas (e.g. Dust2, Mirage) launching players upwards with high vertical velocity.
+
+- **Weaponry & Combat Mutators**
+  - **Explosive Bullets (`explosive_bullets`)**: Bullet impacts detonate with configurable cooldowns, radius, and damage ranges.
+  - **Weapon Fire Mishap (`weapon_on_fire`)**: Firing carries a randomized chance to forcefully switch to the next weapon or drop the active weapon.
+  - **Big Head (`big_head`)**: Scales head hitbox dimensions dynamically according to the player's live kill-to-death ratio (KD).
+  - **Friendly Fire Healing (`friendly_fire_heal`)**: Converts friendly fire into healing via fixed values or proportional damage ratios.
+  - **Passive Regeneration (`regeneration`)**: Passively regenerates health after a period of staying out of combat.
+
+- **Advanced Grenades**
+  - **Proximity Fuse (`proximity_fuse`)**: Grenades detonate early upon detecting nearby enemy players within a specified trigger radius.
+  - **Guided HE Tracking (`he_guidance`)**: High explosive grenades steer toward nearby enemies in flight at a configured turn rate.
+  - **HE Blast Impulse (`hegrenade_impulse`)**: High explosive grenades apply customizable directional physical impulse and knockback.
+  - **Medical Smoke (`medical_smoke`)**: Smoke clouds grant periodic healing to allied players inside the active cloud.
+  - **Extended Flash (`long_flash`)**: Multiplies flashbang blind durations up to a configured ceiling cap.
+
+- **Environmental Hazards & Rules**
+  - **Low-Speed Hazard (`dont_stop`)**: Inflicts periodic health penalties if a player's horizontal speed stays below a minimum threshold past the grace period.
+  - **Hot Floor Lava (`hot_floor`)**: Standing continuously on the ground burns the player with damage, eventually igniting them.
+  - **Death Explosion (`death_explosion`)**: Designates a quota of players per team to trigger a massive explosion upon dying.
+  - **Teamkill Limit (`teamkill_limit`)**: Enforces a strict threshold on teamkills per round before punishing the offender.
+  - **Periodic Parameter Waves (`periodic_speed` / `periodic_gravity`)**: Randomly mutates gravity and speed multipliers at periodic intervals using discrete values or continuous ranges.
+
+</details>
 
 <details>
 <summary><b>Click to expand Architecture & Reliability</b></summary>
@@ -55,7 +92,7 @@ At the start of each round (or on administrative demand), it seamlessly applies 
 ### Project Layout
 
 ```text
-├── bindings/             # Plugify S2SDK provider bindings (123 methods)
+├── bindings/             # Plugify S2SDK provider bindings (164 methods)
 ├── config/               # Reference configurations and i18n catalogs
 │   ├── funrounds.example.toml # Reference configuration
 │   └── i18n/             # Localization files (zh-CN.toml, en.toml)
@@ -77,7 +114,7 @@ At the start of each round (or on administrative demand), it seamlessly applies 
 
 - Counter-Strike 2 Dedicated Server (Windows x64 or Linux x64)
 - [Plugify](https://github.com/untrustedmodders/plugify) installed and active on your CS2 server
-- [S2SDK](https://github.com/untrustedmodders/plugify-plugin-s2sdk) plugin (version `3.0.6`) active in Plugify
+- [S2SDK](https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk/tree/funrounds) plugin (version `=3.3.1`) active in Plugify
 
 #### Deployment
 
@@ -112,74 +149,80 @@ game/csgo/addons/plugify/
 
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
-| `fr_status` | None | Displays current mode, phase, engine capabilities, and fault diagnoses. |
+| `fr_status` | None | Displays current mode, phase, capability readiness, and fault diagnoses. |
 | `fr_list` | None | Lists all loaded and enabled round modes in the pool. |
-| `fr_next` | `<id \| random>` | Queues a specific mode ID or random mode for the next round. |
+| `fr_next` | `<id \| random \| id <id>>` | Queues a specific mode ID (`fr_next <id>` or `fr_next id <id>`) or random selection (`random`) for the next round. |
 | `fr_reload` | None | Validates and schedules configuration and i18n reload for the next round. |
 | `fr_enable` | `<0 \| 1>` | Master switch: disables (`0`) or enables (`1`) the plugin. |
 
 #### Player Commands (Console & Chat)
 
-| Console Command | Chat Alias | Arguments | Description |
+| Console | Chat Alias | Arguments | Description |
 | :--- | :--- | :--- | :--- |
-| `fr_info` | `!info` / `!frinfo` | None | Displays the current round mode, ID, and description in chat. |
+| `fr_info` | `!info` / `!frinfo` | None | Displays current round mode name, ID, and description in chat. |
 | `fr_help` | `!help` / `!frhelp` | None | Displays available player commands and usage instructions. |
-| `fr_knock` | `!knock` | `[0\|1\|2]` | Sets or cycles shooting self-push (`0`: off, `1`: ground & air, `2`: airborne only [default]; cycle without args). |
-| `fr_c4` | `!c4` | None | Purchases an extra C4 at the configured price when allowed. |
-| `fr_suicide` | `!suicide` | None | Triggers a suicide explosion with held or purchased C4 when allowed. |
-| `fr_chicken` | `!chicken` | None | Buys an ordinary chicken at the configured price. |
-| `fr_healthshot` | `!healthshot` | None | Buys a healthshot at the configured price. |
+| `fr_knock` | `!knock` | `[0\|1\|2]` | Configures recoil self-push (`0`: off, `1`: ground & air, `2`: airborne only [default]; cycle without args). |
+| `fr_c4` | `!c4` | None | T players purchase extra C4 at the configured price when allowed. |
+| `fr_suicide` | `!suicide` | None | Triggers suicide explosion with held or purchased C4 when allowed. |
+| `fr_chicken` | `!chicken` | None | Purchases an ordinary chicken at the configured price. |
+| `fr_healthshot` | `!healthshot` | None | Purchases a healthshot at the configured price. |
 | `fr_nvg` | `!nvg` | None | Toggles night vision. |
-| `fr_wire` | `!wire` | `<color>` | Selects planting or quick-defusing wire color (`blue`, `yellow`, `red`, `green`). |
+| `fr_wire` | `!wire` | `<color>` | Selects planting or quick-defusing wire color (blue, yellow, red, green). |
 
 ---
 
 ### Configuration
 
-The configuration uses strict TOML format with support for global `[defaults]` template inheritance:
+Configuration uses strict TOML syntax with a global `[defaults]` template for field inheritance:
 
 ```toml
-# Top-level settings
-diagnostics = false # Diagnostic logging (default: false)
+# Global settings
+diagnostics = false # Diagnostic logging
 
-# Internationalization
+# i18n
 [i18n]
-default_language = "en" # Server default language ("zh-CN" or "en")
+default_language = "zh-CN" # Default language ("zh-CN" or "en")
 
-# Global default template (mode-level fields take precedence)
+# Optional named weapon groups
+# [weapon_groups]
+# basic = ["famas", "p250"]
+
+# Global defaults
 [defaults]
 gravity = 1.0
 bunnyhop = false
 
 [[modes]]
-id = "example"              # Unique mode identifier (ASCII, alphanumeric, '_' or '-')
-enabled = true              # Whether this mode enters the round pool
+id = "example"              # Unique mode identifier
+enabled = true              # Whether mode enters the pool
 name_key = "mode.example.name" # Localized name key
 description_key = "mode.example.description" # Localized description key
-weapons = ["weapon_famas", "weapon_p250"]
+weapons = ["famas", "p250"] # Canonical weapon IDs
 
-# Team loadout control
-clear_weapons = "all"       # Team to clear weapons before granting (none / all / terrorists / counter_terrorists)
-give_weapons = "all"        # Team to receive candidates
-give_knife = "all"          # Team to receive knife
+# Team equipment distribution
+clear_weapons = "all"       # Teams to strip (none / all / terrorists / counter_terrorists)
+give_weapons = "all"        # Teams to give candidates
+give_knife = "all"          # Teams to give knives
 
 # Attributes & movement
-health = 120                # Initial health (1-10000, or random range { min = 100, max = 150 })
-armor = 50                  # Initial armor (0-255, or random range { min = 0, max = 100 })
-gravity = 1.0               # Gravity multiplier ((0, 10], 1.0 is normal gravity)
+health = 120                # Initial health (1–10000 or range { min = 100, max = 150 })
+armor = 50                  # Initial armor (0–1000 or range { min = 0, max = 100 })
+gravity = 1.0               # Gravity multiplier ((0, 10], 1.0 is normal)
 speed = 1.0                 # Speed multiplier ((0, 10])
-self_push = true            # Weapon recoil self-push
+self_push = true            # Recoil self-push
 
-# Recoil & view
-ammo = "reserve"            # Ammo mode (inherit / reserve / clip / single_shot)
+# Shooting & view dynamics
+ammo = "reserve"            # Ammo rule (inherit / reserve / clip / single_shot)
 headshots = "normal"        # Headshot rule (normal / only / disabled)
-fast_switch = true          # Fast weapon switch
+fast_switch = true          # Fast switch
 
-# Optional mutators
+# Optional mutator examples
+# autostrafe = true         # Air-strafe assist
+# explosive_bullets = { cooldown_seconds = 1.5, damage = 30, radius = 120 } # Explosive bullets
+# wall_hang = true          # Wall hang
+# grapple = { max_distance = 1000.0, max_speed = 600.0, pull_gain = 4.0 } # Grapple hook
 # lifesteal = true          # Vampiric lifesteal
-# suicide = true            # Suicide blast gameplay
-# third_person = { distance = 64.0, follow_eyes = true, return_strength = 2.0 }
-# bomb = { kind = "native", plant_time = 3.0, explode_time = 45.0, bounce = false }
+# third_person = { distance = 64.0, follow_eyes = true, return_strength = 2.0 } # Third-person
 ```
 
 <details>
@@ -194,17 +237,17 @@ Refer to [config/funrounds.example.toml](config/funrounds.example.toml) for full
 
 #### 1. Build Rust Plugin
 
-Requires Rust `1.99.1` (automatically managed by `rust-toolchain.toml`):
+Requires Rust `1.99.1` (automatically handled by `rust-toolchain.toml`):
 
 ```bash
-# Code formatting check and Clippy analysis
+# Formatting & Clippy lint checks
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 
-# Execute test suite
+# Execute full test suite
 cargo test --workspace --locked
 
-# Build optimized release binaries
+# Build Release binaries
 cargo build --release --workspace --locked
 ```
 
@@ -213,7 +256,7 @@ cargo build --release --workspace --locked
 Requires Python 3.10+, CMake 3.25+, and a C++20 compiler (MSVC 2022+ or GCC 11+):
 
 ```bash
-# Build native module to output directory
+# Build native companion into dist/native
 python scripts/build-native.py --output-dir dist/native
 ```
 

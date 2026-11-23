@@ -48,6 +48,12 @@ fn mechanism(message: impl Into<String>) -> Fault {
     Fault::mechanism(Mechanism::RandomSpawn, message)
 }
 
+fn keep_engine_spawn(slot: i32) {
+    s2sdk::PrintToServer(&Str::from_str(&format!(
+        "[FunRounds] random spawn unavailable slot={slot}; keeping engine spawn and continuing loadout"
+    )));
+}
+
 fn deathmatch_spawn_points() -> Result<Vec<i32>, Fault> {
     let classname = Str::from_str(DEATHMATCH_SPAWN);
     let mut start_from = -1;
@@ -73,7 +79,8 @@ fn deathmatch_spawn_points() -> Result<Vec<i32>, Fault> {
     Ok(points)
 }
 
-/// Move an eligible live player to a engine deathmatch spawn point before loadout application.
+/// Move an eligible live player to an engine deathmatch spawn point before loadout application.
+/// If no point is available, keep the engine spawn without cancelling the loadout.
 /// The caller supplies the action identity guard and must run this on the game thread.
 pub(crate) fn apply(player: crate::game::LivePlayer, mode: &Mode, mut is_current: impl FnMut() -> bool) -> Result<(), Fault> {
     let Some(filter) = mode.random_spawn.filter(|filter| *filter != TeamFilter::None) else {
@@ -101,7 +108,8 @@ pub(crate) fn apply(player: crate::game::LivePlayer, mode: &Mode, mut is_current
     let mut rng = rand::rngs::StdRng::try_from_rng(&mut system_rng)
         .map_err(|error| mechanism(format!("cannot initialize spawn selection randomness: {error}")))?;
     let Some(start_point) = points.choose(&mut rng).copied() else {
-        return Err(mechanism("map has no info_deathmatch_spawn points"));
+        keep_engine_spawn(player.slot);
+        return Ok(());
     };
 
     if !is_current() {
@@ -111,7 +119,11 @@ pub(crate) fn apply(player: crate::game::LivePlayer, mode: &Mode, mut is_current
     if !is_current() {
         return Err(Fault::cancelled("random spawn cancelled after native selection"));
     }
-    if selected == -1 || !s2sdk::IsValidEntHandle(selected) || s2sdk::GetEntityClassname(selected).as_str() != DEATHMATCH_SPAWN {
+    if selected == -1 {
+        keep_engine_spawn(player.slot);
+        return Ok(());
+    }
+    if !s2sdk::IsValidEntHandle(selected) || s2sdk::GetEntityClassname(selected).as_str() != DEATHMATCH_SPAWN {
         return Err(mechanism(format!(
             "native selector returned no valid info_deathmatch_spawn point (handle {selected})"
         )));

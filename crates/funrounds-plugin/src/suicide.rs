@@ -21,7 +21,7 @@ pub fn c4_probe(purchase: bool) -> Probe {
     let mut probe = Probe::default();
     imports!(probe;
         __s2sdk_GetClientWeapons, __s2sdk_GetClientActiveWeapon, __s2sdk_GetEntityOwner, __s2sdk_IsValidEntHandle,
-        __s2sdk_GetEntityClassname, __s2sdk_IsValidEntHandle, __s2sdk_GiveNamedItem,
+        __s2sdk_GetEntityClassname, __s2sdk_GiveNamedItem,
         __s2sdk_RemoveWeapon, __s2sdk_RemoveEntity, __s2sdk_SelectWeapon,
     );
     if purchase {
@@ -40,19 +40,14 @@ pub(crate) fn resource_probe() -> Probe {
 }
 
 pub fn probe(hook_ready: bool) -> Probe {
-    let mut probe = Probe::default();
-    probe.include(resource_probe());
+    let mut probe = blast_probe();
     probe.require(hook_ready, "hook:CanAcquire");
     imports!(probe;
         __s2sdk_GetClientWeapons, __s2sdk_GetClientActiveWeapon, __s2sdk_GetEntityOwner,
         __s2sdk_GiveNamedItem, __s2sdk_RemoveWeapon, __s2sdk_RemoveEntity, __s2sdk_SelectWeapon,
         __s2sdk_DropWeapon, __s2sdk_GetClientSpeed, __s2sdk_SetClientSpeed,
         __s2sdk_GetEntSchema2, __s2sdk_SetEntSchema2, __s2sdk_GetEntSchemaFloat2,
-        __s2sdk_SetEntSchemaFloat2, __s2sdk_GetEntityAbsOrigin,
-    );
-    imports!(probe;
-        __s2sdk_CreateEntityByName, __s2sdk_DispatchSpawn2, __s2sdk_AcceptEntityInput, __s2sdk_TeleportEntity,
-        __s2sdk_EmitSoundToClient, __s2sdk_GetMaxClients, __s2sdk_IsClientInGame, __s2sdk_GetClientTeam,
+        __s2sdk_SetEntSchemaFloat2,
     );
     for (class, field) in [
         ("CCSPlayerController", "m_pInGameMoneyServices"),
@@ -62,6 +57,16 @@ pub fn probe(hook_ready: bool) -> Probe {
     ] {
         probe.schema(class, field);
     }
+    probe
+}
+
+pub(crate) fn blast_probe() -> Probe {
+    let mut probe = resource_probe();
+    imports!(probe;
+        __s2sdk_GetEntityAbsOrigin, __s2sdk_RemoveEntity,
+        __s2sdk_CreateEntityByName, __s2sdk_DispatchSpawn2, __s2sdk_AcceptEntityInput, __s2sdk_TeleportEntity,
+        __s2sdk_EmitSoundToClient, __s2sdk_GetMaxClients, __s2sdk_IsClientInGame, __s2sdk_GetClientTeam,
+    );
     for name in [
         "mp_friendlyfire",
         "ff_damage_reduction_bullets",
@@ -292,9 +297,33 @@ pub struct Suicides {
     pub pending: Vec<Action>,
     pub buying: HashMap<i32, PlayerTask>,
     pub ff: crate::parameters::Parameters,
+    pub(crate) feedback: FeedbackEntities,
+    pub(crate) c4_assigned: bool,
 }
 
 impl Suicides {
+    pub(crate) fn discard_life(&mut self, slot: i32) {
+        self.entries.remove(&slot);
+        self.buying.remove(&slot);
+        self.pending.retain(|action| action.task().player.slot != slot);
+    }
+
+    pub(crate) fn discard_map_state(&mut self) {
+        self.entries.clear();
+        self.pending.clear();
+        self.buying.clear();
+        self.feedback.discard_map_state();
+        self.c4_assigned = false;
+    }
+
+    pub(crate) fn cleanup_complete(&self, round_transition: bool, now: f32) -> bool {
+        self.entries.is_empty()
+            && self.pending.is_empty()
+            && self.buying.is_empty()
+            && self.ff.is_restored()
+            && self.feedback.cleanup_complete(round_transition, now)
+    }
+
     pub fn qualify(&mut self, task: PlayerTask, player: LivePlayer, c4: i32) {
         if self
             .entries
@@ -508,6 +537,13 @@ impl Suicides {
         self.cleanup_entries()
     }
 
+    pub(crate) fn take_due_actions(&mut self, tick: i32) -> impl Iterator<Item = Action> + '_ {
+        self.pending.extract_if(
+            ..,
+            move |action| !matches!(action, Action::Finish { tick: queued, .. } if tick <= *queued),
+        )
+    }
+
     pub fn cancel_round_end_finishes(&mut self) {
         self.pending
             .retain(|action| !matches!(action, Action::Finish { after_round_end: true, .. }));
@@ -566,37 +602,36 @@ pub fn hit(source: LivePlayer, target: LivePlayer, amount: f32, force: bool) -> 
     result.map(|_| ()).map_err(|error| error.to_string())
 }
 
-pub fn spawn_feedback(player: LivePlayer) -> Result<i32, String> {
-    if !s2sdk::IsValidEntHandle(player.pawn_handle) {
-        return Err("自爆反馈玩家实体失效".into());
+pub(crate) fn spawn_feedback_at(source: i32, origin: Vec3, particle: &str) -> Result<i32, String> {
+    if !s2sdk::IsValidEntHandle(source) {
+        return Err("爆炸反馈来源实体失效".into());
     }
     let effect = s2sdk::CreateEntityByName(&Str::from_str("info_particle_system"));
     if !s2sdk::IsValidEntHandle(effect) {
-        return Err("自爆粒子反馈创建失败".into());
+        return Err("爆炸粒子反馈创建失败".into());
     }
-    let origin = s2sdk::GetEntityAbsOrigin(player.pawn_handle);
     let result = (|| {
         let keys = plugify::Arr::from(vec!["effect_name".to_owned()]);
-        let values = plugify::Arr::from(vec![plugify::Any::from(EXPLOSION_PARTICLE)]);
+        let values = plugify::Arr::from(vec![plugify::Any::from(particle)]);
         s2sdk::DispatchSpawn2(effect, &keys, &values);
         if !s2sdk::IsValidEntHandle(effect) {
-            return Err("自爆粒子实体在生成时消失".into());
+            return Err("爆炸粒子实体在生成时消失".into());
         }
         s2sdk::TeleportEntity(effect, &origin, &ZERO, &ZERO);
         if !s2sdk::IsValidEntHandle(effect) || !same_position(s2sdk::GetEntityAbsOrigin(effect), origin) {
-            return Err("自爆粒子爆点定位失败".into());
+            return Err("爆炸粒子爆点定位失败".into());
         }
         s2sdk::AcceptEntityInput(
             effect,
             &Str::from_str("Start"),
-            player.pawn_handle,
-            player.pawn_handle,
+            source,
+            source,
             &plugify::Var::default(),
             s2sdk::FieldType::Auto,
             0,
         );
         if !s2sdk::IsValidEntHandle(effect) {
-            return Err("自爆粒子实体在启动时消失".into());
+            return Err("爆炸粒子实体在启动时消失".into());
         }
         Ok(effect)
     })();
@@ -607,7 +642,9 @@ pub fn spawn_feedback(player: LivePlayer) -> Result<i32, String> {
 }
 
 pub fn precache_feedback_resource() {
-    s2sdk::Precache(&Str::from_str(EXPLOSION_PARTICLE));
+    for particle in [EXPLOSION_PARTICLE, crate::chicken_entities::EXPLOSION_PARTICLE] {
+        s2sdk::Precache(&Str::from_str(particle));
+    }
 }
 
 pub fn play_start_sound(player: LivePlayer) -> Result<(), String> {
@@ -649,6 +686,7 @@ fn same_position(left: Vec3, right: Vec3) -> bool {
 #[derive(Default)]
 pub struct FeedbackEntities {
     active: HashMap<i32, f32>,
+    removals: Vec<i32>,
 }
 
 impl FeedbackEntities {
@@ -660,28 +698,35 @@ impl FeedbackEntities {
         true
     }
 
-    pub fn take_expired(&mut self, now: f32) -> Vec<i32> {
+    pub fn expire(&mut self, now: f32) {
         if !now.is_finite() {
-            return Vec::new();
+            return;
         }
-        let mut expired = Vec::new();
         self.active.retain(|handle, expires_at| {
             if *expires_at <= now {
-                expired.push(*handle);
+                self.removals.push(*handle);
                 false
             } else {
                 true
             }
         });
-        expired
     }
 
-    pub fn take_all(&mut self) -> Vec<i32> {
-        self.active.drain().map(|(handle, _)| handle).collect()
+    pub fn clear(&mut self) {
+        self.removals.extend(self.active.drain().map(|(handle, _)| handle));
+    }
+
+    pub fn take_removals(&mut self) -> Vec<i32> {
+        std::mem::take(&mut self.removals)
     }
 
     pub fn discard_map_state(&mut self) {
         self.active.clear();
+        self.removals.clear();
+    }
+
+    pub fn cleanup_complete(&self, round_transition: bool, now: f32) -> bool {
+        self.removals.is_empty() && (self.is_empty() || (round_transition && self.has_only_unexpired(now)))
     }
 
     pub fn is_empty(&self) -> bool {

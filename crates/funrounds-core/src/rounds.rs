@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Mai Ooizumi
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::{Ammo, Config, Headshots, Mode, RoundRespawn, TeamFilter, WeaponDamage, WinCondition};
+use crate::{Ammo, Config, GrenadeKind, Headshots, Mode, RoundRespawn, TeamFilter, WeaponDamage, WinCondition};
 use rand::{Rng, seq::SliceRandom};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -18,6 +18,7 @@ pub struct Capabilities {
     pub ammo: bool,
     pub taser_charge: bool,
     pub bunnyhop: bool,
+    pub autostrafe: bool,
     pub friction: bool,
     pub time_scale: bool,
     pub ground_acceleration: bool,
@@ -32,6 +33,7 @@ pub struct Capabilities {
     pub grenade_replenishment: bool,
     pub random_loadout: bool,
     pub suicide: bool,
+    pub death_explosion: bool,
     pub random_damage: bool,
     pub kill_loadout: bool,
     pub lifesteal: bool,
@@ -63,6 +65,30 @@ pub struct Capabilities {
     pub health_damage: bool,
     pub health_speed: bool,
     pub health_decay: bool,
+    pub regeneration: bool,
+    pub chicken_aura: bool,
+    pub medical_smoke: bool,
+    pub trampoline: bool,
+    pub explosive_bullets: bool,
+    pub friendly_fire_heal: bool,
+    pub inferno_damage: bool,
+    pub teamkill_punishment: bool,
+    pub hide_all_hud: bool,
+    pub hegrenade_impulse: bool,
+    pub damage_multiplier: bool,
+    pub proximity_he: bool,
+    pub proximity_flash: bool,
+    pub proximity_smoke: bool,
+    pub proximity_molotov: bool,
+    pub proximity_incendiary: bool,
+    pub wall_hang: bool,
+    pub grapple: bool,
+    pub he_guidance: bool,
+    pub dont_stop: bool,
+    pub hot_floor: bool,
+    pub weapon_on_fire: bool,
+    pub long_flash: bool,
+    pub big_head: bool,
     pub self_push: bool,
     pub periodic_speed: bool,
     pub periodic_gravity: bool,
@@ -119,7 +145,7 @@ impl Capabilities {
     }
 
     fn missing_for_stage(self, mode: &Mode, require_ct_bomb_no_defuse: bool) -> Vec<&'static str> {
-        [
+        let mut missing: Vec<_> = [
             (mode.clear_weapons != TeamFilter::None, self.clear_weapons, "clear_weapons"),
             (
                 mode.give_weapons != TeamFilter::None && !mode.weapons.is_empty(),
@@ -141,6 +167,7 @@ impl Capabilities {
             (mode.ammo == Ammo::SingleShot, self.single_shot, "single_shot"),
             (mode.taser_charge.is_some(), self.taser_charge, "taser_charge"),
             (mode.bunnyhop.is_some(), self.bunnyhop, "bunnyhop"),
+            (mode.autostrafe, self.autostrafe, "autostrafe"),
             (mode.friction.is_some(), self.friction, "friction"),
             (mode.time_scale.is_some(), self.time_scale, "time_scale"),
             (mode.ground_acceleration.is_some(), self.ground_acceleration, "ground_acceleration"),
@@ -154,6 +181,7 @@ impl Capabilities {
             (!mode.replenish.is_empty(), self.grenade_replenishment, "grenade_replenishment"),
             (mode.random_loadout, self.random_loadout, "random_loadout"),
             (mode.suicide, self.suicide, "suicide"),
+            (mode.death_explosion.enabled(), self.death_explosion, "death_explosion"),
             (mode.random_damage, self.random_damage, "random_damage"),
             (mode.kill_loadout, self.kill_loadout, "kill_loadout"),
             (mode.lifesteal, self.lifesteal, "lifesteal"),
@@ -202,9 +230,32 @@ impl Capabilities {
             (mode.health_damage, self.health_damage, "health_damage"),
             (mode.health_speed, self.health_speed, "health_speed"),
             (mode.health_decay, self.health_decay, "health_decay"),
+            (mode.regeneration.is_some(), self.regeneration, "regeneration"),
+            (mode.chicken_aura.is_some(), self.chicken_aura, "chicken_aura"),
+            (
+                mode.medical_smoke,
+                self.medical_smoke && mode.teammates_as_enemies != Some(true),
+                "medical_smoke",
+            ),
+            (mode.trampoline, self.trampoline, "trampoline"),
+            (mode.explosive_bullets.is_some(), self.explosive_bullets, "explosive_bullets"),
+            (mode.friendly_fire_heal.is_some(), self.friendly_fire_heal, "friendly_fire_heal"),
+            (mode.inferno_damage.is_some(), self.inferno_damage, "inferno_damage"),
+            (mode.teamkill_limit.is_some(), self.teamkill_punishment, "teamkill_punishment"),
+            (mode.hide_all_hud, self.hide_all_hud, "hide_all_hud"),
+            (mode.hegrenade_impulse.is_some(), self.hegrenade_impulse, "hegrenade_impulse"),
+            (mode.wall_hang, self.wall_hang, "wall_hang"),
+            (mode.grapple.is_some(), self.grapple, "grapple"),
+            (mode.he_guidance.is_some(), self.he_guidance, "he_guidance"),
+            (mode.damage_multiplier != 1.0, self.damage_multiplier, "damage_multiplier"),
+            (mode.dont_stop.is_some(), self.dont_stop, "dont_stop"),
+            (mode.hot_floor.is_some(), self.hot_floor, "hot_floor"),
+            (mode.weapon_on_fire.is_some(), self.weapon_on_fire, "weapon_on_fire"),
+            (mode.long_flash.is_some(), self.long_flash, "long_flash"),
+            (mode.big_head.is_some(), self.big_head, "big_head"),
             (mode.self_push, self.self_push, "self_push"),
-            (mode.periodic_speed, self.periodic_speed, "periodic_speed"),
-            (mode.periodic_gravity, self.periodic_gravity, "periodic_gravity"),
+            (mode.periodic_speed.is_some(), self.periodic_speed, "periodic_speed"),
+            (mode.periodic_gravity.is_some(), self.periodic_gravity, "periodic_gravity"),
             (mode.c4_count.is_some(), self.c4_assignment, "c4_assignment"),
             (mode.c4_buy, self.c4_purchase, "c4_purchase"),
             (mode.round_respawn == RoundRespawn::Dead, self.round_respawn, "round_respawn"),
@@ -236,7 +287,23 @@ impl Capabilities {
         .into_iter()
         .filter(|(required, available, _)| *required && !*available)
         .map(|(_, _, name)| name)
-        .collect()
+        .collect();
+        if let Some(settings) = &mode.proximity_fuse {
+            for grenade in &settings.grenades {
+                let (supported, capability) = match grenade {
+                    GrenadeKind::He => (self.proximity_he, "proximity_he"),
+                    GrenadeKind::Flash => (self.proximity_flash, "proximity_flash"),
+                    GrenadeKind::Smoke => (self.proximity_smoke, "proximity_smoke"),
+                    GrenadeKind::Molotov => (self.proximity_molotov, "proximity_molotov"),
+                    GrenadeKind::Incendiary => (self.proximity_incendiary, "proximity_incendiary"),
+                    GrenadeKind::Decoy => continue,
+                };
+                if !supported && !missing.contains(&capability) {
+                    missing.push(capability);
+                }
+            }
+        }
+        missing
     }
 }
 

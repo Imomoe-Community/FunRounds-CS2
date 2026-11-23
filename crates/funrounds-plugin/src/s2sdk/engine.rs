@@ -118,3 +118,31 @@ pub type _QueryInterface = unsafe extern "C" fn(&Str, &Str) -> usize;
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_QueryInterface: Option<_QueryInterface> = None;
+
+/// Returns the current map name.
+///
+/// # Returns - (string):
+/// A reference to a string where the current map name will be stored.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetCurrentMap() -> Str {
+    unsafe { __s2sdk_GetCurrentMap.expect("GetCurrentMap function was not found")() }
+}
+pub type _GetCurrentMap = unsafe extern "C" fn() -> Str;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetCurrentMap: Option<_GetCurrentMap> = None;
+
+/// Returns the path of the game's directory.
+///
+/// # Returns - (string):
+/// A reference to a string where the game directory path will be stored.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetGameDirectory() -> Str {
+    unsafe { __s2sdk_GetGameDirectory.expect("GetGameDirectory function was not found")() }
+}
+pub type _GetGameDirectory = unsafe extern "C" fn() -> Str;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetGameDirectory: Option<_GetGameDirectory> = None;

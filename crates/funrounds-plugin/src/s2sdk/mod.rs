@@ -18,6 +18,7 @@ pub mod listeners;
 pub mod models;
 pub mod protobuf;
 pub mod schema;
+pub mod trace;
 pub mod transmit;
 
 #[allow(unused_imports)]
@@ -52,5 +53,7 @@ pub use models::*;
 pub use protobuf::*;
 #[allow(unused_imports)]
 pub use schema::*;
+#[allow(unused_imports)]
+pub use trace::*;
 #[allow(unused_imports)]
 pub use transmit::*;

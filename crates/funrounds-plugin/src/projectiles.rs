@@ -20,6 +20,35 @@ const DECOY_THROWER_CLASS: &str = "CBaseGrenade";
 const ELASTICITY_CLASS: &str = "CBaseEntity";
 const ELASTICITY_FIELD: &str = "m_flElasticity";
 const DECOY_THROW_WINDOW: f32 = 0.5;
+// Exact item-definition names; keep knife detection narrower than a weapon_knife_* prefix.
+const KNIFE_FIRE_WEAPON_NAMES: &[&str] = &[
+    "knife",
+    "knife_t",
+    "bayonet",
+    "knife_css",
+    "knife_flip",
+    "knife_gut",
+    "knife_karambit",
+    "knife_m9_bayonet",
+    "knife_tactical",
+    "knife_falchion",
+    "knife_survival_bowie",
+    "knife_butterfly",
+    "knife_push",
+    "knife_cord",
+    "knife_canis",
+    "knife_ursus",
+    "knife_gypsy_jackknife",
+    "knife_outdoor",
+    "knife_stiletto",
+    "knife_widowmaker",
+    "knife_skeleton",
+    "knife_kukri",
+];
+
+pub(crate) fn knife_fire_event(weapon: &str) -> bool {
+    KNIFE_FIRE_WEAPON_NAMES.contains(&weapon.strip_prefix("weapon_").unwrap_or(weapon))
+}
 
 macro_rules! imports_available {
     ($($name:ident),+ $(,)?) => {{
@@ -459,7 +488,7 @@ impl Projectiles {
                 }
                 Ok(())
             }
-            _ => Err("projectile engine action returned an unexpected result".into()),
+            _ => Err(Fault::global("projectile engine action returned an unexpected result")),
         }
     }
 
@@ -489,6 +518,11 @@ impl Projectiles {
                 self.action(ActionKind::Remove { handle })
             })
             .collect()
+    }
+
+    /// Includes retired knives awaiting deletion; they are never native smoke.
+    pub(crate) fn manages_projectile(&self, handle: i32) -> bool {
+        self.tracked.contains_key(&handle) || self.retired.contains(&handle) || self.removing.contains(&handle)
     }
 
     pub fn is_clean(&self) -> bool {
@@ -779,6 +813,10 @@ impl Projectiles {
         let impact = self.synthetic_impact(damage)?;
         if impact.kind == Kind::Knife {
             damage.weapon_class = Some(KNIFE_WEAPON_CLASS.to_owned());
+            // The collision, not the thrower's current weapon or aim, owns this hit.
+            damage.weapon_kind = 2;
+            damage.traced_head = impact.headshot;
+            damage.hit_group = if impact.headshot { 1 } else { 0 };
         }
         Some(impact)
     }
@@ -1313,7 +1351,7 @@ fn set_elasticity(handle: i32, elasticity: f32) -> Result<(), String> {
     Ok(())
 }
 
-fn forward(angles: Vec3) -> Vec3 {
+pub(crate) fn forward(angles: Vec3) -> Vec3 {
     let pitch = angles.x.to_radians();
     let yaw = angles.y.to_radians();
     Vec3 {

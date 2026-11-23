@@ -22,6 +22,7 @@ bool UnhookHealthshot(HealthshotCanUseCallback canUse, HealthshotEffectCallback 
 bool HasChickenFollowBlockSupport() noexcept;
 bool SetChickenFollowBlocking(bool active) noexcept;
 
+
 bool ShutdownInteractions() noexcept;
 
 } // namespace funrounds::native::detail

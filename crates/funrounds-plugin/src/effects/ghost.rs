@@ -18,7 +18,6 @@ use std::{
 
 const IN_ATTACK: u64 = 1 << 0;
 const IN_DUCK: u64 = 1 << 2;
-const IN_JUMP: u64 = 1 << 1;
 const IN_USE: u64 = 1 << 5;
 const IN_ATTACK2: u64 = 1 << 11;
 const IN_RELOAD: u64 = 1 << 13;
@@ -867,10 +866,8 @@ fn frame(buttons: u64, flags: i32, weapon_reloading: bool, velocity: Vec3) -> Gh
         } else {
             f32::NAN
         },
-        bunny_hop: buttons & (IN_DUCK | IN_JUMP) == (IN_DUCK | IN_JUMP)
-            && velocity.x.is_finite()
-            && velocity.y.is_finite()
-            && velocity.x.hypot(velocity.y) >= 1.0,
+        grounded: on_ground,
+        crouching: buttons & IN_DUCK != 0,
         attacking: buttons & (IN_ATTACK | IN_ATTACK2) != 0,
         reloading: buttons & IN_RELOAD != 0 || weapon_reloading,
         using: buttons & IN_USE != 0,

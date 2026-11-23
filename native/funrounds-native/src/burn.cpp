@@ -26,12 +26,15 @@ constexpr char kEntityClass[] = "CBaseEntity";
 constexpr char kPlayerPawnClass[] = "CBasePlayerPawn";
 constexpr char kEntityFlameClass[] = "CEntityFlame";
 constexpr std::string_view kEntityFlameName = "entityflame";
+constexpr char kIgniteVtableSlot[] = "CBaseEntity::IgnitePawn";
+constexpr std::int32_t kMaximumIgniteVtableSlot = 4095;
+
+std::int32_t g_igniteVtableSlot{-1};
+bool g_igniteSchemaReady{};
 
 #if defined(_WIN32)
-constexpr std::size_t kIgniteVtableSlot = 266;
-extern "C" void FunRoundsInvokeIgnite(void* pawn, float duration, std::int32_t mode);
+extern "C" void FunRoundsInvokeIgnite(void* pawn, float duration, std::int32_t mode, std::size_t slot);
 #elif defined(__linux__) && defined(__x86_64__)
-constexpr std::size_t kIgniteVtableSlot = 267;
 #else
 #error "Player ignition is supported only on Windows x64 and Linux x64"
 #endif
@@ -42,11 +45,35 @@ bool RequiredImportsAvailable() noexcept {
            __s2sdk_GetEntSchema2 != nullptr && __s2sdk_GetEntSchemaEnt2 != nullptr &&
            __s2sdk_GetEntityClassname != nullptr && __s2sdk_GetMaxClients != nullptr &&
            __s2sdk_IsClientInGame != nullptr && __s2sdk_PlayerSlotToEntHandle != nullptr &&
-           __s2sdk_GetClientPawn != nullptr && __s2sdk_IsClientAlive != nullptr &&
-           __s2sdk_RemoveEntity != nullptr;
+           __s2sdk_GetClientPawn != nullptr && __s2sdk_RemoveEntity != nullptr &&
+           __s2sdk_GetGameConfigOffset != nullptr;
+}
+
+bool ResolveIgniteVtableSlot() noexcept {
+    if (g_igniteVtableSlot >= 0) {
+        return true;
+    }
+    if (!funrounds::native::detail::EnsureEngine() || !__s2sdk_GetGameConfigOffset) {
+        return false;
+    }
+
+    try {
+        const auto slot = s2sdk::GetGameConfigOffset(funrounds::native::detail::GameConfig(), kIgniteVtableSlot);
+        if (slot < 0 || slot > kMaximumIgniteVtableSlot) {
+            return false;
+        }
+        g_igniteVtableSlot = slot;
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 bool HasRequiredSchema() {
+    if (g_igniteSchemaReady) {
+        return true;
+    }
+
     using funrounds::native::detail::SchemaField;
     using funrounds::native::detail::ServerSchema;
 
@@ -82,9 +109,10 @@ bool HasRequiredSchema() {
         return false;
     };
 
-    return hasField(kEntityClass, "m_iHealth") && hasField(kEntityClass, "m_lifeState") &&
+    g_igniteSchemaReady = hasField(kEntityClass, "m_iHealth") && hasField(kEntityClass, "m_lifeState") &&
            isHandleField(kEntityClass, "m_hEffectEntity") && isHandleField(kPlayerPawnClass, "m_hController") &&
            isHandleField(kEntityFlameClass, "m_hEntAttached");
+    return g_igniteSchemaReady;
 }
 
 bool IsEntityClass(std::int32_t handle, std::string_view expected) {
@@ -119,7 +147,7 @@ bool IsCurrentLivePlayerPawn(std::int32_t pawnHandle,
     const auto maxClients = s2sdk::GetMaxClients();
     for (std::int32_t slot = 0; slot < maxClients; ++slot) {
         if (s2sdk::IsClientInGame(slot) && s2sdk::PlayerSlotToEntHandle(slot) == controllerHandle &&
-            s2sdk::GetClientPawn(slot) == expectedPawn && s2sdk::IsClientAlive(slot)) {
+            s2sdk::GetClientPawn(slot) == expectedPawn) {
             return true;
         }
     }
@@ -155,22 +183,23 @@ void RemoveExactNewFlame(void* pawn, std::int32_t pawnHandle, std::int32_t effec
 
 void InvokeIgnite(void* pawn, float duration) {
     auto** const vtable = *reinterpret_cast<void***>(pawn);
-    if (vtable == nullptr || vtable[kIgniteVtableSlot] == nullptr) {
+    if (vtable == nullptr || g_igniteVtableSlot < 0 || vtable[g_igniteVtableSlot] == nullptr) {
         return;
     }
 #if defined(_WIN32)
-    FunRoundsInvokeIgnite(pawn, duration, kIgniteMode);
+    FunRoundsInvokeIgnite(pawn, duration, kIgniteMode, static_cast<std::size_t>(g_igniteVtableSlot));
 #else
     using IgniteMethod = void (*)(void*, std::int32_t, void*, __m128, float, double, float);
     constexpr double kEngineIgniteSentinel = 1.4044474254567505e306;
-    const auto method = reinterpret_cast<IgniteMethod>(vtable[kIgniteVtableSlot]);
+    const auto method = reinterpret_cast<IgniteMethod>(vtable[g_igniteVtableSlot]);
     method(pawn, kIgniteMode, nullptr, _mm_set_ss(duration), 0.0F,
            kEngineIgniteSentinel, std::numeric_limits<float>::max());
 #endif
 }
 
 std::int32_t TryIgnitePlayerImpl(std::int32_t pawnHandle, float duration) {
-    if (!RequiredImportsAvailable() || !HasRequiredSchema() || !std::isfinite(duration) || duration <= 0.0F ||
+    if (!RequiredImportsAvailable() || !HasRequiredSchema() || !ResolveIgniteVtableSlot() ||
+        !std::isfinite(duration) || duration <= 0.0F ||
         pawnHandle == kInvalidHandle || !s2sdk::IsValidEntHandle(pawnHandle) ||
         !s2sdk::IsEntityPlayerPawn(pawnHandle)) {
         return kInvalidHandle;
@@ -219,6 +248,11 @@ std::int32_t TryIgnitePlayerImpl(std::int32_t pawnHandle, float duration) {
 }
 
 } // namespace
+
+void funrounds::native::detail::ResetBurnMetadata() noexcept {
+    g_igniteSchemaReady = false;
+    g_igniteVtableSlot = -1;
+}
 
 extern "C" PLUGIN_API std::int32_t TryIgnitePlayer(std::int32_t pawnHandle, float duration) {
     try {

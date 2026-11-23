@@ -8,6 +8,8 @@ use funrounds_core::{
 };
 use plugify::{Str, Vec3};
 
+pub(crate) const EXPLOSION_PARTICLE: &str = "particles/explosions_fx/explosion_hegrenade.vpcf";
+
 const BASE_ENTITY: &str = "CBaseEntity";
 const EXPLOSION: &str = "CEnvExplosion";
 const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
@@ -34,8 +36,11 @@ pub(crate) fn available() -> bool {
     use crate::s2sdk;
 
     let imports = unsafe {
-        std::ptr::addr_of!(s2sdk::__s2sdk_CreateEntityByName).read().is_some()
+        std::ptr::addr_of!(s2sdk::__s2sdk_FindEntityByClassname).read().is_some()
+            && std::ptr::addr_of!(s2sdk::__s2sdk_GetEntityClassname).read().is_some()
+            && std::ptr::addr_of!(s2sdk::__s2sdk_CreateEntityByName).read().is_some()
             && std::ptr::addr_of!(s2sdk::__s2sdk_DispatchSpawn).read().is_some()
+            && std::ptr::addr_of!(s2sdk::__s2sdk_DispatchSpawn2).read().is_some()
             && std::ptr::addr_of!(s2sdk::__s2sdk_RemoveEntity).read().is_some()
             && std::ptr::addr_of!(s2sdk::__s2sdk_IsValidEntHandle).read().is_some()
             && std::ptr::addr_of!(s2sdk::__s2sdk_EntHandleToEntPointer).read().is_some()
@@ -58,6 +63,7 @@ pub(crate) fn available() -> bool {
             && std::ptr::addr_of!(s2sdk::__s2sdk_GetClientTeam).read().is_some()
     };
     imports
+        && crate::suicide::resource_probe().available()
         && ["m_iHealth", "m_bTakesDamage", "m_lifeState"]
             .into_iter()
             .all(|field| s2sdk::GetSchemaOffset(&Str::from_str(BASE_ENTITY), &Str::from_str(field)) >= 0)
@@ -83,7 +89,7 @@ pub(crate) fn spawn(origin: Vec3) -> Result<i32, String> {
         if pointer == 0 || s2sdk::EntPointerToEntHandle(pointer) != handle {
             return Err("chicken pointer unavailable after spawn".into());
         }
-        // The supported build spawns chickens invulnerable. Keep the normal engine death path.
+        // Ensure our newly created ordinary chicken uses the normal damage/death path.
         s2sdk::SetEntSchema2(pointer, &Str::from_str(BASE_ENTITY), &Str::from_str("m_bTakesDamage"), 1, true, 0);
         if s2sdk::GetEntSchema2(pointer, &Str::from_str(BASE_ENTITY), &Str::from_str("m_bTakesDamage"), 0) != 1
             || s2sdk::GetEntSchema2(pointer, &Str::from_str(BASE_ENTITY), &Str::from_str("m_iHealth"), 0) <= 0
@@ -133,7 +139,8 @@ pub(crate) fn position(handle: i32) -> Option<Vec3> {
     Some(crate::s2sdk::GetEntityAbsOrigin(handle))
 }
 
-pub(crate) fn prepare_blast(source: i32, attacker: Option<i32>, origin: Vec3, config: ChickenBlastConfig) -> Result<(i32, i32), String> {
+/// Shared native explosion setup; behavior registration remains consumer-owned.
+pub(crate) fn prepare_explosion(source: i32, attacker: Option<i32>, origin: Vec3, config: ChickenBlastConfig) -> Result<(i32, i32), String> {
     use crate::s2sdk;
 
     if !s2sdk::IsValidEntHandle(source) {
@@ -227,6 +234,22 @@ fn inflictor_matches(effect: usize, source: i32) -> bool {
     crate::s2sdk::GetEntSchemaEnt2(effect, &Str::from_str(EXPLOSION), &Str::from_str("m_hInflictor"), 0) == source
 }
 
+pub(crate) fn detonate_blast(effect: i32, chicken: i32, attacker: i32) {
+    // Dead or consumed chickens still have a solid hull, which blocks their own
+    // blast traces. Use the inherited CDynamicProp input to update physics while
+    // retaining the chicken handle as the inflictor until damage has completed.
+    crate::s2sdk::AcceptEntityInput(
+        chicken,
+        &Str::from_str("DisableCollision"),
+        chicken,
+        chicken,
+        &plugify::Var::default(),
+        crate::s2sdk::FieldType::Auto,
+        0,
+    );
+    detonate(effect, attacker);
+}
+
 pub(crate) fn detonate(effect: i32, source: i32) {
     crate::s2sdk::AcceptEntityInput(
         effect,
@@ -273,6 +296,7 @@ fn same_position(left: Vec3, right: Vec3) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Chicken {
+    created: bool,
     round: RoundGeneration,
     dead: bool,
     blast_pending: bool,
@@ -280,8 +304,8 @@ struct Chicken {
     killer_weapon: Option<KillWeaponSource>,
 }
 
-/// Full-handle ownership for ordinary chickens and temporary chicken blasts.
-/// Map entities are never inferred to be ours from classname alone.
+/// Full-handle behavior registration, separate from creation ownership.
+/// External chickens participate without granting lifecycle deletion rights.
 #[derive(Default)]
 pub(crate) struct Chickens {
     chickens: HashMap<i32, Chicken>,
@@ -290,12 +314,21 @@ pub(crate) struct Chickens {
 
 impl Chickens {
     pub(crate) fn track(&mut self, handle: i32, round: RoundGeneration) -> bool {
+        self.register(handle, round, true)
+    }
+
+    pub(crate) fn discover(&mut self, handle: i32, round: RoundGeneration) -> bool {
+        self.register(handle, round, false)
+    }
+
+    fn register(&mut self, handle: i32, round: RoundGeneration, created: bool) -> bool {
         if self.chickens.contains_key(&handle) || self.explosions.contains_key(&handle) {
             return false;
         }
         self.chickens.insert(
             handle,
             Chicken {
+                created,
                 round,
                 dead: false,
                 blast_pending: false,
@@ -306,11 +339,18 @@ impl Chickens {
         true
     }
 
-    pub(crate) fn owns(&self, handle: i32, round: RoundGeneration) -> bool {
+    pub(crate) fn contains(&self, handle: i32, round: RoundGeneration) -> bool {
         self.chickens.get(&handle).is_some_and(|chicken| chicken.round == round)
     }
 
     pub(crate) fn owned_handles(&self, round: RoundGeneration) -> Vec<i32> {
+        self.active_handles(round)
+            .into_iter()
+            .filter(|handle| self.chickens[handle].created)
+            .collect()
+    }
+
+    pub(crate) fn active_handles(&self, round: RoundGeneration) -> Vec<i32> {
         let mut handles = self
             .chickens
             .iter()
@@ -320,17 +360,16 @@ impl Chickens {
         handles
     }
 
-    /// Keep living ordinary chickens across a round generation change. Dead or stale
-    /// handles are returned for removal; temporary blast ownership is round-scoped.
+    /// Retag living registrations; only plugin-created stale entities may be removed.
     pub(crate) fn advance_round(&mut self, round: RoundGeneration, mut alive: impl FnMut(i32) -> bool) -> Vec<i32> {
-        let mut stale = self
-            .chickens
-            .iter()
-            .filter_map(|(&handle, chicken)| (chicken.dead || !alive(handle)).then_some(handle))
-            .collect::<Vec<_>>();
-        for handle in &stale {
-            self.chickens.remove(handle);
-        }
+        let mut stale = Vec::new();
+        self.chickens.retain(|&handle, chicken| {
+            let keep = !chicken.dead && alive(handle);
+            if !keep && chicken.created {
+                stale.push(handle);
+            }
+            keep
+        });
         for chicken in self.chickens.values_mut() {
             chicken.round = round;
             chicken.dead = false;
@@ -341,7 +380,6 @@ impl Chickens {
         stale.extend(self.explosions.keys().copied());
         self.explosions.clear();
         stale.sort_unstable();
-        stale.dedup();
         stale
     }
 
@@ -484,7 +522,7 @@ impl Chickens {
     }
 
     pub(crate) fn damage_blocked(&self, damage: EntityDamageSource, round: RoundGeneration, chain: ChickenDamageChainConfig) -> bool {
-        if !self.owns(damage.victim, round) {
+        if !self.contains(damage.victim, round) {
             return false;
         }
         let cause = if damage.damage_type & (1 << 3) != 0 {
@@ -508,12 +546,20 @@ impl Chickens {
         self.explosions.clear();
     }
 
+    pub(crate) fn registered_handles(&self) -> Vec<i32> {
+        self.chickens.keys().copied().collect()
+    }
+
     pub(crate) fn clear(&mut self) -> Vec<i32> {
-        let mut handles = self.chickens.keys().chain(self.explosions.keys()).copied().collect::<Vec<_>>();
+        let mut handles = self
+            .chickens
+            .iter()
+            .filter_map(|(&handle, chicken)| chicken.created.then_some(handle))
+            .chain(self.explosions.keys().copied())
+            .collect::<Vec<_>>();
         self.chickens.clear();
         self.explosions.clear();
         handles.sort_unstable();
-        handles.dedup();
         handles
     }
 

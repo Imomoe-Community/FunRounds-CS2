@@ -23,6 +23,7 @@ void ShutdownEngine() noexcept;
 s2sdk::ConfigId GameConfig() noexcept;
 ISchemaSystemTypeScope* ServerSchema() noexcept;
 bool ResolveSchemaField(const char* className, const char* fieldName, std::size_t expectedSize, SchemaField& field) noexcept;
+bool ResolvePlayerPawnComponentChain(SchemaField& field) noexcept;
 
 void* EntityFromHandle(std::int32_t handle) noexcept;
 std::int32_t HandleFromEntity(void* entity) noexcept;

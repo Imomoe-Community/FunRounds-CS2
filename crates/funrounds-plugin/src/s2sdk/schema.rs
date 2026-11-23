@@ -212,3 +212,44 @@ pub type _NetworkStateChanged = unsafe extern "C" fn(i32, &Str, &Str);
 #[allow(dead_code, non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut __s2sdk_NetworkStateChanged: Option<_NetworkStateChanged> = None;
+
+/// Retrieves a color value from an entity's schema.
+///
+/// # Arguments
+/// * `entityHandle` - (int32): The handle of the entity from which the value is to be retrieved.
+/// * `className` - (string): The name of the class.
+/// * `memberName` - (string): The name of the schema member.
+/// * `element` - (int32): Element # (starting from 0) if schema is an array.
+///
+/// # Returns - (vec4):
+/// A color value at the given schema offset.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn GetEntSchemaColor(entityHandle: i32, className: &Str, memberName: &Str, element: i32) -> Vec4 {
+    unsafe { __s2sdk_GetEntSchemaColor.expect("GetEntSchemaColor function was not found")(entityHandle, className, memberName, element) }
+}
+pub type _GetEntSchemaColor = unsafe extern "C" fn(i32, &Str, &Str, i32) -> Vec4;
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_GetEntSchemaColor: Option<_GetEntSchemaColor> = None;
+
+/// Sets a color value in an entity's schema.
+///
+/// # Arguments
+/// * `entityHandle` - (int32): The handle of the entity from which the value is to be retrieved.
+/// * `className` - (string): The name of the class.
+/// * `memberName` - (string): The name of the schema member.
+/// * `value` - (vec4): The color value to set.
+/// * `changeState` - (bool): If true, change will be sent over the network.
+/// * `element` - (int32): Element # (starting from 0) if schema is an array.
+#[track_caller]
+#[allow(dead_code, non_snake_case)]
+pub fn SetEntSchemaColor(entityHandle: i32, className: &Str, memberName: &Str, value: &Vec4, changeState: bool, element: i32) {
+    unsafe {
+        __s2sdk_SetEntSchemaColor.expect("SetEntSchemaColor function was not found")(entityHandle, className, memberName, value, changeState, element)
+    }
+}
+pub type _SetEntSchemaColor = unsafe extern "C" fn(i32, &Str, &Str, &Vec4, bool, i32);
+#[allow(dead_code, non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut __s2sdk_SetEntSchemaColor: Option<_SetEntSchemaColor> = None;

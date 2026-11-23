@@ -2,6 +2,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::PlayerTask;
+use serde::Deserialize;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct DeathExplosion {
+    pub t: u8,
+    pub ct: u8,
+}
+
+impl DeathExplosion {
+    pub fn enabled(self) -> bool {
+        self.t != 0 || self.ct != 0
+    }
+}
 
 const FULL_DAMAGE_RADIUS: f32 = 400.0;
 const FALLOFF_BASE: f32 = 1000.0;

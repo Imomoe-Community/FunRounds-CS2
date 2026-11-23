@@ -59,53 +59,6 @@ void* CanAcquireAddress() noexcept {
     return s2sdk::GetGameConfigSignature(GameConfig(), kCanAcquireSignature);
 }
 
-bool ResolveItemServicesChain() noexcept {
-    auto* schema = ServerSchema();
-    if (!schema) {
-        return false;
-    }
-    auto* componentClass = schema->FindDeclaredClass("CPlayerPawnComponent").Get();
-    if (!componentClass || componentClass->m_nSize < 0 ||
-        (componentClass->m_nFieldCount != 0 && !componentClass->m_pFields)) {
-        return false;
-    }
-
-    for (std::uint16_t index = 0; index < componentClass->m_nFieldCount; ++index) {
-        const auto& field = componentClass->m_pFields[index];
-        if (!field.m_pszName || std::strcmp(field.m_pszName, "__m_pChainEntity") != 0) {
-            continue;
-        }
-        if (!field.m_pType || field.m_pType->m_eTypeCategory != SCHEMA_TYPE_DECLARED_CLASS ||
-            field.m_nSingleInheritanceOffset < 0) {
-            return false;
-        }
-
-        const auto* declared = static_cast<const CSchemaType_DeclaredClass*>(field.m_pType);
-        const auto* chainClass = declared->m_pClassInfo;
-        if (!chainClass || !chainClass->m_pszName ||
-            std::strcmp(chainClass->m_pszName, "CNetworkVarChainer") != 0 ||
-            chainClass->m_nSize != static_cast<int>(sizeof(CNetworkVarChainer))) {
-            return false;
-        }
-
-        int fieldSize = 0;
-        std::uint8_t alignment = 0;
-        if (!field.m_pType->GetSizeAndAlignment(fieldSize, alignment) ||
-            fieldSize != static_cast<int>(sizeof(CNetworkVarChainer))) {
-            return false;
-        }
-
-        const auto offset = static_cast<std::size_t>(field.m_nSingleInheritanceOffset);
-        const auto objectSize = static_cast<std::size_t>(componentClass->m_nSize);
-        if (offset > objectSize || sizeof(CNetworkVarChainer) > objectSize - offset) {
-            return false;
-        }
-        g_schema.itemServicesChain = {field.m_nSingleInheritanceOffset, sizeof(CNetworkVarChainer)};
-        return true;
-    }
-    return false;
-}
-
 bool HasInspectSchema() noexcept {
     if (g_schema.ready) {
         return true;
@@ -115,7 +68,7 @@ bool HasInspectSchema() noexcept {
         !ResolveSchemaField("CPlayer_MovementServices", "m_nButtons", 0, g_schema.movementButtons) ||
         !ResolveSchemaField("CInButtonState", "m_pButtonStates", sizeof(std::uint64_t[3]), g_schema.buttonStates) ||
         !ResolveSchemaField("CBaseEntity", "m_lifeState", sizeof(std::uint8_t), g_schema.lifeState) ||
-        !ResolveItemServicesChain() ||
+        !ResolvePlayerPawnComponentChain(g_schema.itemServicesChain) ||
         !ResolveSchemaField("CBasePlayerPawn", "m_hController", sizeof(std::uint32_t), g_schema.pawnController)) {
         return false;
     }
@@ -160,7 +113,7 @@ std::int32_t PawnForItemServices(void* services) noexcept {
     return pawn && IsPlayerPawn(handle) && HandleFromEntity(pawn) == handle ? handle : -1;
 }
 
-bool RemoveHook() noexcept {
+bool RemoveHook(bool unhookIfEmpty = true) noexcept {
     g_hook.callback = nullptr;
     if (!g_hook.address) {
         g_hook = {};
@@ -180,6 +133,14 @@ bool RemoveHook() noexcept {
         }
         if (polyhook::IsCallbackRegistered(current, polyhook::CallbackType::Pre, CanAcquirePre)) {
             return false;
+        }
+        if (polyhook::AreCallbacksRegistered(current)) {
+            g_hook = {};
+            return true;
+        }
+        if (!unhookIfEmpty) {
+            g_hook = {};
+            return true;
         }
         (void)polyhook::UnhookDetour(g_hook.address);
         if (polyhook::FindDetour(g_hook.address)) {
@@ -234,7 +195,8 @@ bool HasSuicideSupport() {
     const auto address = CanAcquireAddress();
     const bool inspectSchemaReady = HasInspectSchema();
     const bool polyhookReady = __polyhook_HookDetour && __polyhook_FindDetour && __polyhook_AddCallback &&
-                               __polyhook_IsCallbackRegistered && __polyhook_RemoveCallback &&
+                               __polyhook_IsCallbackRegistered && __polyhook_AreCallbacksRegistered &&
+                               __polyhook_RemoveCallback &&
                                __polyhook_UnhookDetour;
     return address && inspectSchemaReady && polyhookReady;
 }
@@ -255,66 +217,76 @@ std::int32_t LookAtWeaponButtonState(std::int32_t pawnHandle) {
     return (buttons & kLookAtWeaponButton) != 0 ? 1 : 0;
 }
 
-bool HookPlayerCanAcquire(PlayerCanAcquireCallback callback) {
-    if (!callback) {
-        return false;
-    }
-    if (!HasSuicideSupport()) {
+bool InstallCanAcquireHookAt(void* address, PlayerCanAcquireCallback callback) {
+    if (!callback || !address) {
         return false;
     }
     if (g_hook.owner && g_hook.owner != callback) {
         return false;
     }
-    const auto address = CanAcquireAddress();
-    if (!address || (g_hook.address && g_hook.address != address)) {
+    if (g_hook.address && g_hook.address != address) {
         return false;
     }
     if (g_hook.address) {
-        if (polyhook::FindDetour(address) != g_hook.handle) {
-            return false;
-        }
-        try {
-            if (!polyhook::IsCallbackRegistered(g_hook.handle, polyhook::CallbackType::Pre, CanAcquirePre)) {
-                (void)polyhook::AddCallback(g_hook.handle, polyhook::CallbackType::Pre, CanAcquirePre);
-            }
-            if (!polyhook::IsCallbackRegistered(g_hook.handle, polyhook::CallbackType::Pre, CanAcquirePre)) {
+        const auto current = polyhook::FindDetour(address);
+        if (!current) {
+            g_hook = {};
+        } else if (current != g_hook.handle) {
+            // This address has a known typed ABI, so a replacement detour at
+            // the same entry point can be joined through its current handle.
+            g_hook = {};
+        } else {
+            try {
+                if (!polyhook::IsCallbackRegistered(g_hook.handle, polyhook::CallbackType::Pre, CanAcquirePre)) {
+                    (void)polyhook::AddCallback(g_hook.handle, polyhook::CallbackType::Pre, CanAcquirePre);
+                }
+                if (!polyhook::IsCallbackRegistered(g_hook.handle, polyhook::CallbackType::Pre, CanAcquirePre)) {
+                    return false;
+                }
+                g_hook.owner = callback;
+                g_hook.callback = callback;
+                return true;
+            } catch (...) {
                 return false;
             }
-            g_hook.owner = callback;
-            g_hook.callback = callback;
-            return true;
-        } catch (...) {
-            return false;
         }
     }
-    if (polyhook::FindDetour(address)) {
-        return false;
-    }
-
     constexpr std::array argumentKinds{polyhook::DataType::Pointer,
                                        polyhook::DataType::Pointer,
                                        polyhook::DataType::Int32,
                                        polyhook::DataType::Pointer};
     const plg::vector<polyhook::DataType> argumentTypes(argumentKinds.begin(), argumentKinds.end());
-    const auto hook = polyhook::HookDetour(address, polyhook::DataType::Int8,
-                                           argumentTypes, -1,
-                                           kCanAcquireHookName);
+    auto hook = polyhook::FindDetour(address);
+    const bool createdDetour = hook == nullptr;
+    if (!hook) {
+        hook = polyhook::HookDetour(address, polyhook::DataType::Int8,
+                                    argumentTypes, -1,
+                                    kCanAcquireHookName);
+    }
     if (!hook) {
         return false;
     }
-    g_hook = {address, hook, callback, nullptr};
+    g_hook = {address, hook, nullptr, nullptr};
     try {
         (void)polyhook::AddCallback(hook, polyhook::CallbackType::Pre, CanAcquirePre);
         if (!polyhook::IsCallbackRegistered(hook, polyhook::CallbackType::Pre, CanAcquirePre)) {
-            (void)RemoveHook();
+            (void)RemoveHook(createdDetour);
             return false;
         }
+        g_hook.owner = callback;
         g_hook.callback = callback;
         return true;
     } catch (...) {
-        (void)RemoveHook();
+        (void)RemoveHook(createdDetour);
         return false;
     }
+}
+
+bool HookPlayerCanAcquire(PlayerCanAcquireCallback callback) {
+    if (!callback || !HasSuicideSupport()) {
+        return false;
+    }
+    return InstallCanAcquireHookAt(CanAcquireAddress(), callback);
 }
 
 bool UnhookPlayerCanAcquire(PlayerCanAcquireCallback callback) {
@@ -325,7 +297,11 @@ bool UnhookPlayerCanAcquire(PlayerCanAcquireCallback callback) {
 }
 
 bool ShutdownSuicide() noexcept {
-    return RemoveHook();
+    if (!RemoveHook()) {
+        return false;
+    }
+    g_schema = {};
+    return true;
 }
 
 } // namespace funrounds::native::detail

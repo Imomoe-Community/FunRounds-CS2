@@ -62,6 +62,7 @@ struct Life {
     flame: Option<i32>,
     ignite_pending: bool,
     waiting_external_effect: bool,
+    damage_sources: [Option<(f64, funrounds_core::AfterburnSettings)>; 2],
 }
 
 #[derive(Default)]
@@ -86,7 +87,7 @@ impl Afterburns {
             return false;
         }
         match self.lives.get_mut(&player.slot) {
-            Some(life) if life.task == task && life.player == player => life.deadline = deadline,
+            Some(life) if life.task == task && life.player == player => life.deadline = life.deadline.max(deadline),
             _ => {
                 self.clear_slot(player.slot);
                 self.lives.insert(
@@ -98,6 +99,7 @@ impl Afterburns {
                         flame: None,
                         ignite_pending: false,
                         waiting_external_effect: false,
+                        damage_sources: [None, None],
                     },
                 );
             }
@@ -105,8 +107,48 @@ impl Afterburns {
         true
     }
 
+    pub fn refresh_source(
+        &mut self,
+        task: PlayerTask,
+        player: LivePlayer,
+        now: f64,
+        settings: funrounds_core::AfterburnSettings,
+        hot_floor: bool,
+    ) -> bool {
+        if !self.refresh(task, player, now, settings.duration_seconds) {
+            return false;
+        }
+        let life = self.matching_life_mut(task, player).expect("just refreshed life");
+        life.damage_sources[usize::from(hot_floor)] = Some((now + f64::from(settings.duration_seconds), settings));
+        true
+    }
+
+    pub fn tick_damage(&self, task: PlayerTask, player: LivePlayer, now: f64, health: i32) -> Option<f32> {
+        self.lives
+            .get(&player.slot)
+            .filter(|life| life.task == task && life.player == player)?
+            .damage_sources
+            .iter()
+            .flatten()
+            .filter(|(deadline, _)| *deadline > now)
+            .map(|(_, settings)| settings.tick_damage(health))
+            .reduce(f32::max)
+    }
+
+    pub fn hot_floor_active(&self, task: PlayerTask, player: LivePlayer, now: f64) -> bool {
+        self.lives
+            .get(&player.slot)
+            .is_some_and(|life| life.task == task && life.player == player && life.damage_sources[1].is_some_and(|(deadline, _)| deadline > now))
+    }
+
     pub fn entries(&self) -> Vec<(PlayerTask, LivePlayer, f64)> {
         self.lives.values().map(|life| (life.task, life.player, life.deadline)).collect()
+    }
+
+    pub fn is_active(&self, task: PlayerTask, player: LivePlayer, now: f64) -> bool {
+        self.lives
+            .get(&player.slot)
+            .is_some_and(|life| life.task == task && life.player == player && life.deadline > now)
     }
 
     pub fn queue_ignite(&mut self, task: PlayerTask, player: LivePlayer) -> bool {

@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/untrustedmodders/plugify/refs/heads/main/schemas/plugin.schema.json",
-  "version": "3.0.6",
+  "version": "3.3.1",
   "name": "s2sdk",
   "description": "Provides functionality for other plugins from Source 2 engine",
   "author": "untrustedmodders",
@@ -3494,6 +3494,382 @@
       "retType": {
         "type": "void"
       }
+    },
+    {
+      "name": "GetClientKills",
+      "group": "Clients",
+      "description": "Retrieves the number of kills for a client.",
+      "funcName": "GetClientKills",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The number of kills the client has, or 0 if the player slot is invalid."
+      }
+    },
+    {
+      "name": "GetClientDeaths",
+      "group": "Clients",
+      "description": "Retrieves the number of deaths for a client.",
+      "funcName": "GetClientDeaths",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        }
+      ],
+      "retType": {
+        "type": "int32",
+        "description": "The number of deaths the client has, or 0 if the player slot is invalid."
+      }
+    },
+    {
+      "name": "GetEventFloat",
+      "group": "Events",
+      "description": "Retrieves the float value of a game event's key.",
+      "funcName": "GetEventFloat",
+      "paramTypes": [
+        {
+          "name": "event",
+          "type": "ptr64",
+          "ref": false,
+          "description": "A pointer to the IGameEvent object containing event data."
+        },
+        {
+          "name": "key",
+          "type": "string",
+          "ref": false,
+          "description": "The key for which to retrieve the float value."
+        }
+      ],
+      "retType": {
+        "type": "float",
+        "description": "The float value associated with the key."
+      }
+    },
+    {
+      "name": "CreateConVarBool",
+      "group": "Cvars",
+      "description": "Creates a new boolean console variable.",
+      "funcName": "CreateConVarBool",
+      "paramTypes": [
+        {
+          "name": "name",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the console variable."
+        },
+        {
+          "name": "defaultValue",
+          "type": "bool",
+          "ref": false,
+          "description": "The default value for the console variable."
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "ref": false,
+          "description": "A brief description of the console variable."
+        },
+        {
+          "name": "flags",
+          "type": "int64",
+          "ref": false,
+          "description": "Flags that define the behavior of the console variable.",
+          "enum": "ConVarFlag"
+        },
+        {
+          "name": "hasMin",
+          "type": "bool",
+          "ref": false,
+          "description": "Indicates if a minimum value is provided."
+        },
+        {
+          "name": "min",
+          "type": "bool",
+          "ref": false,
+          "description": "The minimum value if hasMin is true."
+        },
+        {
+          "name": "hasMax",
+          "type": "bool",
+          "ref": false,
+          "description": "Indicates if a maximum value is provided."
+        },
+        {
+          "name": "max",
+          "type": "bool",
+          "ref": false,
+          "description": "The maximum value if hasMax is true."
+        }
+      ],
+      "retType": {
+        "type": "uint64",
+        "description": "A handle to the created console variable data."
+      }
+    },
+    {
+      "name": "ChangeClientTeam",
+      "group": "Clients",
+      "description": "Changes the player's team.",
+      "funcName": "ChangeClientTeam",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the player's slot."
+        },
+        {
+          "name": "team",
+          "type": "int32",
+          "ref": false,
+          "description": "The team index to change the client to.",
+          "enum": "CSTeam"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "FakeClientCommand",
+      "group": "Commands",
+      "description": "Executes a client command on the server without network communication.",
+      "funcName": "FakeClientCommand",
+      "paramTypes": [
+        {
+          "name": "playerSlot",
+          "type": "int32",
+          "ref": false,
+          "description": "The index of the client."
+        },
+        {
+          "name": "command",
+          "type": "string",
+          "ref": false,
+          "description": "The command to be executed by the client."
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetCurrentMap",
+      "group": "Engine",
+      "description": "Returns the current map name.",
+      "funcName": "GetCurrentMap",
+      "paramTypes": [],
+      "retType": {
+        "type": "string",
+        "description": "A reference to a string where the current map name will be stored."
+      }
+    },
+    {
+      "name": "GetGameDirectory",
+      "group": "Engine",
+      "description": "Returns the path of the game's directory.",
+      "funcName": "GetGameDirectory",
+      "paramTypes": [],
+      "retType": {
+        "type": "string",
+        "description": "A reference to a string where the game directory path will be stored."
+      }
+    },
+    {
+      "name": "TraceLine",
+      "group": "Trace",
+      "description": "Performs a line trace between two points.",
+      "funcName": "TraceLine",
+      "paramTypes": [
+        {
+          "name": "startPos",
+          "type": "vec3",
+          "ref": false,
+          "description": "Trace start position"
+        },
+        {
+          "name": "endPos",
+          "type": "vec3",
+          "ref": false,
+          "description": "Trace end position"
+        },
+        {
+          "name": "mask",
+          "type": "int32",
+          "ref": false,
+          "description": "Trace mask"
+        },
+        {
+          "name": "ignoreHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "Entity handle to ignore during trace"
+        },
+        {
+          "name": "outPos",
+          "type": "vec3",
+          "ref": true,
+          "description": "Output: position of impact"
+        },
+        {
+          "name": "outFraction",
+          "type": "double",
+          "ref": true,
+          "description": "Output: fraction of trace completed"
+        },
+        {
+          "name": "outHit",
+          "type": "bool",
+          "ref": true,
+          "description": "Output: whether a hit occurred"
+        },
+        {
+          "name": "outEntHit",
+          "type": "int32",
+          "ref": true,
+          "description": "Output: handle of entity hit"
+        },
+        {
+          "name": "outStartSolid",
+          "type": "bool",
+          "ref": true,
+          "description": "Output: whether trace started inside solid"
+        }
+      ],
+      "retType": {
+        "type": "bool",
+        "description": "True if trace hit something, false otherwise"
+      }
+    },
+    {
+      "name": "OnEntitySpawned_Register",
+      "group": "Listeners",
+      "description": "Register callback to event.",
+      "funcName": "OnEntitySpawned_Register",
+      "paramTypes": [
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "Function callback.",
+          "prototype": "OnEntitySpawnedCallback"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "OnEntitySpawned_Unregister",
+      "group": "Listeners",
+      "description": "Unregister callback to event.",
+      "funcName": "OnEntitySpawned_Unregister",
+      "paramTypes": [
+        {
+          "name": "callback",
+          "type": "function",
+          "ref": false,
+          "description": "Function callback.",
+          "prototype": "OnEntitySpawnedCallback"
+        }
+      ],
+      "retType": {
+        "type": "void"
+      }
+    },
+    {
+      "name": "GetEntSchemaColor",
+      "group": "Schema",
+      "description": "Retrieves a color value from an entity's schema.",
+      "funcName": "GetEntSchemaColor",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity from which the value is to be retrieved."
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the schema member."
+        },
+        {
+          "name": "element",
+          "type": "int32",
+          "ref": false,
+          "description": "Element # (starting from 0) if schema is an array."
+        }
+      ],
+      "retType": {
+        "type": "vec4",
+        "description": "A color value at the given schema offset."
+      }
+    },
+    {
+      "name": "SetEntSchemaColor",
+      "group": "Schema",
+      "description": "Sets a color value in an entity's schema.",
+      "funcName": "SetEntSchemaColor",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "ref": false,
+          "description": "The handle of the entity from which the value is to be retrieved."
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the class."
+        },
+        {
+          "name": "memberName",
+          "type": "string",
+          "ref": false,
+          "description": "The name of the schema member."
+        },
+        {
+          "name": "value",
+          "type": "vec4",
+          "ref": false,
+          "description": "The color value to set."
+        },
+        {
+          "name": "changeState",
+          "type": "bool",
+          "ref": false,
+          "description": "If true, change will be sent over the network."
+        },
+        {
+          "name": "element",
+          "type": "int32",
+          "ref": false,
+          "description": "Element # (starting from 0) if schema is an array."
+        }
+      ],
+      "retType": {
+        "type": "void",
+        "description": "A color value at the given schema offset."
+      }
     }
   ],
   "classes": [],
@@ -3608,6 +3984,22 @@
       "funcName": "OnMapEndCallback",
       "description": "Called on every map end.",
       "paramTypes": [],
+      "retType": {
+        "type": "void",
+        "description": ""
+      }
+    },
+    {
+      "name": "OnEntitySpawnedCallback",
+      "funcName": "OnEntitySpawnedCallback",
+      "description": "Called when an entity is spawned.",
+      "paramTypes": [
+        {
+          "name": "entityHandle",
+          "type": "int32",
+          "description": "The spawned entity handle"
+        }
+      ],
       "retType": {
         "type": "void",
         "description": ""

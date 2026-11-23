@@ -5,13 +5,19 @@
 
 #include <plugin_export.h>
 
+#include "airmove.hpp"
+#include "burn.hpp"
+#include "collision.hpp"
 #include "damage.hpp"
 #include "engine.hpp"
+#include "bighead.hpp"
 #include "ghost_radar.hpp"
 #include "ghost_visibility.hpp"
 #include "ground_reverse.hpp"
 #include "interactions.hpp"
+#include "movement_trace.hpp"
 #include "suicide.hpp"
+#include "standard_grenade.hpp"
 #include "touch.hpp"
 #include "third_person.hpp"
 
@@ -62,8 +68,11 @@ public:
     plg::PluginResult OnPluginEnd() override {
         try {
             const bool damageClean = funrounds::native::detail::ShutdownDamage();
+            const bool bigHeadClean = funrounds::native::detail::ShutdownBigHead();
             const bool suicideClean = funrounds::native::detail::ShutdownSuicide();
+            const bool standardGrenadesClean = funrounds::native::detail::ShutdownStandardGrenades();
             const bool touchClean = funrounds::native::detail::ShutdownTouch();
+            const bool airMoveClean = funrounds::native::detail::ShutdownAirMove();
             const bool groundReverseClean = funrounds::native::detail::ShutdownGroundReverse();
             const bool ghostRadarClean = funrounds::native::detail::ShutdownGhostRadar();
             const bool ghostVisibilityClean = funrounds::native::detail::ShutdownGhostVisibility();
@@ -74,11 +83,14 @@ public:
 #else
             constexpr bool probeClean = true;
 #endif
-            if (!damageClean || !suicideClean || !touchClean || !groundReverseClean || !ghostRadarClean ||
+            if (!damageClean || !bigHeadClean || !suicideClean || !standardGrenadesClean || !touchClean || !airMoveClean || !groundReverseClean || !ghostRadarClean ||
                 !ghostVisibilityClean ||
                 !interactionsClean || !thirdPersonClean || !probeClean) {
                 return plg::PluginResult{"Native hook cleanup could not be verified"};
             }
+            funrounds::native::detail::ResetBurnMetadata();
+            funrounds::native::detail::ResetCollisionSchema();
+            funrounds::native::detail::ResetMovementTraceMetadata();
             funrounds::native::detail::ShutdownEngine();
             return {};
         } catch (...) {

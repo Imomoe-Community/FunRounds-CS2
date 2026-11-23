@@ -63,6 +63,10 @@ diagnostics = false
 [i18n]
 default_language = "zh-CN"
 
+# [weapon_groups]：可选命名武器组，模式用 weapons = "@basic" 引用。
+# [weapon_groups]
+# basic = ["famas", "p250"]
+
 # [defaults]：全局默认模板（仅接受玩法字段；模式内单独设置优先）
 # 可用 false 显式重置可选继承项（如 color, bomb, respawn 等）
 # 示例：
@@ -80,11 +84,11 @@ enabled = true
 name_key = "mode.example.name"
 description_key = "mode.example.description"
 
-# weapons：受支持的 CS2 装备候选列表（按主武器、副武器和额外装备抽取；不含刀具，刀具由 give_knife 配置）
-weapons = ["weapon_famas", "weapon_p250"]
+# weapons：按主武器、副武器和额外装备抽取。使用不带 weapon_ 前缀的物品 ID；刀具由 give_knife 配发。
+weapons = ["famas", "p250"]
 # health：初始生命（整数 1～10000，或随机范围 { min = 100, max = 150 }，默认 100）
 health = 120
-# armor：初始护甲（整数 0～255，或随机范围 { min = 0, max = 100 }，默认 0）
+# armor：初始护甲（整数 0～1000，或随机范围 { min = 0, max = 100 }，默认 0）
 armor = 50
 # gravity：重力倍率（(0, 10]，1.0 为正常重力，<1.0 降低重力）
 gravity = 1.0
@@ -108,13 +112,15 @@ give_weapons = "all"
 # ammo = "inherit"
 # self_damage：开火自伤设置（kind = "miss_penalty" 未命中扣血 / kind = "native", amount = 0.1 每次自扣伤害）
 # self_damage = { kind = "miss_penalty" }
-# weapon_damage：特定武器伤害倍率（电击枪与刀具可分别设置，默认 1.0）
+# weapon_damage：按物品 ID 设置伤害倍率（有限非负数，未指定的物品用 1.0）
 # weapon_damage = { taser = 1.0, knife = 1.0 }
-# taser_charge：电击枪充能冷却时间（秒，需 weapons 包含 weapon_taser）
+# taser_charge：电击枪充能冷却时间（秒，需 weapons 包含 taser）
 # taser_charge = 12.0
 
 # bunnyhop：开启自动连跳及移动参数优化（省略时不覆盖服务端设置）
 # bunnyhop = true
+# autostrafe：在空中辅助转向加速（默认 false）
+# autostrafe = true
 # friction：地面摩擦力参数（有限非负数，省略时不覆盖服务端设置）
 # friction = 2.0
 # no_spread：移除武器散布（省略时不覆盖服务端设置）
@@ -125,8 +131,9 @@ give_weapons = "all"
 # recoil_view = 1.0
 # fast_switch：快速切枪开关（默认 false）
 # fast_switch = true
-# replenish：投掷后自动补充的手雷类型列表（可选 he / flash / smoke / decoy / molotov / incendiary）
-# replenish = ["he"]
+# replenish：投掷后自动补充，所列物品也需加入 weapons。
+# 可选 hegrenade / flashbang / smokegrenade / decoy / molotov / incgrenade。
+# replenish = ["hegrenade"]
 
 # random_loadout：从候选池独立随机抽取配装（与 kill_loadout 互斥）
 # random_loadout = true
@@ -134,7 +141,7 @@ give_weapons = "all"
 # suicide = true
 # random_damage：是否开启浮动随机战斗伤害（默认 false）
 # random_damage = true
-# kill_loadout：击杀敌人后自动升级换枪（kill_loadout_start 可设 "glock" 或 "random"）
+# kill_loadout：击杀敌人后自动换枪；初始配装可选 "random" 或 "glock"（需在候选中加入 glock）。
 # kill_loadout = true
 # kill_loadout_start = "random"
 # lifesteal：击中敌人吸血恢复生命与护甲（默认 false）
@@ -156,7 +163,7 @@ give_weapons = "all"
 # 可用内联表设置：
 # bomb = { kind = "native", plant_time = 3.0, explode_time = 45.0, defuse_kit_time = 5.0, defuse_time = 10.0, bounce = false }
 
-# dodgeball：诱饵弹命中触发躲避球直接伤害（需 weapons 包含 weapon_decoy）
+# dodgeball：诱饵弹命中触发躲避球直接伤害（需 weapons 包含 decoy）
 # dodgeball = true
 # throwing_knives：右键投掷飞刀及弹射判定（需配发刀具）
 # throwing_knives = true
@@ -166,7 +173,7 @@ give_weapons = "all"
 # no_scope = true
 # fov：设定玩家视野角度（整数 1～179）
 # fov = 90
-# hide_hud：隐藏指定 HUD 元素列表（可选 "radar", "crosshair"）
+# hide_hud：隐藏指定 HUD 元素（可选 "all"、"radar"、"crosshair"；勿与旧键 hide_radar 同时填写）
 # hide_hud = ["radar", "crosshair"]
 # hide_crosshair_after：延迟隐藏准星时间（秒，需搭配 hide_hud 中的 crosshair 使用）
 # hide_crosshair_after = 1.0
@@ -179,10 +186,10 @@ give_weapons = "all"
 # health_decay = true
 # self_push：开火产生自身反冲推力（可通过指令 fr_knock 切换模式）
 # self_push = true
-# periodic_speed：移速周期性波浪起伏变化（默认 false）
-# periodic_speed = true
-# periodic_gravity：重力周期性高低起伏变化（默认 false）
-# periodic_gravity = true
+# periodic_speed / periodic_gravity：每隔指定秒数随机更新倍率。
+# true 使用内置分布，false 关闭；自定义时用正数列表 values 或正数闭区间 min/max。
+# periodic_speed = { interval_seconds = 8.0, values = [0.9, 1.1] }
+# periodic_gravity = { interval_seconds = 8.0, min = 0.8, max = 1.2 }
 
 # c4_count：进攻方(T)普通 C4 数量上限（整数 0～255；设为 0 完全禁用普通 C4）
 # c4_count = 1
@@ -204,13 +211,13 @@ give_weapons = "all"
 # fall_damage_scale = 1.0          # 坠落伤害倍率
 # time_scale = 1.0                 # 游戏全局时间流速倍率
 # ground_acceleration = 5.0        # 地面加速度
-# ground_reverse = 5.0             # 地面输入反向加速度（倒车行走）
+# ground_reverse = 5.0             # 地面输入反向加速度；需省略 ground_acceleration 或将其设为 0
 # round_money_floor = 1000         # 每回合保底现金
 # money_income = { interval = 10.0, amount = 100 } # 定期发放被动收入
 # buy_access = "all"               # 允许购买物品的队伍
 # buy_anywhere = "all"             # 允许在地图任意位置购买的队伍
 # shoot_dropped_grenades = true    # 允许射击引爆掉落的手雷
-# hide_player_identification = true# 隐藏玩家瞄准识别信息
+# hide_player_identification = true # 隐藏玩家瞄准识别信息
 
 # third_person：第三人称视角
 # third_person = { distance = 64.0, follow_eyes = true, clip_camera_offset = true, return_strength = 2.0 }
@@ -225,3 +232,26 @@ give_weapons = "all"
 
 # health_curve：自定义生命缩放曲线（覆盖内置 health_damage / health_speed 曲线）
 # health_decay_settings：自定义额外生命衰减速率与保底百分比
+
+# 下列能力各自可选；每一行都是独立示例，不需要一起启用。
+# damage_multiplier = 1.1 # 通用伤害倍率（有限非负数）
+# inferno_damage = 12.0 # 地面燃烧伤害（有限非负数）
+# teamkill_limit = 2 # 触发队杀惩罚的次数阈值（正整数）
+# death_explosion = { t = 1, ct = 0 } # 每回合从各队选出死亡时爆炸的玩家人数上限；整数 0～255，0 关闭
+# explosive_bullets = { cooldown_seconds = 1.5, damage = 30, radius = 120 } # 子弹命中爆炸；伤害和半径支持正整数或区间
+# hegrenade_impulse = { impulse = 220.0 } # HE 爆炸施加推力（有限非负数）
+# proximity_fuse = { radius = 128.0, delay_seconds = 0.5, grenades = ["hegrenade"] } # 接近敌人时触发引信；不支持诱饵弹
+# he_guidance = { range = 1000.0, turn_rate_degrees_per_second = 90.0, max_speed = 700.0, max_guidance_seconds = 2.0 } # HE 追踪，参数均为正数
+# wall_hang = true # 空中贴墙并按住跳跃时挂墙
+# grapple = { max_distance = 1000.0, max_speed = 600.0, pull_gain = 4.0 } # 使用键拉向瞄准点，参数均为正数
+# friendly_fire_heal = { kind = "fixed", amount = 8 } # 友军命中转治疗；或用 kind = "damage_ratio" 和 ratio
+# regeneration = { delay_seconds = 4.0, interval_seconds = 2.0, heal = 3 } # 脱离战斗后延迟并定时回血
+# chicken_aura = { radius = 100.0, interval_seconds = 2.0, heal_percent = 2.0 } # 普通鸡附近定时回血，需配置普通鸡生态
+# healing_cap_base_multiple = 1.2 # 上述治疗能力使用的初始生命上限倍率（有限正数）
+# medical_smoke = true # 烟雾区域内治疗友军
+# trampoline = true # 在受支持地图的固定区域内弹起玩家
+# dont_stop = { minimum_horizontal_speed = 60.0, grace_seconds = 3.0, damage_interval_seconds = 1.0, damage = 2 } # 移速过低时扣血
+# hot_floor = { grounded_seconds = 3.0, damage_interval_seconds = 1.0, damage = 2, ignite_after_seconds = 6.0 } # 持续站地扣血，久留则点燃
+# weapon_on_fire = { chance = 0.15, switch_weight = 2, drop_weight = 1, cooldown_seconds = 1.0 } # 开火后按概率切枪或掉枪；权重至少一个为正
+# long_flash = { duration_multiplier = 1.5, duration_cap_seconds = 8.0 } # 延长闪光效果，不缩短原生时长
+# big_head = { min_scale = 0.9, max_scale = 1.3 } # 头部缩放区间，倍率为正且 min_scale <= max_scale

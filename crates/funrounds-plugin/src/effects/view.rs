@@ -14,6 +14,8 @@ const FOV_CLASS: &str = "CBasePlayerController";
 const FOV_FIELD: &str = "m_iDesiredFOV";
 const HUD_CLASS: &str = "CBasePlayerPawn";
 const HUD_FIELD: &str = "m_iHideHUD";
+// SourceSDK HIDEHUD_ALL in CBasePlayerPawn.m_iHideHUD.
+const ALL_HUD_BIT: u32 = 1 << 2;
 const CROSSHAIR_HUD_BIT: u32 = 1 << 8;
 const SECONDARY_CLASS: &str = "CBasePlayerWeapon";
 const SECONDARY_FIELD: &str = "m_nNextSecondaryAttackTick";
@@ -42,6 +44,12 @@ struct CrosshairSnapshot {
 }
 
 #[derive(Clone, Copy)]
+struct AllHudSnapshot {
+    originally_hidden: bool,
+    hidden_by_us: bool,
+}
+
+#[derive(Clone, Copy)]
 struct SecondaryAttackSnapshot {
     weapon: i32,
     original: i32,
@@ -54,6 +62,7 @@ pub(crate) struct ViewEffects {
     controller_handle: i32,
     fov: Option<FovSnapshot>,
     retired_fov: Vec<FovSnapshot>,
+    all_hud: Option<AllHudSnapshot>,
     crosshair: Option<CrosshairSnapshot>,
     secondary: Option<SecondaryAttackSnapshot>,
 }
@@ -84,12 +93,24 @@ impl ViewEffects {
                     .map_err(|error| Fault::mechanism(Mechanism::Crosshair, error))
             })
             .transpose()?;
+        let all_hud = mode
+            .hide_all_hud
+            .then(|| {
+                read_pawn_value(player, HUD_CLASS, HUD_FIELD)
+                    .map(|flags| AllHudSnapshot {
+                        originally_hidden: flags as u32 & ALL_HUD_BIT != 0,
+                        hidden_by_us: false,
+                    })
+                    .map_err(|error| Fault::mechanism(Mechanism::HideAllHud, error))
+            })
+            .transpose()?;
         Ok(Self {
             identity,
             round,
             controller_handle: player.controller_handle,
             fov,
             retired_fov: Vec::new(),
+            all_hud,
             crosshair,
             secondary: None,
         })
@@ -100,6 +121,11 @@ impl ViewEffects {
         if let (Some(snapshot), Some(desired)) = (&mut self.fov, mode.fov) {
             snapshot.applied = Some(desired);
             write_controller_value(player, FOV_CLASS, FOV_FIELD, desired).map_err(|error| Fault::mechanism(Mechanism::Fov, error))?;
+        }
+        if let Some(snapshot) = &mut self.all_hud
+            && !snapshot.hidden_by_us
+        {
+            hide_hud_bit(player, ALL_HUD_BIT, &mut snapshot.hidden_by_us).map_err(|error| Fault::mechanism(Mechanism::HideAllHud, error))?;
         }
         if let (Some(snapshot), Some(delay)) = (&mut self.crosshair, mode.hide_crosshair_after) {
             snapshot.hide_at = Some(now + delay);
@@ -125,12 +151,7 @@ impl ViewEffects {
         if let Some(snapshot) = &mut self.crosshair
             && should_hide_crosshair(*snapshot, now)
         {
-            let flags = read_pawn_value(player, HUD_CLASS, HUD_FIELD).map_err(|error| Fault::mechanism(Mechanism::Crosshair, error))? as u32;
-            if flags & CROSSHAIR_HUD_BIT == 0 {
-                snapshot.hidden_by_us = true;
-                let hidden = crosshair_mask(flags, true) as i64;
-                write_pawn_value(player, HUD_CLASS, HUD_FIELD, hidden).map_err(|error| Fault::mechanism(Mechanism::Crosshair, error))?;
-            }
+            hide_hud_bit(player, CROSSHAIR_HUD_BIT, &mut snapshot.hidden_by_us).map_err(|error| Fault::mechanism(Mechanism::Crosshair, error))?;
             snapshot.hide_at = None;
         }
         Ok(())
@@ -203,19 +224,18 @@ impl ViewEffects {
         if let Err(error) = self.restore_controller_fov() {
             errors.push(error);
         }
-        if let Some(snapshot) = self.crosshair
-            && snapshot.hidden_by_us
-            && let Some(player) = same_pawn(self.identity.slot, self.identity, self.controller_handle)
-        {
-            match read_pawn_value(player, HUD_CLASS, HUD_FIELD) {
-                Ok(current) if current as u32 & CROSSHAIR_HUD_BIT != 0 => {
-                    let restored = crosshair_mask(current as u32, snapshot.originally_hidden);
-                    if let Err(error) = write_pawn_value(player, HUD_CLASS, HUD_FIELD, i64::from(restored)) {
-                        errors.push(error);
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => errors.push(error),
+        if let Some(player) = same_pawn(self.identity.slot, self.identity, self.controller_handle) {
+            if let Some(snapshot) = &mut self.crosshair
+                && snapshot.hidden_by_us
+                && let Err(error) = restore_hud_bit(player, CROSSHAIR_HUD_BIT, snapshot.originally_hidden, &mut snapshot.hidden_by_us)
+            {
+                errors.push(error);
+            }
+            if let Some(snapshot) = &mut self.all_hud
+                && snapshot.hidden_by_us
+                && let Err(error) = restore_hud_bit(player, ALL_HUD_BIT, snapshot.originally_hidden, &mut snapshot.hidden_by_us)
+            {
+                errors.push(error);
             }
         }
         if let Err(error) = self.restore_secondary_attack() {
@@ -322,6 +342,14 @@ pub(crate) fn fov_probe() -> Probe {
 }
 
 pub(crate) fn crosshair_probe() -> Probe {
+    hud_probe()
+}
+
+pub(crate) fn hide_all_hud_probe() -> Probe {
+    hud_probe()
+}
+
+fn hud_probe() -> Probe {
     let mut probe = player_schema_probe();
     probe.schema(HUD_CLASS, HUD_FIELD);
     probe
@@ -502,12 +530,35 @@ fn blocked_secondary_tick(current_tick: i32) -> i32 {
     current_tick.saturating_add(SECONDARY_BLOCK_TICKS)
 }
 
-fn crosshair_mask(current: u32, hidden: bool) -> u32 {
-    if hidden {
-        current | CROSSHAIR_HUD_BIT
-    } else {
-        current & !CROSSHAIR_HUD_BIT
+fn hud_mask(current: u32, bit: u32, hidden: bool) -> u32 {
+    if hidden { current | bit } else { current & !bit }
+}
+
+fn hide_hud_bit(player: LivePlayer, bit: u32, hidden_by_us: &mut bool) -> Result<(), String> {
+    if *hidden_by_us {
+        return Ok(());
     }
+    let flags = read_pawn_value(player, HUD_CLASS, HUD_FIELD)? as u32;
+    if flags & bit != 0 {
+        return Ok(());
+    }
+    *hidden_by_us = true;
+    write_pawn_value(player, HUD_CLASS, HUD_FIELD, i64::from(hud_mask(flags, bit, true)))?;
+    Ok(())
+}
+
+fn restore_hud_bit(player: LivePlayer, bit: u32, originally_hidden: bool, hidden_by_us: &mut bool) -> Result<(), String> {
+    if !*hidden_by_us {
+        return Ok(());
+    }
+    let current = read_pawn_value(player, HUD_CLASS, HUD_FIELD)? as u32;
+    if current & bit == 0 {
+        *hidden_by_us = false;
+        return Ok(());
+    }
+    write_pawn_value(player, HUD_CLASS, HUD_FIELD, i64::from(hud_mask(current, bit, originally_hidden)))?;
+    *hidden_by_us = false;
+    Ok(())
 }
 
 fn secondary_tick_to_restore(current: i32, last_written: Option<i32>, original: i32) -> Option<i32> {

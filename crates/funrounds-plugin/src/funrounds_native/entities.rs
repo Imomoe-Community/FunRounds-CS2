@@ -23,7 +23,7 @@ pub type _IsEntityTouchPreHookAvailable = unsafe extern "C" fn() -> bool;
 #[unsafe(no_mangle)]
 pub static mut __funrounds_native_IsEntityTouchPreHookAvailable: Option<_IsEntityTouchPreHookAvailable> = None;
 
-/// Hooks the entity's current Touch implementation address; the callback sees all entities sharing it.
+/// Subscribes this callback to the entity's current Touch implementation. Other callbacks may share the detour; any nonzero callback result suppresses the original Touch.
 ///
 /// # Arguments
 /// * `entityHandle` - (int32)
@@ -38,7 +38,7 @@ pub type _HookEntityTouchPre = unsafe extern "C" fn(i32, EntityTouchPreCallback)
 #[unsafe(no_mangle)]
 pub static mut __funrounds_native_HookEntityTouchPre: Option<_HookEntityTouchPre> = None;
 
-/// Returns true for a non-null callback with no hooks or after all its hooks detach; false for null or incomplete own-hook detachment. Other callbacks' hooks are untouched.
+/// Removes only this callback from its Touch subscriptions. A detour remains while another callback uses it; false means an own final-hook detach must be retried.
 ///
 /// # Arguments
 /// * `callback` - (function)

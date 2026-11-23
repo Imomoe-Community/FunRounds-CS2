@@ -27,3 +27,7 @@ pub type OnBuildGameSessionManifestCallback = unsafe extern "C" fn();
 /// Called on every map end.
 #[allow(unused)]
 pub type OnMapEndCallback = unsafe extern "C" fn();
+
+/// Called when an entity is spawned.
+#[allow(unused)]
+pub type OnEntitySpawnedCallback = unsafe extern "C" fn(i32);

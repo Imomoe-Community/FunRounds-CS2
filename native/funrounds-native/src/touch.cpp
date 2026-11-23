@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include <polyhook/polyhook.hpp>
@@ -17,15 +19,18 @@
 namespace funrounds::native::detail {
 namespace {
 
+using TouchCallbacks = std::vector<EntityTouchPreCallback>;
+using TouchCallbackSnapshot = std::shared_ptr<const TouchCallbacks>;
+using TouchCallbackSlot = std::atomic<TouchCallbackSnapshot>;
+
 struct TouchHook {
     void* address;
     polyhook::HookHandle handle;
     bool callbackRegistered;
+    std::shared_ptr<TouchCallbackSlot> callbacks;
 };
 
 std::vector<TouchHook> g_hooks;
-EntityTouchPreCallback g_owner = nullptr;
-EntityTouchPreCallback g_callback = nullptr;
 #if defined(FUNROUNDS_NATIVE_LIFECYCLE_PROBE)
 bool g_probeFailNextTouchAdd = false;
 bool g_probeFailNextTouchRemove = false;
@@ -41,17 +46,12 @@ std::int32_t TouchForeignProbeCallback(std::int32_t, std::int32_t) {
 }
 #endif
 
-polyhook::ResultType TouchPre(polyhook::HookHandle,
+polyhook::ResultType TouchPre(polyhook::HookHandle hook,
                               polyhook::ParametersHandle params,
                               std::int32_t,
                               polyhook::ReturnHandle,
                               polyhook::CallbackType type) noexcept {
     if (type != polyhook::CallbackType::Pre) {
-        return polyhook::ResultType::Ignored;
-    }
-
-    const auto callback = g_callback;
-    if (!callback) {
         return polyhook::ResultType::Ignored;
     }
 
@@ -71,14 +71,32 @@ polyhook::ResultType TouchPre(polyhook::HookHandle,
             otherHandle = -1;
         }
 
-        return callback(entityHandle, otherHandle) == 0 ? polyhook::ResultType::Ignored
-                                                        : polyhook::ResultType::Supercede;
+        const auto record = std::find_if(g_hooks.begin(), g_hooks.end(), [hook](const auto& item) {
+            return item.handle == hook;
+        });
+        if (record == g_hooks.end()) {
+            return polyhook::ResultType::Ignored;
+        }
+        const auto callbacks = record->callbacks->load(std::memory_order_acquire);
+        if (!callbacks || callbacks->empty()) {
+            return polyhook::ResultType::Ignored;
+        }
+
+        bool suppressOriginal = false;
+        for (const auto callback : *callbacks) {
+            try {
+                suppressOriginal = callback(entityHandle, otherHandle) != 0 || suppressOriginal;
+            } catch (...) {
+                // One consumer cannot prevent the other Touch consumers from running.
+            }
+        }
+        return suppressOriginal ? polyhook::ResultType::Supercede : polyhook::ResultType::Ignored;
     } catch (...) {
         return polyhook::ResultType::Ignored;
     }
 }
 
-bool RemoveHook(TouchHook& record) noexcept {
+bool RemoveHook(TouchHook& record, bool unhookIfEmpty = true) noexcept {
     try {
         auto current = polyhook::FindDetour(record.address);
         if (!current) {
@@ -96,6 +114,10 @@ bool RemoveHook(TouchHook& record) noexcept {
         }
 #endif
 
+        const auto callbacks = record.callbacks ? record.callbacks->load(std::memory_order_acquire) : nullptr;
+        if (callbacks && !callbacks->empty()) {
+            return false;
+        }
         if (polyhook::IsCallbackRegistered(current, polyhook::CallbackType::Pre, TouchPre)) {
             (void)polyhook::RemoveCallback(current, polyhook::CallbackType::Pre, TouchPre);
         }
@@ -103,6 +125,18 @@ bool RemoveHook(TouchHook& record) noexcept {
             return false;
         }
         record.callbackRegistered = false;
+
+        // PolyHook handles are shared by all plugin consumers in the process.
+        // The native provider may detach only after its callback was the last
+        // callback registered on this implementation.
+        if (polyhook::AreCallbacksRegistered(current)) {
+            record.handle = nullptr;
+            return true;
+        }
+        if (!unhookIfEmpty) {
+            record.handle = nullptr;
+            return true;
+        }
 
         (void)polyhook::UnhookDetour(record.address);
         if (polyhook::FindDetour(record.address)) {
@@ -116,9 +150,11 @@ bool RemoveHook(TouchHook& record) noexcept {
 }
 
 bool DetachAll() noexcept {
-    g_callback = nullptr;
     bool detached = true;
     for (auto it = g_hooks.begin(); it != g_hooks.end();) {
+        if (it->callbacks) {
+            it->callbacks->store({}, std::memory_order_release);
+        }
         if (RemoveHook(*it)) {
             it = g_hooks.erase(it);
         } else {
@@ -126,10 +162,47 @@ bool DetachAll() noexcept {
             ++it;
         }
     }
-    if (g_hooks.empty()) {
-        g_owner = nullptr;
-    }
     return detached;
+}
+
+bool HasCallback(const TouchHook& hook, EntityTouchPreCallback callback) noexcept {
+    const auto callbacks = hook.callbacks ? hook.callbacks->load(std::memory_order_acquire) : nullptr;
+    return callbacks && std::find(callbacks->begin(), callbacks->end(), callback) != callbacks->end();
+}
+
+bool AddCallback(TouchHook& hook, EntityTouchPreCallback callback) {
+    if (!hook.callbacks) {
+        return false;
+    }
+    auto callbacks = hook.callbacks->load(std::memory_order_acquire);
+    if (callbacks && std::find(callbacks->begin(), callbacks->end(), callback) != callbacks->end()) {
+        return true;
+    }
+    auto updated = std::make_shared<std::vector<EntityTouchPreCallback>>();
+    if (callbacks) {
+        *updated = *callbacks;
+    }
+    updated->push_back(callback);
+    hook.callbacks->store(TouchCallbackSnapshot(std::move(updated)), std::memory_order_release);
+    return true;
+}
+
+void RemoveCallback(TouchHook& hook, EntityTouchPreCallback callback) {
+    if (!hook.callbacks) {
+        return;
+    }
+    const auto callbacks = hook.callbacks->load(std::memory_order_acquire);
+    if (!callbacks || std::find(callbacks->begin(), callbacks->end(), callback) == callbacks->end()) {
+        return;
+    }
+    auto updated = std::make_shared<std::vector<EntityTouchPreCallback>>();
+    updated->reserve(callbacks->size() - 1);
+    for (const auto current : *callbacks) {
+        if (current != callback) {
+            updated->push_back(current);
+        }
+    }
+    hook.callbacks->store(TouchCallbackSnapshot(std::move(updated)), std::memory_order_release);
 }
 
 bool AddTouchCallback(polyhook::HookHandle hook) {
@@ -177,10 +250,8 @@ bool IsTouchAvailable() {
 bool HookTouch(std::int32_t entityHandle, EntityTouchPreCallback callback) {
     if (!callback || !__polyhook_HookDetour || !__polyhook_FindDetour ||
         !__polyhook_AddCallback || !__polyhook_IsCallbackRegistered ||
-        !__polyhook_RemoveCallback || !__polyhook_UnhookDetour) {
-        return false;
-    }
-    if (g_owner && g_owner != callback) {
+        !__polyhook_RemoveCallback || !__polyhook_UnhookDetour ||
+        !__polyhook_AreCallbacksRegistered) {
         return false;
     }
     void* implementation = nullptr;
@@ -195,35 +266,52 @@ bool HookTouch(std::int32_t entityHandle, EntityTouchPreCallback callback) {
         if (existing->handle != polyhook::FindDetour(implementation)) {
             return false;
         }
-        if (existing->callbackRegistered &&
-            polyhook::IsCallbackRegistered(existing->handle, polyhook::CallbackType::Pre, TouchPre)) {
-            g_callback = callback;
-            return true;
+        const bool alreadySubscribed = HasCallback(*existing, callback);
+        if (!alreadySubscribed) {
+            AddCallback(*existing, callback);
         }
-
-        try {
-            (void)AddTouchCallback(existing->handle);
-            existing->callbackRegistered =
-                polyhook::IsCallbackRegistered(existing->handle, polyhook::CallbackType::Pre, TouchPre);
-        } catch (...) {
-            existing->callbackRegistered = false;
-        }
-        if (existing->callbackRegistered) {
-            g_callback = callback;
-            return true;
-        }
-
-        if (RemoveHook(*existing)) {
-            g_hooks.erase(existing);
-            if (g_hooks.empty()) {
-                g_owner = nullptr;
-                g_callback = nullptr;
+        if (!existing->callbackRegistered ||
+            !polyhook::IsCallbackRegistered(existing->handle, polyhook::CallbackType::Pre, TouchPre)) {
+            try {
+                (void)AddTouchCallback(existing->handle);
+                existing->callbackRegistered =
+                    polyhook::IsCallbackRegistered(existing->handle, polyhook::CallbackType::Pre, TouchPre);
+            } catch (...) {
+                existing->callbackRegistered =
+                    polyhook::IsCallbackRegistered(existing->handle, polyhook::CallbackType::Pre, TouchPre);
             }
         }
-        return false;
+        if (!existing->callbackRegistered && !alreadySubscribed) {
+            RemoveCallback(*existing, callback);
+        }
+        return existing->callbackRegistered;
     }
-    if (polyhook::FindDetour(implementation)) {
-        return false;
+
+    if (const auto current = polyhook::FindDetour(implementation); current != nullptr) {
+        // This entry has a known typed ABI. A borrowed empty detour remains
+        // the creator's cleanup responsibility until our callback is live.
+
+        g_hooks.reserve(g_hooks.size() + 1);
+        auto callbacks = std::make_shared<const std::vector<EntityTouchPreCallback>>(1, callback);
+        g_hooks.push_back({implementation, current, false,
+                           std::make_shared<TouchCallbackSlot>(TouchCallbackSnapshot(std::move(callbacks)))});
+        auto& record = g_hooks.back();
+        try {
+            (void)AddTouchCallback(current);
+            record.callbackRegistered =
+                polyhook::IsCallbackRegistered(current, polyhook::CallbackType::Pre, TouchPre);
+        } catch (...) {
+            record.callbackRegistered =
+                polyhook::IsCallbackRegistered(current, polyhook::CallbackType::Pre, TouchPre);
+        }
+        if (!record.callbackRegistered) {
+            record.callbacks->store({}, std::memory_order_release);
+            if (RemoveHook(record, false)) {
+                g_hooks.pop_back();
+            }
+            return false;
+        }
+        return true;
     }
 
     g_hooks.reserve(g_hooks.size() + 1);
@@ -238,8 +326,9 @@ bool HookTouch(std::int32_t entityHandle, EntityTouchPreCallback callback) {
         return false;
     }
 
-    g_owner = callback;
-    g_hooks.push_back({implementation, hook, false});
+    g_hooks.push_back({implementation, hook, false,
+                       std::make_shared<TouchCallbackSlot>(
+                           std::make_shared<const std::vector<EntityTouchPreCallback>>(1, callback))});
     auto& record = g_hooks.back();
     try {
         (void)AddTouchCallback(hook);
@@ -248,17 +337,12 @@ bool HookTouch(std::int32_t entityHandle, EntityTouchPreCallback callback) {
         record.callbackRegistered = false;
     }
     if (!record.callbackRegistered) {
+        record.callbacks->store({}, std::memory_order_release);
         if (RemoveHook(record)) {
             g_hooks.pop_back();
-            if (g_hooks.empty()) {
-                g_owner = nullptr;
-                g_callback = nullptr;
-            }
         }
         return false;
     }
-
-    g_callback = callback;
     return true;
 }
 
@@ -332,10 +416,22 @@ bool UnhookTouch(EntityTouchPreCallback callback) {
     if (!callback) {
         return false;
     }
-    if (callback != g_owner) {
-        return true;
+    bool detached = true;
+    for (auto it = g_hooks.begin(); it != g_hooks.end();) {
+        RemoveCallback(*it, callback);
+        const auto callbacks = it->callbacks ? it->callbacks->load(std::memory_order_acquire) : nullptr;
+        if (callbacks && !callbacks->empty()) {
+            ++it;
+            continue;
+        }
+        if (RemoveHook(*it)) {
+            it = g_hooks.erase(it);
+        } else {
+            detached = false;
+            ++it;
+        }
     }
-    return DetachAll();
+    return detached;
 }
 
 bool ShutdownTouch() noexcept {

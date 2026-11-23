@@ -350,6 +350,13 @@ pub struct Action {
 }
 
 impl Action {
+    pub(crate) fn cleanup_chicken(self) -> Option<i32> {
+        match self.kind {
+            ActionKind::Cleanup { chicken, .. } => chicken,
+            _ => None,
+        }
+    }
+
     pub fn is_cleanup(self) -> bool {
         matches!(self.kind, ActionKind::Cleanup { .. } | ActionKind::RemoveEntity { .. })
     }
@@ -431,6 +438,7 @@ pub fn capabilities(
     imports!(chicken;
         __s2sdk_CreateEntityByName, __s2sdk_DispatchSpawn, __s2sdk_SetEntityParent,
         __s2sdk_AcceptEntityInput, __s2sdk_GetEntityParent, __s2sdk_SetEntityLocalOrigin,
+        __s2sdk_GetEntityModelScale, __s2sdk_SetEntityModelScale,
         __s2sdk_GetEntityAngRotation, __s2sdk_GetEntityAbsOrigin, __s2sdk_SetEntityAbsOrigin,
         __s2sdk_TeleportEntity, __s2sdk_RemoveEntity,
     );
@@ -660,6 +668,7 @@ pub struct Bombs {
     quick_defuse: QuickDefuse,
     pending_plant: Option<PendingPlant>,
     newly_planted_native_scale: Option<i32>,
+    newly_created_chicken_scale: Option<(i32, i32)>,
     native_model_scale_restores: HashSet<i32>,
     planted: Option<Planted>,
     completed_chicken: Option<Planted>,
@@ -686,6 +695,7 @@ impl Bombs {
         self.prestart_cleanup = true;
         self.prestart_retiring.clear();
         self.newly_planted_native_scale = None;
+        self.newly_created_chicken_scale = None;
     }
 
     pub fn finish_round_prestart_cleanup(&mut self) {
@@ -830,6 +840,7 @@ impl Bombs {
         // Capture it before requiring a player or an active weapon for the optional timing write.
         self.before_plant = Some((round, entity_handles("planted_c4").into_iter().collect()));
         self.newly_planted_native_scale = None;
+        self.newly_created_chicken_scale = None;
         self.plant_task = task.filter(|task| task.round == round);
         self.quick_defuse.begin_plant(self.plant_task);
         self.arming = None;
@@ -846,6 +857,19 @@ impl Bombs {
             tick: s2sdk::GetGameTickCount(),
             kit: false,
         });
+    }
+
+    pub(crate) fn is_carrier_chicken(&self, handle: i32) -> bool {
+        self.planted
+            .into_iter()
+            .chain(self.completed_chicken)
+            .any(|bomb| bomb.chicken == Some(handle))
+            || self.retiring.contains(&handle)
+            || self.pending_actions.values().any(|action| action.cleanup_chicken() == Some(handle))
+    }
+
+    pub(crate) fn take_chicken_model_scale_candidate(&mut self) -> Option<(i32, i32)> {
+        self.newly_created_chicken_scale.take()
     }
 
     pub fn take_native_model_scale_candidate(&mut self) -> Option<i32> {
@@ -1097,7 +1121,7 @@ impl Bombs {
                     .take_installation(round, &entity_handles("planted_c4"))
                     .map_err(|error| Fault::mechanism(Mechanism::CtBombNoDefuse, error))?;
                 if self.planted.is_some() || self.completed_chicken.is_some() {
-                    return Err("second authoritative planted bomb refused".into());
+                    return Err(Fault::global("second authoritative planted bomb refused"));
                 }
                 self.planted = Some(Planted {
                     handle,
@@ -1592,7 +1616,7 @@ impl Bombs {
                 let result = match action.kind {
                     ActionKind::SpawnChicken { .. } => ActionResult::Chicken(handle),
                     ActionKind::SpawnProxy { .. } => ActionResult::Proxy(handle),
-                    _ => return Err("non-creation bomb action returned a partial creation".into()),
+                    _ => return Err(Fault::global("non-creation bomb action returned a partial creation")),
                 };
                 (Ok(result), Some(error))
             }
@@ -1604,6 +1628,9 @@ impl Bombs {
                 if let Some(planted) = self.tracked_planted_mut(round, bomb).filter(|planted| planted.kind == BombKind::Chicken) {
                     planted.chicken = Some(chicken);
                     planted.spawn_pending = false;
+                    if accept_business && !self.cleanup_requested && creation_error.is_none() {
+                        self.newly_created_chicken_scale = Some((bomb, chicken));
+                    }
                     if self.cleanup_requested || (!accept_business && !self.display_until_prestart) || creation_error.is_some() {
                         self.include_in_queued_cleanup(round, bomb, Some(chicken), None);
                     }
@@ -1710,7 +1737,7 @@ impl Bombs {
                 self.prestart_retiring.remove(&handle);
                 Err(error)
             }
-            _ => Err("bomb engine action returned an unexpected result".into()),
+            _ => Err(Fault::global("bomb engine action returned an unexpected result")),
         };
         if let Some(error) = creation_error {
             if accept_business || error.scope == crate::fault::Scope::Global {
@@ -1822,8 +1849,8 @@ impl Bombs {
     }
 
     fn cleanup_active(&mut self) -> Result<(), String> {
-        if let Some(bomb) = self.planted.filter(|bomb| bomb.kind == BombKind::Native) {
-            self.native_model_scale_restores.insert(bomb.handle);
+        if let Some(bomb) = self.planted {
+            self.queue_native_model_scale_restore(bomb);
         }
         self.pending_explosion = None;
         self.arming = None;
@@ -1834,6 +1861,7 @@ impl Bombs {
         self.plant_weapon = None;
         self.pending_plant = None;
         self.newly_planted_native_scale = None;
+        self.newly_created_chicken_scale = None;
         self.bouncing.clear();
         self.cleanup_requested = true;
         self.display_until_prestart = false;
@@ -1854,8 +1882,14 @@ impl Bombs {
     }
 
     fn queue_native_model_scale_restore(&mut self, bomb: Planted) {
-        if bomb.kind == BombKind::Native {
-            self.native_model_scale_restores.insert(bomb.handle);
+        match bomb.kind {
+            BombKind::Native => {
+                self.native_model_scale_restores.insert(bomb.handle);
+            }
+            BombKind::Chicken => {
+                self.native_model_scale_restores.extend(bomb.chicken);
+            }
+            BombKind::Carry => {}
         }
     }
 
@@ -1869,6 +1903,7 @@ impl Bombs {
         self.plant_weapon = None;
         self.pending_plant = None;
         self.newly_planted_native_scale = None;
+        self.newly_created_chicken_scale = None;
         self.native_model_scale_restores.clear();
         self.planted = None;
         self.completed_chicken = None;

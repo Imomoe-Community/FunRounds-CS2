@@ -80,7 +80,7 @@ class BuildNativeTests(unittest.TestCase):
     def test_generates_pinned_s2sdk_import_manifest(self):
         sdk = self.root / "sdk"
         sdk.mkdir()
-        (sdk / "version.txt").write_text("3.0.6\n", encoding="utf-8")
+        (sdk / "version.txt").write_text("3.3.1\n", encoding="utf-8")
         (sdk / "plugify-plugin-s2sdk.pplugin.in").write_text(
             '{"version":"${S2SDK_VERSION}","name":"${S2SDK_PACKAGE}"}', encoding="utf-8"
         )
@@ -96,7 +96,7 @@ class BuildNativeTests(unittest.TestCase):
             build_native.generate_s2sdk_imports(sdk, generated_include)
 
         rendered = json.loads((self.root / "generated/plugify-plugin-s2sdk.pplugin").read_text("utf-8"))
-        self.assertEqual(rendered, {"version": "3.0.6", "name": "s2sdk"})
+        self.assertEqual(rendered, {"version": "3.3.1", "name": "s2sdk"})
         self.assertEqual(commands[0][1:7], ["-manifest", str(self.root / "generated/plugify-plugin-s2sdk.pplugin"), "-output", str(generated_include), "-lang", "cpp"])
         self.assertIn("-overwrite", commands[0])
         self.assertTrue((generated_include / "external/plugify/include/s2sdk/s2sdk.cpp").is_file())
@@ -173,7 +173,9 @@ class BuildNativeTests(unittest.TestCase):
                 self.assertEqual(len(list((output / "s2sdk/licenses").glob("*.txt"))), 5)
                 source = json.loads((output / "s2sdk/source.json").read_text("utf-8"))
                 self.assertEqual(source["repository"], "https://github.com/Mai-Ooizumi/plugify-plugin-s2sdk.git")
-                self.assertEqual(source["commit"], "dfa3a3e8e88a70872b66d379490d3228a48f6d81")
+                self.assertEqual(source["commit"], "2fca1d177ddca1c265ee585457ad160752e9111c")
+                binding = json.loads((ROOT / "bindings/s2sdk.pplugin").read_text("utf-8"))
+                self.assertEqual(source["version"], binding["version"])
 
 
 if __name__ == "__main__":

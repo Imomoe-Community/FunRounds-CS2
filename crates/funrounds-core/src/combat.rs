@@ -17,11 +17,7 @@ pub fn weapon_damage_scale(mode: &Mode, weapon: Option<&str>, player_attack: boo
     if !player_attack {
         return 1.0;
     }
-    match weapon {
-        Some("weapon_taser") => mode.weapon_damage.taser,
-        Some("weapon_knife" | "weapon_knife_t") => mode.weapon_damage.knife,
-        _ => 1.0,
-    }
+    weapon.map_or(1.0, |id| mode.weapon_damage.multiplier(id))
 }
 
 #[derive(Debug)]
@@ -101,7 +97,7 @@ pub fn combat_hit(mode: &Mode, life: &mut CombatLife, eligible: bool, allowed_se
     if !(eligible || allowed_self) {
         return (false, None);
     }
-    if eligible && knife && mode.weapon_damage.knife == 0.0 {
+    if eligible && knife && mode.weapon_damage.multiplier("knife") == 0.0 {
         return (true, None);
     }
     if life.absorb(incoming) {
